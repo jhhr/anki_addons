@@ -28,6 +28,9 @@ class FakeNote:
         self.id = note_id
         self.fields: list = []
 
+    def note_type(self):
+        return {"name": "Japanese vocab note"}
+
 
 class FakeCollection:
     def get_note(self, nid):
@@ -394,6 +397,40 @@ class ChainStepTest(unittest.TestCase):
 
         self.assertIsInstance(op.shown_by_aqt, ValueError)
         self.assertEqual(self.outcomes, [])
+
+    def test_a_match_run_refused_over_duplicate_link_ids_fails_the_step_and_says_why(self):
+        """Refused before its first request, while two vocab notes hold one link ID: the step
+        fails with the refusal's message, which names the notes and "Fill link IDs"."""
+        match = load_ops_module("match_words_to_notes")
+        config = {
+            "Japanese vocab note": {
+                "word_list_field": "Words",
+                "word_sort_field": "Sort",
+                "new_note_id_field": "ID",
+            },
+            "match_words_model": "model",
+        }
+        held_twice = match.LinkIndex.from_rows([(10, "4000000000000001"), (11, "4000000000000001")])
+
+        class Indexes:
+            async def get(self, config, note_type_name):
+                return held_twice
+
+        driver = mock.AsyncMock()
+        fake_mw = mock.MagicMock()
+        fake_mw.addonManager.getConfig.return_value = config
+        with mock.patch.object(match, "mw", fake_mw), mock.patch.object(
+            match, "LinkIndexCache", Indexes
+        ), mock.patch.object(match, "bulk_nested_notes_op", driver), mock.patch.object(
+            match, "load_meanings_dict_from_file", dict
+        ):
+            self.run_step(match.bulk_match_words_to_notes)
+
+        outcome = self.assert_one_outcome("failed")
+        self.assertTrue(outcome.error.startswith("DuplicateLinkIdsError: "), outcome.error)
+        self.assertIn("4000000000000001 by notes 10, 11", outcome.error)
+        self.assertIn('Run "Fill link IDs"', outcome.error)
+        driver.assert_not_called()
 
 
 if __name__ == "__main__":

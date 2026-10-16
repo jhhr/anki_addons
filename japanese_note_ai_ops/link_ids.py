@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from collections.abc import Container, Iterable
 from typing import Callable, Optional, Protocol
 
@@ -137,9 +138,12 @@ class LinkIndex:
 
     `on_found` is told the note ids of every answer that names a note: a run that records its
     notes passes `capture_notes.found`, since a replay has to find those notes too.
+
+    An index lives as long as the run that read it, so it also hands out the IDs of the notes
+    that run makes of the type (`new_link_id`).
     """
 
-    __slots__ = ("_holders", "duplicates", "invalid", "_on_found")
+    __slots__ = ("_holders", "duplicates", "invalid", "_on_found", "_handed_out", "_lock")
 
     def __init__(self, on_found: Optional[Callable[[Iterable[int]], None]] = None) -> None:
         self._holders: dict[int, int] = {}
@@ -149,6 +153,9 @@ class LinkIndex:
         # note id, and the value is a legacy negative placeholder, a "0", or stray text
         self.invalid: dict[int, str] = {}
         self._on_found = on_found
+        # The IDs new_link_id has handed out, which no note holds until the run adds it
+        self._handed_out: set[int] = set()
+        self._lock = threading.Lock()
 
     @classmethod
     def from_rows(
@@ -196,6 +203,82 @@ class LinkIndex:
         """Whether a note holds this link ID. An answer like `note_id`'s, so a found holder is
         told to `on_found` too: whether a link leads anywhere has to replay alike."""
         return isinstance(held, int) and self.note_id(held) is not None
+
+    def new_link_id(self, key: str) -> int:
+        """A generated link ID (`new_link_id`) for a note being made of the index's type: one
+        no note of the type held when the index was read, and none handed out before. Two
+        notes one run makes never get one ID, whether their keys hash alike or are alike (two
+        sentence notes holding one ID, at the same word); the same key alone in a run gets
+        the same ID every time.
+
+        The run's tasks make their notes in pool threads at once, hence the lock. What is
+        taken is asked of the index's own table, not through `in`, which tells `on_found`: no
+        note is looked up here that a replay would have to find.
+        """
+        with self._lock:
+            number = new_link_id(key, _Taken(self._holders, self._handed_out))
+            self._handed_out.add(number)
+        return number
+
+
+class _Taken:
+    """The IDs a note holds or a run has handed out, as one container for `new_link_id`."""
+
+    __slots__ = ("_held", "_handed_out")
+
+    def __init__(self, held: Container[int], handed_out: Container[int]) -> None:
+        self._held = held
+        self._handed_out = handed_out
+
+    def __contains__(self, number: object) -> bool:
+        return number in self._held or number in self._handed_out
+
+
+# The op that gives every note of two holding one link ID an ID of its own, and fills empty ID
+# fields: the way out of a refusal over duplicates
+FILL_LINK_IDS = "Fill link IDs"
+
+# How many of the IDs held twice a refusal spells out, and how many notes its search names: a
+# Create Copy run over many notes can leave hundreds, and the message is read in a dialog
+_DUPLICATES_LISTED = 10
+_NOTES_SEARCHED = 200
+
+
+class DuplicateLinkIdsError(Exception):
+    """An op that writes links refuses to run while two notes of a type it links hold one link
+    ID; the message (`duplicates_error`) names the notes and the op that fixes them."""
+
+
+def duplicates_error(note_type_name: str, field: Optional[str], index: LinkIndex) -> Optional[str]:
+    """Why an op that writes links to the type's notes must not run, None when no two of its
+    notes hold one link ID (`index.duplicates`). `field` is the type's link ID field.
+
+    Such an ID names its oldest holder (`LinkIndex`), so a word linked to it is linked to
+    that note whichever was meant: a copy of a note the match op made holds the original's
+    ID, while the arrays written before link IDs link the copy by its own note id. Writing
+    links over that, or taking them away, would make it worse; "Fill link IDs" gives each
+    newer holder an ID of its own first.
+    """
+    if not index.duplicates:
+        return None
+    listed = sorted(index.duplicates.items())
+    described = "; ".join(
+        f"{held} by notes {', '.join(str(note_id) for note_id in note_ids)}"
+        for held, note_ids in listed[:_DUPLICATES_LISTED]
+    )
+    if len(listed) > _DUPLICATES_LISTED:
+        described += f"; and {len(listed) - _DUPLICATES_LISTED} more IDs"
+    note_ids = sorted({note_id for _, holders in listed for note_id in holders})
+    search = "nid:" + ",".join(str(note_id) for note_id in note_ids[:_NOTES_SEARCHED])
+    if len(note_ids) > _NOTES_SEARCHED:
+        search += f" (the first {_NOTES_SEARCHED} of {len(note_ids)} notes)"
+    held_in = f' in their field "{field}"' if field else ""
+    return (
+        f'Notes of "{note_type_name}" hold the same link ID{held_in}, so a word linked to that'
+        f" ID could be taken for a link to another note than the one meant. Link IDs held"
+        f' twice: {described}. Run "{FILL_LINK_IDS}" on these notes first, which gives each'
+        f" note an ID of its own, then run this op again. To find them, search: {search}"
+    )
 
 
 # The names Anki reads as a search of its own before a colon, in any case and whatever follows,

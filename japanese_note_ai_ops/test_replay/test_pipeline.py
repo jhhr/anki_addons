@@ -8,7 +8,8 @@ exactly the answers the run was given, and do it again the same.
 
 The new-note path needs the meaning-making prompts' answers, which a script cannot make up
 convincingly; the fixtures of real capture runs (test_replay.py) cover it. One scripted new note
-is here, for what its failed add leaves behind: a placeholder the fixture must name by a symbol.
+is here, whose add fails: its word goes back to be matched, which the fixture must hold as it
+is.
 
 The same in the two-type layout (at the end): a sentence note of a type of its own, whose words
 link vocab notes of another, and a new word whose note is made with no dictionary to look it up
@@ -39,6 +40,7 @@ from japanese_note_ai_ops.async_api_ops.match_words_to_notes import (
     match_words_spec,
 )
 from japanese_note_ai_ops.configuration import MEANING_MAPPED_TAG, MEANINGS_DICT_FILE
+from japanese_note_ai_ops.link_ids import DuplicateLinkIdsError
 from japanese_note_ai_ops.sync_local_ops.sentence_migration import COPY_TAGS_KEY, MOVE_TAGS_KEY
 
 NOTETYPE = "Japanese vocab note"
@@ -402,9 +404,10 @@ def test_a_corpus_that_fails_to_build_leaves_no_directory(tmp_path, monkeypatch)
     assert list(tmp_path.iterdir()) == []
 
 
-def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
-    # The new note's deck is missing, so its add fails and the sentence keeps its placeholder,
-    # a random number every run: a fixture holding it could never replay
+def test_a_failed_add_s_word_is_matched_again_and_replays(tmp_path):
+    # The new note's deck is missing, so its add fails. The sentence kept its placeholder once,
+    # a random number every run, named in the fixture by a symbol; its link ID is taken out of
+    # the array now, as a cancel's notes' are, and the word goes back to be matched (SPEC D18)
     # word_field and translated_sentence_field are the meaning cleaning's, which a new note needs
     note_config = {
         **FIELDS,
@@ -418,9 +421,8 @@ def test_a_failed_add_s_placeholder_replays_as_a_symbol(tmp_path):
     fixture = replay.export_fixture(store, run_id)
 
     [sentence] = [n for n in fixture.expected["notes"] if n["fields"]["word_sort"] == "店"]
-    # In place of the number, as a new note's placeholder:new-N is
-    assert "[placeholder:failed-1]" in sentence["fields"]["word_list"]
-    assert not replay.PLACEHOLDER_RE.search(sentence["fields"]["word_list"])
+    assert read_word_array(sentence["fields"]["word_list"])[0][0][4] == ["match"]
+    assert "placeholder" not in sentence["fields"]["word_list"]
     assert fixture.expected["new_notes"] == 0
     for _ in range(2):
         result = replay.replay(fixture)
@@ -472,6 +474,49 @@ def test_an_export_holds_nothing_of_the_user_s_a_replay_never_reads(tmp_path):
     assert kept["stages"][0]["card_actions"][0]["change_deck"] == "Unseen deck 2"
     assert "Unseen deck 1" not in fixture.corpus["decks"]
     assert replay.replay(fixture).differences(fixture.expected) == []
+
+
+def test_a_run_refuses_before_any_request_while_two_vocab_notes_hold_one_link_id(tmp_path):
+    """本's vocab note copied by hand (Anki's Create Copy copies the ID field): the copy holds
+    the original's link ID, and a word linked to that ID names the original, whichever was
+    meant. The run refuses before its first request, naming both notes and "Fill link IDs",
+    and leaves the collection as it was."""
+    held = 4000000000000001
+    asked: list = []
+
+    def answering(request: Any) -> Any:
+        asked.append(request.kind)
+        return scripted(request)
+
+    stub = real_anki.install()
+    saved = (stub.col, dict(stub.addonManager.configs), stub.pm._profile_folder)
+    col = real_anki.open_collection(tmp_path / "collection.anki2")
+    real_anki.make_note_type(col, NOTETYPE, list(FIELDS.values()))
+    try:
+        sentence_id, ids = build_book_and_buy(col)
+        book = col.get_note(ids["book"])
+        book[FIELDS["new_note_id_field"]] = str(held)
+        col.update_note(book)
+        copy = real_anki.add_note(col, NOTETYPE, dict(book.items()), tags=[MEANING_MAPPED_TAG])
+        before = {nid: col.get_note(nid).fields for nid in col.find_notes("")}
+        stub.col = col
+        stub.addonManager.configs[PACKAGE] = dict(CONFIG)
+        stub.pm.set_profile_folder(tmp_path / "profile")
+        base_ops.set_responder(answering)
+        run, _ = match_words_spec().notes_run([sentence_id])
+
+        with pytest.raises(DuplicateLinkIdsError) as raised:
+            run(col)
+
+        assert asked == []
+        assert {nid: col.get_note(nid).fields for nid in col.find_notes("")} == before
+    finally:
+        base_ops.set_responder(None)
+        stub.col, stub.addonManager.configs, stub.pm._profile_folder = saved
+        col.close()
+    message = str(raised.value)
+    assert f"{held} by notes {book.id}, {copy.id}" in message
+    assert 'Run "Fill link IDs" on these notes first' in message
 
 
 SENTENCES, WORDS = "My sentences", "My words"
@@ -906,7 +951,10 @@ def test_a_two_type_run_makes_a_vocab_note_holding_its_example_and_links_it(
     assert [value for value in new.values() if read_word_array(value)[0] is not None] == []
     assert not any("買" in value for value in new.values())
     array = json.loads(sentence[SENTENCE_FIELDS["word_list_field"]])
-    assert array[0][4][0] == new_id
+    # Linked by the link ID the note was made with and holds (SPEC D16): never its note id
+    held = int(new[fields["new_note_id_field"]])
+    assert held >= 10**15 and held != new_id
+    assert array[0][4][0] == held
     assert array[2][4] == [ids["book"], 4]
     assert array[4][4] == [ids["buy"], 3]
 
@@ -971,7 +1019,9 @@ def test_a_two_type_run_that_recorded_no_vocab_note_replays_in_a_stand_in_vocab_
     [stand_in] = [nt for nt in fixture.corpus["notetypes"] if nt["name"] == NOTETYPE]
     assert set(stand_in["fields"]) == set(VOCAB_FIELDS.values())
     [sentence] = fixture.expected["notes"]
-    assert "[placeholder:failed-1]" in sentence["fields"][SENTENCE_FIELDS["word_list_field"]]
+    # The failed add's link ID taken out again: the word is matched again
+    array = read_word_array(sentence["fields"][SENTENCE_FIELDS["word_list_field"]])[0]
+    assert array[0][4] == ["match"]
     assert fixture.expected["new_notes"] == 0
     for _ in range(2):
         result = replay.replay(fixture)

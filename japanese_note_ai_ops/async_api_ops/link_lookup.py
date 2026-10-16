@@ -8,7 +8,8 @@ back says which of them do. Two ways to ask, for two kinds of caller:
 - `link_index`, one SQL pass over a type's notes, for an op that resolves many IDs. A run
   builds it once (`LinkIndexCache`, which the match op's tasks share): a run never writes to
   the collection before its cleanup, so the index holds for the whole run, as word_index's
-  does. Notes the run creates are not in it.
+  does. Notes the run creates are not in it: it hands out their IDs (`LinkIndex.new_link_id`),
+  one for the whole run per type, so no two get one.
 - `find_note_ids` and `find_note_id`, a search and a read of the notes found, in one turn with
   the collection, for a few IDs.
 

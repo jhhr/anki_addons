@@ -738,7 +738,7 @@ def get_single_meaning_from_mdx_dict_entry(
     prev_en_meaning: str = "",
     note_id: Optional[int] = None,
 ):
-    """`note_id`, the note the meaning is for (its placeholder id until it is added), is only
+    """`note_id`, the note the meaning is for (its link ID until it is added), is only
     recorded, in the call's capture context: calls.note_id is the driver's note, which for a word
     note the match op makes a meaning for is the sentence note."""
     jp_meaning_return_field = EXTRACT_JP_FIELD
@@ -1007,13 +1007,13 @@ def clean_meaning_in_note(
         return NOT_CHANGED
 
     def meaning_note_key(n: Note) -> NoteId:
-        """The note's id, or the placeholder id it carries until it has been added.
+        """The note's id, or the link ID it carries until it has been added.
 
-        A note not added that carries no placeholder is keyed by its id, 0: a vocab note
-        added by hand, which the add-note hook cleans with its field empty, raised here and
-        lost its word extraction with it. Only the match op's pending notes carry a
-        placeholder, so there is at most one such note, and 0 is neither a placeholder
-        (negative) nor an added note's id.
+        A note not added that carries none is keyed by its id, 0: a vocab note added by hand,
+        which the add-note hook cleans with its field empty, raised here and lost its word
+        extraction with it. Only the match op's pending notes carry a link ID before they are
+        added, so there is at most one such note, and 0 is neither a link ID nor an added
+        note's id.
         """
         if n.id != 0:
             return n.id

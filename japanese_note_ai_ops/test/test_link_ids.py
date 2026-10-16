@@ -8,6 +8,7 @@ collection, and the lookups that read one, are test_replay/test_link_lookup.py's
 """
 
 import hashlib
+import threading
 import unittest
 
 from addon_modules import load_addon_module
@@ -267,6 +268,98 @@ class LinkIndexTests(unittest.TestCase):
         index.note_ids([5])
         self.assertIn(B, index)
         self.assertEqual(found, [[A], [B], [B]])
+
+
+class IndexNewLinkIdTests(unittest.TestCase):
+    """The IDs a run hands its new notes, from its index of their type: none a note held when
+    the index was read, none handed out twice (SPEC 10, "Uniqueness")."""
+
+    def test_a_free_key_gets_its_plain_id(self):
+        index = link_ids.LinkIndex.from_rows([(A, "")])
+
+        self.assertEqual(index.new_link_id("vocab|1|2|本|ほん"), by_formula("vocab|1|2|本|ほん"))
+
+    def test_an_id_a_note_holds_is_skipped(self):
+        held = by_formula("vocab|1|2|本|ほん")
+        index = link_ids.LinkIndex.from_rows([(A, str(held))])
+
+        self.assertEqual(index.new_link_id("vocab|1|2|本|ほん"), by_formula("vocab|1|2|本|ほん#1"))
+
+    def test_one_key_twice_gets_two_ids_and_the_note_ids_stay_free_to_hold(self):
+        index = link_ids.LinkIndex.from_rows([(A, "")])
+
+        first, second = (index.new_link_id("same") for _ in range(2))
+
+        self.assertEqual((first, second), (by_formula("same"), by_formula("same#1")))
+        # Handed out, not held: no note holds them until the run adds one
+        self.assertNotIn(first, index)
+        self.assertEqual(index.note_ids([first, second]), {})
+
+    def test_asking_what_is_taken_tells_on_found_nothing(self):
+        # Only answers a replay must find too are told: no note is looked up here
+        found: list = []
+        held = by_formula("key")
+        index = link_ids.LinkIndex.from_rows([(A, str(held))], on_found=found.append)
+
+        index.new_link_id("key")
+
+        self.assertEqual(found, [])
+
+    def test_threads_making_notes_at_once_never_get_one_id(self):
+        index = link_ids.LinkIndex.from_rows([])
+        start = threading.Barrier(8)
+        handed: list = []
+
+        def make(worker: int) -> None:
+            start.wait()
+            # The same keys from every thread: each would get the same IDs unguarded
+            handed.extend(index.new_link_id(f"key|{n}") for n in range(50))
+
+        threads = [threading.Thread(target=make, args=(n,)) for n in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(len(handed), 400)
+        self.assertEqual(len(set(handed)), 400)
+
+
+class DuplicatesErrorTests(unittest.TestCase):
+    """The refusal of an op that writes links while two notes of a type hold one link ID."""
+
+    def test_none_without_duplicates(self):
+        index = link_ids.LinkIndex.from_rows([(A, str(GENERATED)), (B, "")])
+
+        self.assertIsNone(link_ids.duplicates_error("Word", "Word ID", index))
+
+    def test_it_names_the_type_the_field_each_id_and_its_notes_and_the_fix(self):
+        D = NOTE_ID + 3
+        index = link_ids.LinkIndex.from_rows(
+            [(A, str(GENERATED)), (B, str(GENERATED)), (C, ""), (D, str(C))]
+        )
+
+        error = link_ids.duplicates_error("Word", "Word ID", index)
+
+        assert error is not None
+        self.assertIn('Notes of "Word" hold the same link ID in their field "Word ID"', error)
+        # Each ID with its holders, the oldest first: a field copied, and a field naming another
+        # note's id while that one's holds none
+        self.assertIn(f"{C} by notes {C}, {D}; {GENERATED} by notes {A}, {B}", error)
+        self.assertIn(f'Run "{link_ids.FILL_LINK_IDS}" on these notes first', error)
+        self.assertEqual(link_ids.FILL_LINK_IDS, "Fill link IDs")
+        self.assertTrue(error.endswith(f"search: nid:{A},{B},{C},{D}"))
+
+    def test_a_long_list_is_cut_short(self):
+        rows = [(NOTE_ID + n, str(GENERATED + n // 2)) for n in range(30)]
+        index = link_ids.LinkIndex.from_rows(rows)
+
+        error = link_ids.duplicates_error("Word", None, index)
+
+        assert error is not None
+        self.assertIn("; and 5 more IDs.", error)
+        self.assertNotIn("in their field", error)
+        self.assertEqual(error.count(" by notes "), 10)
 
 
 class FieldSearchTests(unittest.TestCase):

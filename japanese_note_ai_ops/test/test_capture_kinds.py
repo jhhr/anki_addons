@@ -117,6 +117,8 @@ MEANINGS_CONTEXT = {
     "copy_note_id": 102,
 }
 RATING_CONTEXT = {"word_path": [4], "note_id": 222}
+# The link ID a note the run made for a word holds until, and after, it is added
+PENDING_ID = 4321098765432109
 
 PROPER_NOUNS_PROMPT = (
     "Does the Japanese sentence below contain any proper nouns? Respond with a JSON object"
@@ -538,10 +540,12 @@ class MatchContextTests(MatchHarness):
         context = calls["match.meanings"]["context"]
         self.assertEqual(new_note["note_to_copy"].id, context["copy_note_id"])
 
-    def test_a_note_not_added_yet_is_named_by_its_placeholder(self):
-        # A note this run made for the word before, not added until cleanup: id 0
+    def test_a_note_not_added_yet_is_named_by_its_link_id(self):
+        # A note this run made for the word before, not added until cleanup: id 0, and the
+        # link ID it was made with (link_ids.py), which the word is linked by before the add
+        # and after it
         pending = word_note(0, "本(m3)", "当の。この。", "this; the present", "<b>本</b>日")
-        pending["new_note_id_field"] = "-1234567"
+        pending["new_note_id_field"] = str(PENDING_ID)
 
         saved, calls, _ = self.run_match(matched(3), {"本": [pending]})
 
@@ -549,14 +553,24 @@ class MatchContextTests(MatchHarness):
         self.assertEqual(
             context["meanings"][2:],
             [
-                {"note_id": -1234567, "m_number": 3, "gen_index": None},
+                {"note_id": PENDING_ID, "m_number": 3, "gen_index": None},
                 # Still last: generated meanings take the largest (mN), now the new note's
                 {"note_id": None, "m_number": 3, "gen_index": 1},
             ],
         )
-        self.assertEqual(context["copy_note_id"], -1234567)
-        # The placeholder is what the word is linked to until cleanup adds the note
-        self.assertEqual(at_path(saved, context["word_path"])[4], [-1234567, 5])
+        self.assertEqual(context["copy_note_id"], PENDING_ID)
+        self.assertEqual(at_path(saved, context["word_path"])[4], [PENDING_ID, 5])
+
+    def test_a_note_not_added_yet_holding_no_link_id_is_not_linked(self):
+        # Every note the run makes holds one; a legacy placeholder is none
+        pending = word_note(0, "本(m3)", "当の。この。", "this; the present", "<b>本</b>日")
+        pending["new_note_id_field"] = "-1234567"
+
+        saved, calls, _ = self.run_match(matched(3), {"本": [pending]})
+
+        context = calls["match.meanings"]["context"]
+        self.assertIsNone(context["meanings"][2]["note_id"])
+        self.assertEqual(at_path(saved, context["word_path"])[4], ["match"])
 
 
 class MatchMappingTests(MatchHarness):

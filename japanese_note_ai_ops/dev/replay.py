@@ -933,7 +933,8 @@ def _cassette_entries(calls: Iterable[sqlite3.Row]) -> list[dict]:
 # --- normalizing ---------------------------------------------------------------------------
 
 
-# A new note's placeholder in a field: make_new_note_id's negative number, standing alone
+# A legacy placeholder in a field: the negative number a new note was named by, standing alone,
+# before new notes had link IDs of their own
 PLACEHOLDER_RE = re.compile(r"(?<![\d-])-\d{7}(?!\d)")
 
 
