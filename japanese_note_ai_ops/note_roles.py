@@ -41,8 +41,9 @@ SENTENCE_KEYS: tuple[str, ...] = (
 class LayoutError(Exception):
     """The config gives a note type no usable layout: it is not configured, it and the type
     it names do not name each other, one of them lacks its role, a link ID key would make the
-    wrong field its notes' ID, or a field it names is not on the note. A class of its own so that a pre-flight or a hook can tell a config problem, whose
-    message is for the user, from a bug: `utils.get_field_config` raises a plain Exception."""
+    wrong field its notes' ID, or a field it names is not on the note. A class of its own so
+    that a pre-flight or a hook can tell a config problem, whose message is for the user, from
+    a bug: `utils.get_field_config` raises a plain Exception."""
 
 
 class NoteFields(Protocol):
