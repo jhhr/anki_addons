@@ -199,6 +199,19 @@ def test_one_id_held_twice_is_the_older_notes(col: Any) -> None:
     assert link_lookup.find_note_id(CONFIG, VOCAB, GENERATED, col=col) == copy
 
 
+def test_one_id_held_twice_is_the_notes_whose_note_id_it_is_though_another_is_older(
+    col: Any,
+) -> None:
+    # The older note's field holds the newer one's note id, the newer one's field nothing
+    older = vocab(col, "")
+    newer = vocab(col, "")
+    set_word_id(col, older, str(newer))
+    assert link_lookup.find_note_id(CONFIG, VOCAB, newer, col=col) == newer
+    index = link_lookup.link_index(CONFIG, VOCAB, col=col)
+    assert index.note_id(newer) == newer
+    assert index.duplicates == {newer: [newer, older]}
+
+
 def test_a_note_of_another_type_is_not_found(col: Any) -> None:
     other = vocab(col, str(GENERATED), note_type=OTHER)
     assert link_lookup.find_note_id(CONFIG, VOCAB, GENERATED, col=col) is None

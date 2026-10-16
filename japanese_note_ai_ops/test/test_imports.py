@@ -51,6 +51,7 @@ STARTUP_SYNC_MODULES = [
     "deduplicate_existing_meaning_notes",
     "make_fine_tuning_data",
     "refresh_example_sentences",
+    "fill_link_ids",
 ]
 
 # Top-level modules that reach for aqt

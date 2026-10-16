@@ -13,11 +13,11 @@ back says which of them do. Two ways to ask, for two kinds of caller:
 - `find_note_ids` and `find_note_id`, a search and a read of the notes found, in one turn with
   the collection, for a few IDs.
 
-Both answer as `link_ids.LinkIndex`: the oldest of two notes holding one ID. On a run's worker
-threads the collection is read through collection_access, which a cancel abandons; a sync op or
-a hook passes `col` (its `mw.col`, or the one a CollectionOp hands it). Every note an answer
-names is noted for a run that records its notes (`capture_notes.found`), as the word index's
-are: a replay has to find it too.
+Both answer as `link_ids.LinkIndex`: of two notes holding one ID, the one keeping it. On a
+run's worker threads the collection is read through collection_access, which a cancel abandons;
+a sync op or a hook passes `col` (its `mw.col`, or the one a CollectionOp hands it). Every note
+an answer names is noted for a run that records its notes (`capture_notes.found`), as the word
+index's are: a replay has to find it too.
 """
 
 from __future__ import annotations
@@ -222,9 +222,10 @@ def find_note_ids(
     link_ids: Iterable[int],
     col: Optional[Collection] = None,
 ) -> dict[int, NoteId]:
-    """The note of the type holding each of these link IDs, the oldest when several do; an ID
-    no note holds, or a number no note can hold (0, a legacy negative placeholder), is left
-    out. One turn with the collection, through collection_access without `col`."""
+    """The note of the type holding each of these link IDs, the one keeping it when several do
+    (link_ids.LinkIndex); an ID no note holds, or a number no note can hold (0, a legacy
+    negative placeholder), is left out. One turn with the collection, through
+    collection_access without `col`."""
     wanted = sorted({number for number in link_ids if is_link_id(number)})
     if not wanted:
         return {}

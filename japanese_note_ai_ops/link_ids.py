@@ -21,7 +21,8 @@ from __future__ import annotations
 import hashlib
 import re
 import threading
-from collections.abc import Container, Iterable
+from collections.abc import Container, Iterable, Mapping
+from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
 
 # Card scripts parse the arrays as JSON, and a JavaScript number is exact only below 2**53: a
@@ -132,9 +133,12 @@ class LinkIndex:
 
     Two notes hold one ID when both fields hold it (Anki's Create Copy copies the field, and so
     does a CopyAnywhere duplicate), or when one's field holds the other's note id while the
-    other's holds nothing, which gives it its note id. Such an ID answers with the older note
-    (the lower note id): the newer one is the copy, and it is the newer that gets a fresh ID
-    when the duplicate is repaired, so a link resolves to the same note before and after.
+    other's holds nothing, which gives it its note id. Such an ID answers with the holder that
+    keeps it when "Fill link IDs" repairs the duplicate (`plan_id_fills`), so a link resolves
+    to the same note before and after: the holder whose own note id the ID is (its field holds
+    nothing, or that note id), since every link written before link IDs named a note by its
+    note id; with none such, the oldest (the lower note id), as a copy is newer than what it
+    was copied from.
 
     `on_found` is told the note ids of every answer that names a note: a run that records its
     notes passes `capture_notes.found`, since a replay has to find those notes too.
@@ -147,13 +151,15 @@ class LinkIndex:
 
     def __init__(self, on_found: Optional[Callable[[Iterable[int]], None]] = None) -> None:
         self._holders: dict[int, int] = {}
-        # Each ID more than one note holds, to those notes, the oldest (the one it names) first
+        # Each ID more than one note holds, to those notes: the one keeping it (the one it
+        # names) first, then the others in note id order
         self.duplicates: dict[int, list[int]] = {}
         # Each note whose field holds something but no link ID, to that value: its ID is its
         # note id, and the value is a legacy negative placeholder, a "0", or stray text
         self.invalid: dict[int, str] = {}
         self._on_found = on_found
-        # The IDs new_link_id has handed out, which no note holds until the run adds it
+        # The IDs the run has given out (new_link_id, and plan_id_fills' own note ids), which
+        # no note holds until the run writes them
         self._handed_out: set[int] = set()
         self._lock = threading.Lock()
 
@@ -178,7 +184,9 @@ class LinkIndex:
             return
         holders = self.duplicates.setdefault(held, [holder])
         holders.append(note_id)
-        holders.sort()
+        # The holder whose own note id it is first, then the others by age, whatever order the
+        # rows came in
+        holders.sort(key=lambda other: (other != held, other))
         self._holders[held] = holders[0]
 
     def _found(self, note_ids: Iterable[int]) -> None:
@@ -186,7 +194,8 @@ class LinkIndex:
             self._on_found(note_ids)
 
     def note_id(self, held: int) -> Optional[int]:
-        """The note holding this link ID, the oldest when several do; None when none does."""
+        """The note holding this link ID, the one keeping it when several do (see the class);
+        None when none does."""
         holder = self._holders.get(held)
         if holder is not None:
             self._found((holder,))
@@ -220,6 +229,16 @@ class LinkIndex:
             self._handed_out.add(number)
         return number
 
+    def _take(self, number: int) -> bool:
+        """Give out `number` itself, as `new_link_id` gives out its IDs, when no note of the
+        type held it when the index was read and the run has not given it out; False when one
+        did or it has."""
+        with self._lock:
+            if number in self._holders or number in self._handed_out:
+                return False
+            self._handed_out.add(number)
+        return True
+
 
 class _Taken:
     """The IDs a note holds or a run has handed out, as one container for `new_link_id`."""
@@ -234,9 +253,109 @@ class _Taken:
         return number in self._held or number in self._handed_out
 
 
+def placeholder_holders(index: LinkIndex) -> dict[str, list[int]]:
+    """Per text a link ID field of the index's type holds that is no link ID (`index.invalid`),
+    the notes holding it, in note id order: their link IDs are their note ids, since such a
+    field gives none of its own (link_id). A legacy negative placeholder, the id a match op
+    from before link IDs linked a new note by in the arrays until the note was added, is
+    looked up here as that op's field search found it: by the field's whole text."""
+    holders: dict[str, list[int]] = {}
+    for note_id, value in sorted(index.invalid.items()):
+        holders.setdefault(value, []).append(note_id)
+    return holders
+
+
 # The op that gives every note of two holding one link ID an ID of its own, and fills empty ID
 # fields: the way out of a refusal over duplicates
 FILL_LINK_IDS = "Fill link IDs"
+
+
+@dataclass
+class DuplicateFill:
+    """One link ID several notes of a type held, and what each of them gets."""
+
+    held: int
+    # Every holder, the one keeping the ID first (LinkIndex.duplicates)
+    holders: list[int]
+    # Each other holder that is written, to the ID it gets: its own note id, or a generated one
+    given: dict[int, int]
+    # Each holder given a generated ID, to the note holding its own note id as its ID
+    taken_by: dict[int, int]
+
+    @property
+    def keeper(self) -> int:
+        return self.holders[0]
+
+    @property
+    def left(self) -> list[int]:
+        """The other holders not selected, which go on holding the ID."""
+        return [holder for holder in self.holders[1:] if holder not in self.given]
+
+
+@dataclass
+class IdFills:
+    """What `FILL_LINK_IDS` writes into the link ID fields of one type's selected notes."""
+
+    # Per note whose field is written, the ID written there
+    writes: dict[int, int]
+    # The notes whose field held no ID: empty, or holding other text (as it held it)
+    empty: list[int]
+    invalid: dict[int, str]
+    # Every ID more than one note of the type held, in ascending order
+    duplicates: list[DuplicateFill]
+
+
+def plan_id_fills(index: LinkIndex, values: Mapping[int, str]) -> IdFills:
+    """The writes that leave each selected note of a type holding a link ID of its own in its
+    field. `values`: the selected notes' link ID field text, by note id; `index`: every note of
+    the type, read with them.
+
+    A field holding no ID (empty, "0", a legacy placeholder, other text) gets the note id, the
+    note's link ID all along, now carried by an export. Of the holders of an ID several notes
+    hold, the keeper (LinkIndex) keeps it, and each other one gets its own note id when no note
+    holds that, so that links written before link IDs, which named it by its note id, lead to
+    it again (Create Copy of a note the match op made holds the original's note id); else a
+    generated ID, keyed `dup|<note id>`. A field already holding its note's own ID, held by no
+    other note, is never written: generated IDs are what arrays link.
+
+    One pass, deterministic: the IDs in ascending order, each one's holders in note id order,
+    each ID given checked against every ID the type's notes held when the index was read and
+    every ID given before it. So no two notes of the type hold one ID afterwards, apart from a
+    holder not selected (`DuplicateFill.left`), and a plan over the notes as written writes
+    nothing. The IDs given out are the index's own (`LinkIndex.new_link_id`): one plan per
+    index.
+    """
+    fills = IdFills(writes={}, empty=[], invalid={}, duplicates=[])
+    for note_id in sorted(values):
+        value = values[note_id]
+        if parse_link_id(value) is not None:
+            continue
+        fills.writes[note_id] = note_id
+        if value:
+            fills.invalid[note_id] = value
+        else:
+            fills.empty.append(note_id)
+    for held in sorted(index.duplicates):
+        fill = DuplicateFill(held, list(index.duplicates[held]), {}, {})
+        # The keeper's field holds the ID already, or holds none and was given its note id,
+        # which is the ID: either way it is not written here
+        for holder in fill.holders[1:]:
+            if holder not in values:
+                continue
+            # Its own note id is no ID it holds: it holds `held` in its field, or it would be
+            # the keeper. A note holding that note id is another note
+            if index._take(holder):
+                given = holder
+            else:
+                given = index.new_link_id(f"dup|{holder}")
+                taken_by = index._holders.get(holder)
+                if taken_by is not None:
+                    fill.taken_by[holder] = taken_by
+            fill.given[holder] = given
+            fills.writes[holder] = given
+        fills.duplicates.append(fill)
+    return fills
+
 
 # How many of the IDs held twice a refusal spells out, and how many notes its search names: a
 # Create Copy run over many notes can leave hundreds, and the message is read in a dialog
@@ -253,11 +372,11 @@ def duplicates_error(note_type_name: str, field: Optional[str], index: LinkIndex
     """Why an op that writes links to the type's notes must not run, None when no two of its
     notes hold one link ID (`index.duplicates`). `field` is the type's link ID field.
 
-    Such an ID names its oldest holder (`LinkIndex`), so a word linked to it is linked to
-    that note whichever was meant: a copy of a note the match op made holds the original's
+    Such an ID names the holder that keeps it (`LinkIndex`), so a word linked to it is linked
+    to that note whichever was meant: a copy of a note the match op made holds the original's
     ID, while the arrays written before link IDs link the copy by its own note id. Writing
     links over that, or taking them away, would make it worse; "Fill link IDs" gives each
-    newer holder an ID of its own first.
+    other holder an ID of its own first (`plan_id_fills`).
     """
     if not index.duplicates:
         return None

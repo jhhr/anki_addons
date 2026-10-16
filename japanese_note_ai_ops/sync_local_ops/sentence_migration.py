@@ -32,7 +32,7 @@ from typing import Any, Optional
 
 from ..html_stripping import strip_context_sentences
 from ..kana_conv import to_hiragana
-from ..link_ids import LinkIndex, link_id, parse_link_id
+from ..link_ids import LinkIndex, link_id, parse_link_id, placeholder_holders
 from ..note_roles import SENTENCE_KEYS, is_vocab_type, layout_error, sentence_type_of
 from ..word_array import match_flags, match_targets, merge
 from ..word_array.match_flags import MatchState
@@ -479,17 +479,6 @@ def _read_vocab(
     return out
 
 
-def _placeholder_holders(vocab_index: LinkIndex) -> dict[str, list[int]]:
-    """Per text a vocab note's link ID field holds that is no link ID, the link IDs of the
-    notes holding it, in note id order: their note ids, since such a field gives none of its
-    own (link_ids.link_id). A legacy placeholder is looked up here as the match op's field
-    search found it, by the field's whole text."""
-    holders: dict[str, list[int]] = {}
-    for note_id, value in sorted(vocab_index.invalid.items()):
-        holders.setdefault(value, []).append(note_id)
-    return holders
-
-
 def _resolve_placeholders(arr: list, holders: Mapping[str, list[int]]) -> list[tuple[str, str]]:
     """Swap each legacy placeholder in `arr` for the link ID of the vocab note whose link ID
     field holds it (match_targets.resolve_placeholder_ids: none -> `["match"]`, several ->
@@ -602,7 +591,7 @@ def plan_migration(
     # Every sentence note's ID, those of notes no group joins included: a new one's must be
     # none of them
     sentence_index = LinkIndex.from_rows((r.note_id, r.link_id_value) for r in sentence_records)
-    placeholders = _placeholder_holders(vocab_index)
+    placeholders = placeholder_holders(vocab_index)
     targets, by_key, existing_ids = _existing_targets(sentence_records, placeholders, report)
     vocab = _read_vocab(vocab_records, placeholders)
     migrated = {

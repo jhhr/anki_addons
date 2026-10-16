@@ -373,9 +373,22 @@ a text export has no note ids at all.
   is added, made from what the note is made from (the sentence and the word, say).
 - **Nothing else may write the field.** Do not edit it by hand, copy it into another note, or
   have a CopyAnywhere definition fill it: a note whose link ID changes loses every link to it,
-  and two notes holding one link ID share every link to it, which all lead to the older of the
-  two. Anki's Create Copy copies every field: empty the link ID field of the copy, and the copy's
+  and two notes holding one link ID share every link to it, which all lead to one of them: the
+  one whose own note id the ID is (its field empty, or holding that note id), else the older.
+  Anki's Create Copy copies every field: empty the link ID field of the copy, and the copy's
   link ID is its own note id.
+- **"Fill link IDs"** (AI helper menu, sync ops) puts that right over the selected notes of every
+  note type with a link ID field (the others are left out and counted). A field that is empty
+  or holds anything but an ID gets the note id. Of the notes holding one ID, the one it leads to
+  keeps it, and each other gets its own note id, or a new 16-digit link ID when another note
+  holds that. In the selected notes' word arrays, a word linked by a legacy placeholder (a
+  negative number) is linked to the note whose field holds it, or matched again when none
+  does. A field already holding its own ID is never changed. Run it over every note of both
+  note types at once, so that a placeholder and the note holding it are read in the same run.
+  It writes a report to `user_files/fill_link_ids_<date>_<time>.txt` before it changes anything,
+  and one undo takes the run back. The match op, "Find missing matched note ids" and "Move
+  sentences to sentence notes" refuse to run while two notes of a type hold one link ID, and
+  name this op.
 - A link ID field cannot have the name of one of Anki's search keywords, in any case: `added`,
   `card`, `cid`, `deck`, `did`, `dupe`, `edited`, `flag`, `has-cd`, `introduced`, `is`, `mid`,
   `nc`, `nid`, `note`, `preset`, `prop`, `rated`, `re`, `resched`, `tag`, `w`. Anki reads

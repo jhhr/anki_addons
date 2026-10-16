@@ -10,6 +10,7 @@ collection, and the lookups that read one, are test_replay/test_link_lookup.py's
 import hashlib
 import threading
 import unittest
+from typing import Optional
 
 from addon_modules import load_addon_module
 
@@ -217,11 +218,25 @@ class LinkIndexTests(unittest.TestCase):
                 # C's own note id is nobody's ID now
                 self.assertIsNone(index.note_id(C))
 
-    def test_the_older_answers_whichever_holds_it_by_field(self):
-        # B, the older, holds C's note id in its field while C's field is empty
-        index = link_ids.LinkIndex.from_rows([(B, str(C)), (C, "")])
-        self.assertEqual(index.note_id(C), B)
-        self.assertEqual(index.duplicates, {C: [B, C]})
+    def test_the_holder_whose_note_id_it_is_answers_though_another_is_older(self):
+        # B, the older, holds C's note id in its field while C's field is empty. A link written
+        # before link IDs holding C's note id meant C, and Fill link IDs leaves it with C
+        for rows in ([(B, str(C)), (C, "")], [(C, ""), (B, str(C))]):
+            with self.subTest(rows):
+                index = link_ids.LinkIndex.from_rows(rows)
+                self.assertEqual(index.note_id(C), C)
+                self.assertEqual(index.note_ids([C]), {C: C})
+                self.assertIn(C, index)
+                self.assertEqual(index.duplicates, {C: [C, B]})
+
+    def test_its_own_note_id_in_its_field_or_no_id_there_alike(self):
+        # An older and a newer note hold B's note id in their fields: B first, whatever its own
+        # field holds that gives it its note id, then the others in note id order
+        for own in (str(B), "", "0", "-5"):
+            with self.subTest(own=own):
+                index = link_ids.LinkIndex.from_rows([(C, str(B)), (B, own), (A, str(B))])
+                self.assertEqual(index.note_id(B), B)
+                self.assertEqual(index.duplicates, {B: [B, A, C]})
 
     def test_a_field_holding_another_notes_id_is_no_duplicate_when_that_ones_field_holds_one(self):
         index = link_ids.LinkIndex.from_rows([(A, str(GENERATED)), (C, str(A))])
@@ -360,6 +375,130 @@ class DuplicatesErrorTests(unittest.TestCase):
         self.assertIn("; and 5 more IDs.", error)
         self.assertNotIn("in their field", error)
         self.assertEqual(error.count(" by notes "), 10)
+
+
+class PlaceholderHoldersTests(unittest.TestCase):
+    def test_each_text_that_is_no_id_to_its_holders_in_note_id_order(self):
+        index = link_ids.LinkIndex.from_rows(
+            [(C, "-5"), (A, "-5"), (B, "0"), (C + 1, ""), (C + 2, str(GENERATED)), (C + 3, " -5")]
+        )
+
+        # By the whole text, as the match op's field search found a placeholder
+        self.assertEqual(
+            link_ids.placeholder_holders(index), {"-5": [A, C], "0": [B], " -5": [C + 3]}
+        )
+
+
+D, E = NOTE_ID + 3, NOTE_ID + 4
+
+
+def fill(rows: list, selected: Optional[set] = None):
+    """The plan over the rows of a whole type, `selected` holding the note ids selected (all of
+    them by default)."""
+    index = link_ids.LinkIndex.from_rows(rows)
+    values = {nid: value for nid, value in rows if selected is None or nid in selected}
+    return link_ids.plan_id_fills(index, values)
+
+
+def as_written(rows: list, plan) -> list:
+    return [(nid, str(plan.writes[nid]) if nid in plan.writes else value) for nid, value in rows]
+
+
+class PlanIdFillsTests(unittest.TestCase):
+    """What Fill link IDs writes into one type's link ID fields (SPEC D17)."""
+
+    def test_a_field_holding_no_id_gets_the_note_id_and_one_holding_an_id_of_its_own_nothing(self):
+        rows = [(A, ""), (B, "0"), (C, "-1700000000123"), (D, str(GENERATED)), (E, str(E))]
+
+        plan = fill(rows)
+
+        self.assertEqual(plan.writes, {A: A, B: B, C: C})
+        self.assertEqual(plan.empty, [A])
+        self.assertEqual(plan.invalid, {B: "0", C: "-1700000000123"})
+        self.assertEqual(plan.duplicates, [])
+
+    def test_only_selected_notes_are_written(self):
+        plan = fill([(A, ""), (B, "x"), (C, "")], selected={B})
+
+        self.assertEqual(plan.writes, {B: B})
+
+    def test_a_copy_of_a_note_holding_its_note_id_gets_its_own_note_id(self):
+        # Create Copy of a note the match op made, whose field held its note id: older arrays
+        # link the copy by its own note id, which no note holds
+        plan = fill([(A, str(A)), (C, str(A))])
+
+        self.assertEqual(plan.writes, {C: C})
+        [duplicate] = plan.duplicates
+        self.assertEqual(
+            (duplicate.held, duplicate.keeper, duplicate.given, duplicate.left), (A, A, {C: C}, [])
+        )
+
+    def test_the_holder_whose_note_id_it_is_keeps_it_though_another_is_older(self):
+        # B, the older, holds C's note id while C's field is empty: C keeps it, in its field
+        # now, and B gets its own
+        plan = fill([(B, str(C)), (C, "")])
+
+        self.assertEqual(plan.writes, {B: B, C: C})
+        [duplicate] = plan.duplicates
+        self.assertEqual((duplicate.keeper, duplicate.given), (C, {B: B}))
+
+    def test_with_none_such_the_oldest_keeps_it(self):
+        plan = fill([(B, str(GENERATED)), (A, str(GENERATED)), (C, str(GENERATED))])
+
+        self.assertEqual(plan.writes, {B: B, C: C})
+        [duplicate] = plan.duplicates
+        self.assertEqual((duplicate.keeper, duplicate.holders), (A, [A, B, C]))
+
+    def test_a_holder_whose_own_note_id_a_third_note_holds_gets_a_generated_id(self):
+        # B copies A's generated ID, and D holds B's note id (a copy of B made while B's field
+        # held it): its own note id would leave B sharing D's
+        plan = fill([(A, str(GENERATED)), (B, str(GENERATED)), (D, str(B))])
+
+        self.assertEqual(plan.writes, {B: by_formula(f"dup|{B}")})
+        [duplicate] = plan.duplicates
+        self.assertEqual(duplicate.given, {B: by_formula(f"dup|{B}")})
+        self.assertEqual(duplicate.taken_by, {B: D})
+
+    def test_a_generated_id_a_note_holds_is_rehashed(self):
+        held = by_formula(f"dup|{B}")
+        plan = fill([(A, str(GENERATED)), (B, str(GENERATED)), (D, str(B)), (E, str(held))])
+
+        self.assertEqual(plan.writes, {B: by_formula(f"dup|{B}#1")})
+
+    def test_a_holder_not_selected_goes_on_holding_the_id(self):
+        rows = [(A, str(GENERATED)), (B, str(GENERATED)), (C, str(GENERATED))]
+
+        plan = fill(rows, selected={A, C})
+
+        self.assertEqual(plan.writes, {C: C})
+        self.assertEqual(plan.duplicates[0].left, [B])
+
+    def test_the_same_notes_read_in_any_order_get_the_same_ids(self):
+        rows = [(A, str(GENERATED)), (B, str(GENERATED)), (D, str(B)), (C, ""), (E, str(C))]
+
+        plans = [fill(order) for order in (rows, list(reversed(rows)))]
+
+        self.assertEqual(plans[0], plans[1])
+        self.assertEqual(plans[0].writes, {B: by_formula(f"dup|{B}"), C: C, E: E})
+        self.assertEqual([d.held for d in plans[0].duplicates], sorted([GENERATED, C]))
+
+    def test_no_id_is_held_twice_after_it_and_a_second_plan_writes_nothing(self):
+        rows = [
+            (A, str(GENERATED)),
+            (B, str(GENERATED)),
+            (C, str(GENERATED)),
+            (D, str(B)),
+            (E, ""),
+            (E + 1, str(E)),
+            (E + 2, "-5"),
+            (E + 3, str(E + 3)),
+        ]
+
+        after = as_written(rows, fill(rows))
+
+        index = link_ids.LinkIndex.from_rows(after)
+        self.assertEqual((index.duplicates, index.invalid), ({}, {}))
+        self.assertEqual(fill(after).writes, {})
 
 
 class FieldSearchTests(unittest.TestCase):
