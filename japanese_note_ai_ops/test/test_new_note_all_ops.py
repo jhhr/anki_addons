@@ -5,6 +5,10 @@ the match op made, one selection: each note gets the steps of its type's role (m
 their cleaning for a vocab note, kanjify and extract for a sentence note, the judge on sentence
 notes only), never the other role's, which used to fail per note on fields its type does not
 have. In the one-type layout every note gets every step, as before.
+
+Where a sentence type keeps transcripts, its notes' furigana is set from their audio first, in
+phases of the transcription and furigana ops of their own, over the notes with a clip and no
+furigana yet; a note whose furigana awaits a person's check gets no kanjify or extract.
 """
 
 from __future__ import annotations
@@ -30,12 +34,23 @@ ONE_TYPE = {VOCAB: {"word_list_field": "Words", "word_sort_field": "Sort"}}
 
 
 class Note:
-    def __init__(self, note_id: int, type_name: str) -> None:
+    def __init__(self, note_id: int, type_name: str, fields=None, tags=()) -> None:
         self.id = note_id
         self.type_name = type_name
+        self.fields = dict(fields or {})
+        self.tags = list(tags)
 
     def note_type(self):
         return {"name": self.type_name}
+
+    def has_tag(self, tag: str) -> bool:
+        return tag in self.tags
+
+    def __contains__(self, field: str) -> bool:
+        return field in self.fields
+
+    def __getitem__(self, field: str) -> str:
+        return self.fields[field]
 
 
 class StepsByRoleTests(unittest.TestCase):
@@ -82,6 +97,18 @@ class StepsByRoleTests(unittest.TestCase):
     def test_no_role_runs_nothing(self):
         self.assertFalse(self.run_steps(roles=()))
         self.assertEqual(self.calls, [])
+
+    def test_a_sentence_note_awaiting_a_furigana_check_gets_neither_said_once(self):
+        config = {SENTENCE: {"furigana_sentence_field": "Furigana"}}
+        tagged = Note(1, SENTENCE, {"Furigana": " 他[ほか]の"}, tags=["furigana-review"])
+        marked = Note(2, SENTENCE, {"Furigana": " 他[ほか？た]の"})
+        for note in (tagged, marked):
+            with mock.patch.object(ops, "report_error") as report:
+                ops.new_note_all_ops_in_note(
+                    config, note, {}, {}, set(), {}, self.extract, roles=(roles.SENTENCE_ROLE,)
+                )
+            self.assertEqual(self.calls, [])
+            report.assert_called_once()
 
 
 class BulkOpRolesTests(unittest.TestCase):
@@ -134,6 +161,68 @@ class BulkOpRolesTests(unittest.TestCase):
         self.assertEqual(report.call_count, 2)
         for call in report.call_args_list:
             self.assertIn("must name each other", call.args[0])
+
+
+FURIGANA_TYPE = {
+    SENTENCE: {
+        **TWO_TYPE[SENTENCE],
+        "sentence_field": "Sentence",
+        "furigana_sentence_field": "Furigana",
+        "sentence_audio_field": "Audio",
+        "sentence_transcription_field": "Heard",
+    },
+    VOCAB: TWO_TYPE[VOCAB],
+}
+
+
+def sentence(note_id, furigana="", audio="[sound:clip.opus]", sentence="他の人は"):
+    fields = {"Sentence": sentence, "Furigana": furigana, "Audio": audio, "Heard": ""}
+    return Note(note_id, SENTENCE, fields)
+
+
+class AudioFuriganaPhaseTests(unittest.TestCase):
+    def names(self, config):
+        return [phase.name for phase in ops.new_note_phases(config)]
+
+    def test_a_type_keeping_transcripts_has_its_furigana_set_from_audio_first(self):
+        self.assertEqual(
+            self.names(FURIGANA_TYPE),
+            [
+                "Transcribing sentence audio",
+                "Setting furigana from audio",
+                "New note ops",
+                "Judging words matchability",
+            ],
+        )
+
+    def test_without_transcripts_the_run_is_as_before(self):
+        self.assertEqual(self.names(TWO_TYPE), ["New note ops", "Judging words matchability"])
+        # Transcripts kept on a vocab type are no sentence type's
+        config = {**TWO_TYPE, VOCAB: {**TWO_TYPE[VOCAB], "sentence_transcription_field": "x"}}
+        self.assertEqual(self.names(config), ["New note ops", "Judging words matchability"])
+
+    def test_the_notes_with_a_clip_and_no_furigana_yet_and_the_runs_undo_name(self):
+        given: dict = {}
+
+        async def bulk_op(col, notes, undo_label=None, **kwargs):
+            given.update(notes=[note.id for note in notes], undo_label=undo_label, **kwargs)
+            return "ran"
+
+        notes = [
+            sentence(1),
+            sentence(2, furigana=" 他[ほか]の"),
+            sentence(3, audio=""),
+            sentence(4, sentence=""),
+            Note(5, VOCAB),
+        ]
+        phase = ops.audio_furigana_phase("Transcribing sentence audio", bulk_op)
+        with mock.patch.object(ops, "mw") as mw, mock.patch.object(gate, "report_error") as report:
+            mw.addonManager.getConfig.return_value = FURIGANA_TYPE
+            result = asyncio.run(phase.bulk_op(None, notes=notes, edited_nids=[]))
+        self.assertEqual(result, "ran")
+        undo_label = "Running new note all ops for 5 notes."
+        self.assertEqual(given, {"notes": [1], "undo_label": undo_label, "edited_nids": []})
+        report.assert_not_called()
 
 
 class JudgePhaseTests(unittest.TestCase):

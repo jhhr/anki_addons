@@ -18,8 +18,11 @@ from .base_ops import (
     AsyncTaskProgressUpdater,
 )
 from .role_gate import notes_of_role
+from .run_errors import report_error
+from ..configuration import FURIGANA_DOUBT_LEFT, FURIGANA_REVIEW_LEFT, FURIGANA_REVIEW_TAG
 from ..note_roles import SENTENCE_ROLE
 from ..utils import get_field_config
+from ..word_array.audio_furigana import has_doubt
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +236,9 @@ def kanjify_sentence_in_note(
     if not model:
         logger.error("Missing note type for note %s", note.id)
         return False
+    if note.has_tag(FURIGANA_REVIEW_TAG):
+        report_error(FURIGANA_REVIEW_LEFT)
+        return False
     try:
         furigana_sentence_field = get_field_config(config, "furigana_sentence_field", model)
         kanjified_sentence_field = get_field_config(config, "kanjified_sentence_field", model)
@@ -247,6 +253,9 @@ def kanjify_sentence_in_note(
         # Get the values from fields
         sentence = note[furigana_sentence_field]
         logger.debug("sentence: %s", sentence)
+        if has_doubt(sentence):
+            report_error(FURIGANA_DOUBT_LEFT)
+            return False
         # Check if the value is non-empty
         if sentence:
             # Clean any <b> tags from the sentence

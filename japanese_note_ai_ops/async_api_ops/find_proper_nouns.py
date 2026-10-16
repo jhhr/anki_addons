@@ -8,7 +8,6 @@ before the word matching judge: a merged name is left with the match_data of its
 """
 
 import logging
-import threading
 from collections.abc import Sequence
 from typing import Optional
 
@@ -30,7 +29,7 @@ from .role_gate import notes_of_role
 logger = logging.getLogger(__name__)
 
 # Notes are handled on several threads at once; one Sudachi tokenizer serves them all
-_generator_lock = threading.Lock()
+_generator_lock = generator.TOKENIZER_LOCK
 
 
 def _name_rest_word(word: list, rest_raw: str) -> Optional[list]:

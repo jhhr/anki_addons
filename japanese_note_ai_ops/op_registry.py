@@ -45,6 +45,8 @@ from .async_api_ops.match_words_to_notes import (
     match_words_to_notes_from_selected,
 )
 from .async_api_ops.new_note_all_ops import new_note_all_ops_selected_notes
+from .async_api_ops.set_furigana import set_furigana_selected_notes
+from .async_api_ops.transcribe_audio import transcribe_selected_notes
 from .async_api_ops.translate_field import translate_selected_notes
 from .async_api_ops.word_matching_judge import word_matching_judge_from_selected_notes
 from .sync_local_ops.deduplicate_existing_meaning_notes import (
@@ -101,6 +103,20 @@ OPS: tuple[OpSpec, ...] = (
             nids, parent=parent, chain=chain
         ),
         needs_generator=False,
+        group=GROUP_ASYNC,
+    ),
+    OpSpec(
+        "transcribe_audio",
+        "Transcribe sentence audio",
+        lambda nids, parent, chain: transcribe_selected_notes(nids, parent=parent, chain=chain),
+        needs_generator=False,
+        group=GROUP_ASYNC,
+    ),
+    OpSpec(
+        "set_furigana",
+        "Set furigana from audio",
+        lambda nids, parent, chain: set_furigana_selected_notes(nids, parent=parent, chain=chain),
+        needs_generator=True,
         group=GROUP_ASYNC,
     ),
     OpSpec(

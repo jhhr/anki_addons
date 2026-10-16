@@ -64,6 +64,8 @@ SESSION_ENV = (
 
 # Models go by the name of their config key; this one has no default in config.json
 EXTRA_MODEL_KEYS = ("make_meanings_model",)
+# Keys holding a list of models, each of them asked: Set furigana from audio's arbiter
+MODEL_LIST_KEYS = ("furigana_models",)
 TERMINAL_PREFIX = "terminal-"
 # Registered as a package too, for the runs that put its add definitions on
 COPY_ANYWHERE = "copy_anywhere"
@@ -127,7 +129,11 @@ def user_config(overrides: Optional[Mapping[str, Any]] = None, model: Optional[s
     if model is not None:
         for key in keys:
             config[key] = model
-    not_terminal = [key for key in keys if not str(config.get(key, "")).startswith(TERMINAL_PREFIX)]
+        # A list left empty stays so: an arbiter the user has not turned on is not turned on
+        for key in MODEL_LIST_KEYS:
+            if config.get(key):
+                config[key] = [model]
+    not_terminal = api_model_keys(config)
     if not_terminal:
         raise ValueError(
             f"not a {TERMINAL_PREFIX} model, so an API call: {', '.join(not_terminal)}; give"
@@ -158,6 +164,18 @@ def model_keys(config: Mapping[str, Any]) -> list[str]:
     nothing reads."""
     keys = {key for key in config if key.endswith("_model") and not key.startswith("//")}
     return sorted(keys | set(EXTRA_MODEL_KEYS))
+
+
+def api_model_keys(config: Mapping[str, Any]) -> list[str]:
+    """The model keys, lists of models among them, that name a model an API provider would
+    answer rather than the claude CLI."""
+    out = [k for k in model_keys(config) if not str(config.get(k, "")).startswith(TERMINAL_PREFIX)]
+    for key in MODEL_LIST_KEYS:
+        value = config.get(key) or []
+        models = [value] if isinstance(value, str) else value
+        if any(not str(m).startswith(TERMINAL_PREFIX) for m in models):
+            out.append(key)
+    return out
 
 
 class ConsoleProgress(real_anki.StubProgress):
@@ -432,5 +450,10 @@ def op_specs() -> dict[str, Callable[[], NotesRunSpec]]:
     """The ops a script can run, by their op_registry key: those with a NotesRunSpec."""
     from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
     from japanese_note_ai_ops.sync_local_ops.migrate_to_sentence_notes import migrate_spec
+    from japanese_note_ai_ops.async_api_ops.set_furigana import set_furigana_spec
 
-    return {"match_words": match_words_spec, "migrate_to_sentence_notes": migrate_spec}
+    return {
+        "match_words": match_words_spec,
+        "migrate_to_sentence_notes": migrate_spec,
+        "set_furigana": set_furigana_spec,
+    }

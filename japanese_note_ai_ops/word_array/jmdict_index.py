@@ -143,3 +143,9 @@ def has_pos(form: str, code: str) -> bool:
 
 def readings(form: str) -> list[str]:
     return [r for _, rs, _ in lookup(form) for r in rs]
+
+
+def spelling_readings(form: str) -> set[str]:
+    """Every reading of the entries that spell `form` in kanji; an entry it is a reading of
+    gives none."""
+    return {reb for kebs, rebs, _ in lookup(form) if form in kebs for reb in rebs}

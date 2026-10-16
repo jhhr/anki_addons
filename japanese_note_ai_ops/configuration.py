@@ -45,6 +45,15 @@ GeneratedMeaningsDictType = dict[str, list[GeneratedMeaningType]]
 NO_DICTIONARY_ENTRY_TAG = "2-no-dictionary-entry"
 MEANINGS_GENERATED_TAG = "2-meanings-generated-to-json"
 MEANING_MAPPED_TAG = "2-note-mapped-to-generated-meaning"
+# "Set furigana from audio" tags a sentence note whose furigana holds a reading its audio did
+# not settle. Kanjify and word extraction read the furigana, so they leave the note alone
+# until a person has checked it and taken the tag off
+FURIGANA_REVIEW_TAG = "furigana-review"
+FURIGANA_REVIEW_LEFT = f'Left alone: tagged "{FURIGANA_REVIEW_TAG}", its furigana is unchecked'
+# ...and while a word of the furigana still offers readings to choose between, 方[ほう？かた]
+# (word_array/audio_furigana.py), tag or no tag: a tag taken off before every such word was
+# fixed would let one through
+FURIGANA_DOUBT_LEFT = 'Left alone: a word of its furigana is still marked "？" for review'
 # On a note whose word array is to be generated again. Set by hand, or by split_compound_tag's
 # sweep on the notes that a compound newly listed to split has not reached; taken off by
 # extract_words once it has generated the note's array.

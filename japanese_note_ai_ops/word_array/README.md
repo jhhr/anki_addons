@@ -627,6 +627,14 @@ py -3.10 word_array/research/vocab_dupes.py --fetch  # vocab notes that are the 
 py -3.10 word_array/research/vocab_rekey.py          # re-key them to one sort field, --apply
 py -3.10 word_array/research/unbalanced_tags.py      # array words whose html doesn't balance
 py -3.10 word_array/research/canonical_forms.py      # what one spelling per entry changes
+python word_array/research/furigana_audio_select.py  # the furigana audio eval's lines, from a subs2srs export
+python word_array/research/furigana_audio_select.py --reword  # the same lines, their words found again
+python word_array/research/furigana_audio_copy.py --media DIR  # copy their clips into the test data
+python word_array/research/furigana_audio_run.py MODEL   # a transcriber over the clips (its own venv)
+python word_array/research/furigana_audio_score.py       # score the runs against the captions' readings
+python word_array/research/furigana_audio_score.py --combine A B [--quorum 1]  # what the op's rule would write
+python word_array/research/furigana_audio_label.py queue   # the words worth an ear, from the scored runs
+python word_array/research/furigana_audio_label.py serve   # label them by ear in the browser (stdlib only)
 pytest test/test_word_array.py                  # skipped until the downloads are there
 ```
 

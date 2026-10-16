@@ -1,7 +1,7 @@
 """What the match op, the word matching judge, the proper noun, translate, kanjify and kanji
-story ops record of their AI calls: each call's `kind`, and as `inputs` the values its prompt is
-built from, so that the prompt's builder given the recorded inputs gives back the prompt that
-was sent. The prompts themselves are pinned byte for byte (written before their builders were
+story ops and the furigana arbiter record of their AI calls: each call's `kind`, and as `inputs`
+the values its prompt is built from, so that the prompt's builder given the recorded inputs
+gives back the prompt that was sent. The prompts themselves are pinned byte for byte (written before their builders were
 taken out of the ops). The match op's two calls also record a `context`, the word and notes their
 answers are read against, which must name what the op then does with the answer; and which of a
 word's notes the op sends to clean_meaning before it matches the word. The meaning ops' calls are
@@ -1109,6 +1109,39 @@ class KanjiStoryCallTests(unittest.TestCase):
         self.assertEqual(self.op.kanji_story_prompt(**inputs), prompt)
         stored = json.loads(capture_store.canonical_json(inputs))
         self.assertEqual(self.op.kanji_story_prompt(**stored), prompt)
+
+
+class FuriganaArbiterCallTests(unittest.TestCase):
+    def test_each_models_call_records_its_kind_and_what_its_prompt_is_built_from(self):
+        op = load_ops_module("set_furigana")
+        af = load_ops_module("audio_furigana", subdir="word_array")
+        arbiter = load_ops_module("furigana_arbiter", subdir="word_array")
+        word = af.Reading(0, 0, 1, "他", "ほか", None, "review", ["タ", "ホカ"])
+        word.known = ["た", "ほか"]
+        result = af.Furigana(["他の人は"], [word], False)
+        transcripts = [("kana-anime-whisper", "たのひとわ"), ("ruby-mora", "ホカノヒトワ")]
+        calls: list[tuple[str, str, dict[str, Any]]] = []
+
+        def get_response(model, prompt, **kwargs):
+            calls.append((model, prompt, kwargs))
+            return {"words": [{"n": 1, "why": "", "reading": "た", "sure": True}]}
+
+        with mock.patch.object(op, "get_response", get_response):
+            settled = op.settle_by_arbiter(
+                ["a", "b"], result, "（客）他の人は", "Others?", transcripts
+            )
+
+        self.assertEqual([r.written for r in settled], ["た"])
+        self.assertEqual([model for model, _, _ in calls], ["a", "b"])
+        for _, prompt, kwargs in calls:
+            self.assertEqual(kwargs["kind"], "furigana_arbiter.note")
+            inputs = kwargs["inputs"]
+            self.assertEqual(json.loads(json.dumps(inputs)), inputs)
+            self.assertEqual(arbiter.review_prompt(**inputs), prompt)
+            stored = json.loads(capture_store.canonical_json(inputs))
+            self.assertEqual(arbiter.review_prompt(**stored), prompt)
+        self.assertEqual(calls[0][2]["inputs"]["lines"], ["他の人は"])
+        self.assertEqual(calls[0][2]["inputs"]["translation"], "Others?")
 
 
 def names_get_response(node: ast.expr) -> bool:
