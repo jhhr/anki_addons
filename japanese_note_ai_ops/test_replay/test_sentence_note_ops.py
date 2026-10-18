@@ -39,8 +39,16 @@ SENTENCE_FIELDS = [
     "Sentence translation",
     "Sentence audio",
     "Words",
+    "Sentence ID",
 ]
-VOCAB_FIELDS = ["Word sort", "Word", "Example sentence id", "Example translation", "Example audio"]
+VOCAB_FIELDS = [
+    "Word sort",
+    "Word",
+    "Example sentence id",
+    "Example translation",
+    "Example audio",
+    "Word ID",
+]
 TWO_TYPE = {
     SENTENCE: {
         "vocab_note_type": VOCAB,
@@ -63,6 +71,15 @@ TWO_TYPE = {
     "translate_sentence_model": "terminal-scripted",
     "log_to_console": False,
 }
+# The same layout with each type's link ID field named (link_ids.py): a note is linked by the
+# ID its field holds, else by its note id
+TWO_TYPE_IDS: dict = json.loads(json.dumps(TWO_TYPE))
+TWO_TYPE_IDS[SENTENCE]["sentence_id_field"] = "Sentence ID"
+TWO_TYPE_IDS[VOCAB]["new_note_id_field"] = "Word ID"
+# Generated link IDs
+WORD_LINK_ID = 1160697660039337
+SENTENCE_LINK_ID = 1841288010442579
+OTHER_SENTENCE_LINK_ID = 1573922400126006
 # The same collection read as the one-type layout: the vocab type holds its own sentences
 ONE_TYPE = {
     VOCAB: {
@@ -112,7 +129,14 @@ def word(raw: str, form: str, match_data: list) -> list:
     return [raw, "noun", form, form, match_data, []]
 
 
-def sentence(col: Any, text: str, words: list, translation: str = "", audio: str = "") -> Any:
+def sentence(
+    col: Any,
+    text: str,
+    words: list,
+    translation: str = "",
+    audio: str = "",
+    sentence_id: str = "",
+) -> Any:
     return real_anki.add_note(
         col,
         SENTENCE,
@@ -122,12 +146,15 @@ def sentence(col: Any, text: str, words: list, translation: str = "", audio: str
             "Sentence translation": translation,
             "Sentence audio": audio,
             "Words": format_word_array(words),
+            "Sentence ID": sentence_id,
         },
         deck_name="Sentences",
     )
 
 
-def vocab(col: Any, form: str, example_id: str = "", tags: tuple = ()) -> Any:
+def vocab(
+    col: Any, form: str, example_id: str = "", tags: tuple = (), word_id: str = ""
+) -> Any:
     return real_anki.add_note(
         col,
         VOCAB,
@@ -137,6 +164,7 @@ def vocab(col: Any, form: str, example_id: str = "", tags: tuple = ()) -> Any:
             "Example sentence id": example_id,
             "Example translation": "stale",
             "Example audio": "[sound:stale.mp3]",
+            "Word ID": word_id,
         },
         deck_name="Vocab",
         tags=list(tags),
@@ -199,6 +227,49 @@ def test_a_gone_example_is_replaced_by_the_oldest_sentence_note_linking_the_note
     assert fields(col, dog.id)["Example sentence id"] == str(linking.id)
     assert fields(col, dog.id)["Example translation"] == "A puppy came."
     assert fields(col, dog.id)["Example audio"] == "[sound:puppy.mp3]"
+
+
+def test_an_example_named_by_its_link_id_is_copied_again_and_keeps_it(col):
+    set_config(TWO_TYPE_IDS)
+    cat = vocab(col, "猫", example_id=str(SENTENCE_LINK_ID), word_id=str(WORD_LINK_ID))
+    sentence(
+        col,
+        "猫がいる。",
+        [word("猫", "猫", [WORD_LINK_ID])],
+        "A cat.",
+        "[sound:c.mp3]",
+        sentence_id=str(SENTENCE_LINK_ID),
+    )
+
+    result = refresh(col, [cat.id])
+
+    assert result.edited_nids == [cat.id]
+    refreshed = col.get_note(cat.id)
+    assert refreshed["Example sentence id"] == str(SENTENCE_LINK_ID)
+    assert refreshed["Example translation"] == "A cat."
+    assert refreshed["Example audio"] == "[sound:c.mp3]"
+    assert not refreshed.has_tag(MISSING_TAG)
+
+
+def test_a_gone_example_is_replaced_by_the_oldest_sentence_note_linking_the_notes_link_id(col):
+    set_config(TWO_TYPE_IDS)
+    dog = vocab(col, "犬", example_id=str(SENTENCE_LINK_ID + 1), word_id=str(WORD_LINK_ID))
+    # Oldest, but what it holds is the note id, which is no link to a note holding an ID
+    by_note_id = sentence(col, "犬だ。", [word("犬", "犬", [dog.id])], "A dog.")
+    linking = sentence(
+        col,
+        "犬が走る。",
+        [word("犬", "犬", [WORD_LINK_ID, 3])],
+        "The dog runs.",
+        sentence_id=str(OTHER_SENTENCE_LINK_ID),
+    )
+    assert by_note_id.id < linking.id
+
+    refresh(col, [dog.id])
+
+    # Named by its own link ID, not its note id
+    assert fields(col, dog.id)["Example sentence id"] == str(OTHER_SENTENCE_LINK_ID)
+    assert fields(col, dog.id)["Example translation"] == "The dog runs."
 
 
 def test_a_note_no_sentence_links_is_cleared_and_tagged(col):
@@ -301,6 +372,29 @@ def test_translating_a_sentence_note_copies_its_translation_into_its_vocab_notes
         assert col.get_note(nid)["Example translation"] == "A cup of tea."
     assert col.get_note(other.id)["Example translation"] == "stale"
     assert sorted(result.edited_other_nids) == sorted([tea.id, cup.id])
+
+
+def test_translating_copies_into_the_vocab_notes_naming_the_sentence_notes_link_id(col):
+    set_config(TWO_TYPE_IDS)
+    example = sentence(
+        col, "茶を一杯。", [word("茶", "茶", ["match"])], sentence_id=str(SENTENCE_LINK_ID)
+    )
+    tea = vocab(col, "茶", example_id=str(SENTENCE_LINK_ID))
+    # The sentence note's note id is no link to it once it holds an ID
+    stale = vocab(col, "杯", example_id=str(example.id))
+
+    spec = base_ops.NotesRunSpec("Updated translation", "Translating", bulk_translate_notes_op)
+    previous = base_ops.set_responder(lambda request: {"english_sentence": "A cup of tea."})
+    try:
+        with replay.memory_estimates({}):
+            run, result = spec.notes_run([NoteId(example.id)])
+            run(col)
+    finally:
+        base_ops.set_responder(previous)
+
+    assert col.get_note(tea.id)["Example translation"] == "A cup of tea."
+    assert col.get_note(stale.id)["Example translation"] == "stale"
+    assert result.edited_other_nids == [tea.id]
 
 
 def test_translating_only_vocab_notes_asks_nothing_and_says_why(col, reported):

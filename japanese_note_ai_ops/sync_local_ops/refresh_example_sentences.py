@@ -1,6 +1,6 @@
 """The op "Refresh example sentences": the selected vocab notes of the two-type layout copy their
 example sentence note again (note_roles.copy_example: the fields the vocab type keeps a copy of,
-usually the translation and the audio, and the example's id).
+usually the translation and the audio, and the example's link ID, link_ids.py).
 
 A vocab note's copy goes stale when its example sentence note is edited or retranslated, and its
 link breaks when that note is deleted. For a note whose example is gone (or never was, or names
@@ -14,6 +14,7 @@ its own sentence, and the op refuses to start.
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
@@ -33,12 +34,15 @@ from ..async_api_ops.base_ops import (
     selected_notes_op,
 )
 from ..async_api_ops.chain_types import ChainStep, fail_step
+from ..async_api_ops.link_lookup import link_index
 from ..async_api_ops.role_gate import notes_passing
+from ..link_ids import LinkIndex, field_search, link_id, parse_link_id
 from ..note_roles import (
     VOCAB_ROLE,
     copy_example,
     example_id_field,
     layout_error,
+    link_id_field,
     note_type_search,
     role_error,
     sentence_type_of,
@@ -94,28 +98,38 @@ def refresh_preflight_error(
     return errors[0]
 
 
-def _example_note(id_text: str, sentence_type: str) -> Optional[Note]:
-    """The sentence note an example id field names, None when it names none of that type."""
-    id_text = id_text.strip()
-    if not id_text.isdigit():
+def _link_id_of(config: Mapping[str, Any], note: Note, note_type_name: str) -> int:
+    """The link ID (link_ids.py) of a note of the collection, which links to it hold: its type's
+    link ID field's ID, else its note id."""
+    field = link_id_field(config, note_type_name)
+    return link_id(note[field] if field and field in note else "", note.id)
+
+
+def _example_note(id_text: str, sentence_index: LinkIndex) -> Optional[Note]:
+    """The sentence note an example id field names by its link ID, None when it names none of
+    the sentence type: no link ID, or one no note of that type (`sentence_index`) holds. Read
+    as a note id, a sentence note's generated ID would find no note, and the note id of one
+    holding another ID could find a note of any type."""
+    held = parse_link_id(id_text.strip())
+    note_id = sentence_index.note_id(held) if held is not None else None
+    if note_id is None:
         return None
     try:
-        note = mw.col.get_note(NoteId(int(id_text)))
+        return mw.col.get_note(NoteId(note_id))
     except NotFoundError:
         return None
-    note_type = note.note_type()
-    return note if note_type is not None and note_type["name"] == sentence_type else None
 
 
-def _oldest_linking_note(config: dict, sentence_type: str, vocab_id: int) -> Optional[Note]:
-    """The sentence note of lowest id whose word array links `vocab_id`, sub-words included.
-    The search's `*<id>*` also finds a longer id holding it, so each found array is read."""
+def _oldest_linking_note(config: dict, sentence_type: str, vocab_link_id: int) -> Optional[Note]:
+    """The sentence note of lowest id whose word array links the vocab note of this link ID,
+    sub-words included. The search's `*<id>*` also finds a longer ID holding it, so each found
+    array is read."""
     word_list_field = get_field_config(config, "word_list_field", {"name": sentence_type})
-    query = f'{note_type_search(sentence_type)} "{word_list_field}:*{vocab_id}*"'
-    for nid in sorted(mw.col.find_notes(query)):
+    links = field_search(word_list_field, f"*{vocab_link_id}*")
+    for nid in sorted(mw.col.find_notes(f"{note_type_search(sentence_type)} {links}")):
         note = mw.col.get_note(nid)
         arr = decode_word_array(note[word_list_field])
-        if arr and any(matched_note_id(elem) == vocab_id for _, elem in iter_words(arr)):
+        if arr and any(matched_note_id(elem) == vocab_link_id for _, elem in iter_words(arr)):
             return note
     return None
 
@@ -125,18 +139,29 @@ def refresh_example_in_note(
     note: Note,
     notes_to_add_dict: dict[str, list[Note]],
     notes_to_update_dict: dict[NoteId, Note],
+    *,
+    sentence_indexes: dict[str, LinkIndex],
 ) -> bool:
     """Copy the note's example sentence note into it again, finding another when it is gone;
-    writes nothing to the collection. True when the note changed."""
+    writes nothing to the collection. True when the note changed.
+
+    Every link is by link ID (link_ids.py): the example id field names the sentence note by its
+    link ID, and that is what is written for a replacement; the arrays are searched for the
+    vocab note's. `sentence_indexes` holds the run's index of each sentence type, each read once
+    (link_lookup.link_index) the first time a note needs it."""
     note_type = note.note_type()
     assert note_type is not None, "the bulk op lets through only notes of a refreshable type"
     vocab_type = note_type["name"]
     sentence_type = sentence_type_of(config, vocab_type)
     id_field = example_id_field(config, vocab_type)
     assert id_field is not None, "the bulk op lets through only notes of a refreshable type"
+    sentence_index = sentence_indexes.get(sentence_type)
+    if sentence_index is None:
+        sentence_index = link_index(config, sentence_type, col=mw.col)
+        sentence_indexes[sentence_type] = sentence_index
     before = (list(note.fields), list(note.tags))
-    example = _example_note(note[id_field], sentence_type) or _oldest_linking_note(
-        config, sentence_type, note.id
+    example = _example_note(note[id_field], sentence_index) or _oldest_linking_note(
+        config, sentence_type, _link_id_of(config, note, vocab_type)
     )
     if example is None:
         logger.info("%s: note %s has no example sentence note", LABEL, note.id)
@@ -146,7 +171,11 @@ def refresh_example_in_note(
             note.add_tag(MISSING_TAG)
     else:
         copy_example(
-            config, vocab_type, sentence_note=example, sentence_id=example.id, vocab_note=note
+            config,
+            vocab_type,
+            sentence_note=example,
+            sentence_id=_link_id_of(config, example, sentence_type),
+            vocab_note=note,
         )
         note.remove_tag(MISSING_TAG)
     changed = (list(note.fields), list(note.tags)) != before
@@ -164,10 +193,13 @@ async def bulk_refresh_examples_op(
     notes_to_update_dict: dict[NoteId, Note],
 ) -> BulkOpResult:
     config = mw.addonManager.getConfig(__name__) or {}
+    # One index per sentence type for the run: a search per note, through thousands of notes,
+    # would read every note of the type each time
+    sentence_indexes: dict[str, LinkIndex] = {}
     return await bulk_notes_op(
         MESSAGE,
         config,
-        refresh_example_in_note,
+        functools.partial(refresh_example_in_note, sentence_indexes=sentence_indexes),
         col,
         # The notes of a type it cannot refresh (a sentence type, the one-type layout's) are
         # left out, reported once per type

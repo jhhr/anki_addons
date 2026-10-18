@@ -1108,6 +1108,12 @@ class TwoTypeCleanNoteTests(unittest.TestCase):
         self.fetches.append(list(note_ids))
         return [self.notes[nid] for nid in note_ids]
 
+    def find_note_id(self, config, note_type_name, held, col=None):
+        """link_lookup.find_note_id over the sentence notes: they hold no ID in a field (the
+        config names none), so each holds its note id."""
+        assert note_type_name == "Sentence", note_type_name
+        return held if held in self.notes else None
+
     def clean(
         self,
         note: WordNote,
@@ -1128,6 +1134,7 @@ class TwoTypeCleanNoteTests(unittest.TestCase):
             mdx_entry(entry),
             mock.patch.object(cm, "col_find_notes", self.find_notes),
             mock.patch.object(cm, "col_get_notes", self.get_notes),
+            mock.patch.object(cm, "find_note_id", self.find_note_id),
             mock.patch.object(cm, "get_response", calls),
             mock.patch.object(mam, "get_response", adds),
         ):

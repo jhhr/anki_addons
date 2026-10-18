@@ -667,7 +667,7 @@ class FlushStartedPlansTests(unittest.TestCase):
 
     def test_the_notes_to_add_are_those_registered_before_the_flush(self):
         """A thread a cancel abandoned goes on registering new notes. One registered once the
-        results are being flushed has its placeholder in no result saved, so it is left out
+        results are being flushed has its link ID in no result saved, so it is left out
         of the notes to add, whose lists are copies the thread's appends do not reach."""
         shared: dict = {}
         early, late, later = object(), object(), object()

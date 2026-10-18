@@ -272,6 +272,45 @@ class InconsistentLayoutTests(unittest.TestCase):
         with self.assertRaises(roles.LayoutError):
             roles.vocab_type_of(config, "Basic")
 
+    def test_sentence_id_field_on_any_block_but_a_pairs_sentence_block(self):
+        config = two_type_config()
+        config[SENTENCE]["sentence_id_field"] = "Text id"
+        self.assertIsNone(roles.layout_error(config, SENTENCE))
+        self.assertIsNone(roles.layout_error(config, VOCAB))
+        # On the vocab block it would win over new_note_id_field (link_id_field)
+        config[VOCAB]["sentence_id_field"] = "Note id"
+        for asked in (SENTENCE, VOCAB):
+            with self.subTest(asked=asked):
+                error = self.assert_refused(config, asked, VOCAB)
+                self.assertIn('has sentence_id_field "Note id"', error)
+        # On a one-type block, and on a block of no role
+        for name in (VOCAB, "Kanji draw"):
+            with self.subTest(name=name):
+                config = one_type_config()
+                config[name]["sentence_id_field"] = "Some id"
+                error = self.assert_refused(config, name, name)
+                self.assertIn("only the sentence note type of a two-type layout may name", error)
+
+    def test_an_example_field_that_is_the_types_own_link_id_field(self):
+        config = two_type_config()
+        config[VOCAB]["example_sentence_id_field"] = "Note id"
+        for asked in (SENTENCE, VOCAB):
+            with self.subTest(asked=asked):
+                error = self.assert_refused(config, asked, VOCAB)
+                self.assertIn(
+                    'has the field "Note id" as both its example_sentence_id_field and its'
+                    " new_note_id_field",
+                    error,
+                )
+        config = one_type_config()
+        config[VOCAB]["example_sentence_id_field"] = "Note id"
+        self.assert_refused(config, VOCAB, VOCAB)
+        config = two_type_config()
+        config[SENTENCE]["sentence_id_field"] = "Text id"
+        config[SENTENCE]["example_sentence_id_field"] = "Text id"
+        error = self.assert_refused(config, SENTENCE, SENTENCE)
+        self.assertIn("and its sentence_id_field", error)
+
 
 class ExampleFieldPairsTests(unittest.TestCase):
     def test_one_type_maps_every_sentence_field_onto_itself(self):
@@ -493,6 +532,39 @@ class RoleErrorTests(unittest.TestCase):
     def test_an_unknown_role_is_a_bug(self):
         with self.assertRaises(ValueError):
             roles.role_error(two_type_config(), VOCAB, "sentences")
+
+
+class LinkIdFieldTests(unittest.TestCase):
+    def test_the_one_type_block_keeps_new_note_id_field(self):
+        self.assertEqual(roles.link_id_field(one_type_config(), VOCAB), "Note id")
+
+    def test_each_block_of_a_pair_names_its_own(self):
+        config = two_type_config()
+        config[SENTENCE]["sentence_id_field"] = "Text id"
+        self.assertEqual(roles.link_id_field(config, SENTENCE), "Text id")
+        self.assertEqual(roles.link_id_field(config, VOCAB), "Note id")
+
+    def test_sentence_id_field_wins_over_new_note_id_field(self):
+        config = one_type_config()
+        config[VOCAB]["sentence_id_field"] = "Sentence id"
+        self.assertEqual(roles.link_id_field(config, VOCAB), "Sentence id")
+        config[VOCAB]["sentence_id_field"] = ""
+        self.assertEqual(roles.link_id_field(config, VOCAB), "Note id")
+
+    def test_a_type_naming_neither_has_none(self):
+        # Every note's link ID is then its note id: a sentence block before the user names its
+        # field, a type with no role, one not configured, a plain setting
+        config = two_type_config()
+        for name in [SENTENCE, "Kanji draw", "Basic", "log_level"]:
+            with self.subTest(name):
+                self.assertIsNone(roles.link_id_field(config, name))
+
+    def test_a_broken_layout_does_not_stop_it(self):
+        # It reads the type's own block only, as an op reading its notes' IDs needs
+        config = two_type_config()
+        config[VOCAB]["sentence_note_type"] = "Elsewhere"
+        self.assertIsNotNone(roles.layout_error(config, VOCAB))
+        self.assertEqual(roles.link_id_field(config, VOCAB), "Note id")
 
 
 class NoteTypeSearchTests(unittest.TestCase):

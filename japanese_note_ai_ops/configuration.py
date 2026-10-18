@@ -22,11 +22,11 @@ RawOneMeaningWordType = tuple[str, str]
 # meaning number is used to indicate the same word and reading occurring with different meanings
 RawMultiMeaningWordType = tuple[str, str, int]
 # Matched word, same but with note sort field value and note ID
-# 1) word, 2) reading, 3) note_sort_field_value, 4) note_id +int or fake note Id -int)
+# 1) word, 2) reading, 3) note_sort_field_value, 4) the note's link ID
 # note_sort_field_value is different for each meaning a word with the same reading can have
 # so it is used to distinguish between them
-# The note_id references the exact note that the word is matched to, it can be a real note ID
-# or a placeholder ID used to identify new note that is to be created but hasn't yet
+# The link ID (link_ids.py) names the exact note that the word is matched to: an existing
+# note's, or the one generated for a new note the run is making, which it keeps once added
 OneMeaningMatchedWordType = tuple[str, str, str, Union[NoteId, int]]
 MultiMeaningMatchedWordType = tuple[str, str, int, str, Union[NoteId, int]]
 

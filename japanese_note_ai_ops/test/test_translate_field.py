@@ -20,6 +20,8 @@ op = load_ops_module("translate_field")
 VOCAB = "Japanese vocab note"
 SENTENCE = "Sentence note"
 TRANSLATION = "The cat sleeps."
+# A generated link ID (link_ids.py)
+LINK_ID = 1160697660039337
 
 TWO_TYPE = {
     SENTENCE: {
@@ -130,6 +132,22 @@ class TranslateTests(unittest.TestCase):
         self.assertEqual(updates[10]["Example translation"], TRANSLATION)
         self.assertEqual(self.col.notes[12]["Example translation"], "old")
         self.assertEqual(self.col.notes[13]["Example translation"], "old")
+
+    def test_the_vocab_notes_naming_the_sentence_notes_link_id_get_it(self):
+        # The sentence type names an ID field and the note holds a generated ID (link_ids.py):
+        # its vocab notes name it by that, and its note id 20 names no note any more
+        config = {name: dict(block) for name, block in TWO_TYPE.items()}
+        config[SENTENCE]["sentence_id_field"] = "Text id"
+        self.sentence.fields["Text id"] = str(LINK_ID)
+        self.col.notes[14] = vocab(14, str(LINK_ID))
+        updates: dict = {}
+
+        self.assertTrue(op.translate_sentence_in_note(config, self.sentence, {}, updates))
+
+        self.assertEqual(self.col.searches, [f'"note:{VOCAB}" "Example id:{LINK_ID}"'])
+        self.assertEqual(sorted(updates), [14, 20])
+        self.assertEqual(updates[14]["Example translation"], TRANSLATION)
+        self.assertEqual(self.col.notes[10]["Example translation"], "old")
 
     def test_a_vocab_note_the_run_holds_already_is_changed_in_place(self):
         held = vocab(10, "20")

@@ -50,6 +50,7 @@ OP_LABELS = [
     "Tag notes matched status",
     "Deduplicate existing meaning notes",
     "Refresh example sentences",
+    "Fill link IDs",
     "Move sentences to sentence notes",
 ]
 
@@ -63,6 +64,7 @@ MENU_LABELS = ["Run several ops...", SEPARATOR] + OP_LABELS[:20] + [SEPARATOR] +
     "Deduplicate existing meaning notes",
     "Export kanjify test data",
     "Refresh example sentences",
+    "Fill link IDs",
     "Move sentences to sentence notes",
 ]
 
@@ -110,6 +112,7 @@ STARTS = {
         {},
     ),
     "refresh_example_sentences": ("refresh_example_sentences_from_selected", {}),
+    "fill_link_ids": ("fill_link_ids_from_selected", {}),
     "migrate_to_sentence_notes": ("migrate_to_sentence_notes_from_selected", {}),
 }
 
@@ -157,6 +160,7 @@ ENTRY_MODULES = {
         ["refresh_example_sentences_from_selected"],
         False,
     ),
+    ("fill_link_ids", "sync_local_ops"): (["fill_link_ids_from_selected"], False),
     ("migrate_to_sentence_notes", "sync_local_ops"): (
         ["migrate_to_sentence_notes_from_selected"],
         False,
@@ -168,6 +172,7 @@ ENTRY_MODULES = {
 PREFLIGHTS = {
     "migrate_to_sentence_notes": "collection_preflight_error",
     "refresh_example_sentences": "refresh_preflight_error",
+    "fill_link_ids": "fill_preflight_error",
 }
 
 NIDS = [11, 12, 13]
@@ -200,7 +205,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_groups_split_where_the_menu_separator_was(self):
         groups = [spec.group for spec in op_registry.OPS]
-        self.assertEqual(groups, ["async"] * 20 + ["sync"] * 5)
+        self.assertEqual(groups, ["async"] * 20 + ["sync"] * 6)
 
     def test_needs_generator_exactly_for_the_ops_that_run_it(self):
         self.assertEqual(
@@ -322,6 +327,24 @@ class EntryFunctionChainTests(unittest.TestCase):
                 self.assertIsNone(
                     refresh.refresh_example_sentences_from_selected(NIDS, PARENT, chain=chain)
                 )
+                run.assert_not_called()
+                self.assertEqual(warning.call_args.args[0], refusal)
+                if chain is not None:
+                    self.assertEqual(
+                        [(o.status, o.error) for o in outcomes],
+                        [(chain_types.STEP_FAILED, refusal)],
+                    )
+
+    def test_a_fill_its_pre_flight_refuses_fails_the_step_and_says_why(self):
+        fill = load_ops_module("fill_link_ids", subdir="sync_local_ops")
+        refusal = "Fill link IDs: no selected note is of a note type whose settings name one"
+        for chain, outcomes in (recording_chain(), (None, None)):
+            with self.subTest(chain=chain), mock.patch.object(fill, "mw"), mock.patch.object(
+                fill, "fill_preflight_error", return_value=refusal
+            ), mock.patch.object(fill, "showWarning") as warning, mock.patch.object(
+                fill, "selected_notes_op"
+            ) as run:
+                self.assertIsNone(fill.fill_link_ids_from_selected(NIDS, PARENT, chain=chain))
                 run.assert_not_called()
                 self.assertEqual(warning.call_args.args[0], refusal)
                 if chain is not None:

@@ -24,6 +24,11 @@ op, and nothing is written before the cleanup:
 The added sentence notes' cards are suspended (a sentence note is never studied) in
 `new_notes_op`: inside the cleanup, before base_ops saves what it returns and merges into the
 run's undo entry, so one undo reverts the adds, the updates and the suspension together.
+
+Notes link each other by link ID (link_ids.py). A new sentence note holds the ID the plan
+generated for it from the start, and its vocab notes name it by that; every other note the run
+writes whose ID field holds no ID gets its note id there, the ID it had all along. The run
+refuses to start while two notes of either type hold one ID.
 """
 
 from __future__ import annotations
@@ -52,9 +57,17 @@ from ..async_api_ops.base_ops import (
     show_dialog_label,
 )
 from ..async_api_ops.chain_types import ChainStep, fail_step
+from ..async_api_ops.link_lookup import link_index
 from ..async_api_ops.progress_errors import report_exception
 from ..configuration import ADDON_USER_FILES_DIR
-from ..note_roles import SENTENCE_KEYS, copy_example, sentence_type_of
+from ..link_ids import duplicates_error
+from ..note_roles import (
+    SENTENCE_KEYS,
+    LayoutError,
+    copy_example,
+    link_id_field,
+    sentence_type_of,
+)
 from .sentence_migration import (
     COPY_TAGS_KEY,
     EXAMPLE_ID_KEY,
@@ -76,6 +89,8 @@ logger = logging.getLogger(__name__)
 LABEL = "Move sentences to sentence notes"
 # The bulk op's message, which also names the run's undo entry
 MESSAGE = "Moving sentences to sentence notes"
+# What read_records reads a type's link ID field under, beside the config keys of the others
+_LINK_ID = "link ID"
 
 
 class PreflightError(Exception):
@@ -101,18 +116,43 @@ def _selected_types(col: Collection, nids: Sequence[NoteId]) -> list[str]:
 def collection_preflight_error(
     col: Collection, config: Mapping[str, Any], nids: Sequence[NoteId]
 ) -> Optional[str]:
-    """`sentence_migration.preflight_error` for these notes of the collection: why the run
-    cannot start, None when it can."""
+    """`sentence_migration.preflight_error` for these notes of the collection, then the link
+    IDs their notes hold (`_link_ids_error`): why the run cannot start, None when it can."""
     note_type_fields = {
         notetype["name"]: [field["name"] for field in notetype["flds"]]
         for notetype in col.models.all()
     }
-    return preflight_error(
+    selected_types = _selected_types(col, nids)
+    error = preflight_error(
         config,
-        _selected_types(col, nids),
+        selected_types,
         note_type_fields,
         lambda name: col.decks.id_for_name(name) is not None,
     )
+    if error:
+        return error
+    [vocab_type] = selected_types
+    return _link_ids_error(col, config, [vocab_type, sentence_type_of(config, vocab_type)])
+
+
+def _link_ids_error(
+    col: Collection, config: Mapping[str, Any], note_type_names: Sequence[str]
+) -> Optional[str]:
+    """Why the types' link IDs do not allow the run, if so: a link ID field no search can name
+    (link_lookup refuses one, as every op reading the links would), or an ID two notes of a
+    type hold. The plan would read such an ID as its oldest holder's: a word linked to a copy
+    holding its original's ID would be taken for the original's, and the copy's links by its
+    own note id, written before link IDs, for links to no note. "Fill link IDs" gives each
+    holder an ID of its own first (duplicates_error)."""
+    for name in note_type_names:
+        try:
+            index = link_index(config, name, col=col)
+        except LayoutError as e:
+            return str(e)
+        error = duplicates_error(name, link_id_field(config, name), index)
+        if error is not None:
+            return error
+    return None
 
 
 def _read_notes(
@@ -149,6 +189,10 @@ def read_records(
     db = col.db
     assert db is not None
     vocab_block, sentence_block = config[vocab_type], config[sentence_type]
+    # Both named and on their types: the pre-flight's
+    vocab_id_field = link_id_field(config, vocab_type)
+    sentence_id_field = link_id_field(config, sentence_type)
+    assert vocab_id_field and sentence_id_field
     sentence_names = {
         key: _named(sentence_block, key)
         for key in (*SENTENCE_KEYS, WORD_LIST_KEY)
@@ -157,6 +201,7 @@ def read_records(
     vocab_names = {
         **sentence_names,
         **{key: _named(vocab_block, key) for key in (EXAMPLE_ID_KEY, *WORD_KEYS)},
+        _LINK_ID: vocab_id_field,
     }
     vocab_notetype = col.models.by_name(vocab_type)
     sentence_notetype = col.models.by_name(sentence_type)
@@ -181,6 +226,7 @@ def read_records(
             fields=sentence_fields(values),
             word_list=values[WORD_LIST_KEY],
             example_id=values[EXAMPLE_ID_KEY],
+            link_id_value=values[_LINK_ID],
             kanjified=values[WORD_KEYS[0]],
             normal=values[WORD_KEYS[1]],
             reading=values[WORD_KEYS[2]],
@@ -195,8 +241,11 @@ def read_records(
             tags=tags,
             fields=sentence_fields(values),
             word_list=values[WORD_LIST_KEY],
+            link_id_value=values[_LINK_ID],
         )
-        for nid, tags, values in _read_notes(col, sentence_notetype, sentence_names)
+        for nid, tags, values in _read_notes(
+            col, sentence_notetype, {**sentence_names, _LINK_ID: sentence_id_field}
+        )
     ]
     return vocab, sentences
 
@@ -217,6 +266,9 @@ class SentenceMigration:
         self._config: Mapping[str, Any] = {}
         self._vocab_type = ""
         self._sentence_type = ""
+        # The types' link ID fields
+        self._vocab_id_field = ""
+        self._sentence_id_field = ""
         self._sentence_notetype: Any = None
         self._updates: dict[int, SentenceUpdate] = {}
         # The selected notes as the run loaded them, which new_notes_op changes: the per-note
@@ -266,6 +318,8 @@ class SentenceMigration:
         self._col, self._config = col, config
         [self._vocab_type] = _selected_types(col, nids)
         self._sentence_type = sentence_type_of(config, self._vocab_type)
+        self._vocab_id_field = link_id_field(config, self._vocab_type) or ""
+        self._sentence_id_field = link_id_field(config, self._sentence_type) or ""
         self._sentence_notetype = col.models.by_name(self._sentence_type)
         sentence_block = config[self._sentence_type]
 
@@ -357,7 +411,7 @@ class SentenceMigration:
             return True
         assert example.note_id is not None
         sentence_note = self._join(example.note_id, notes_to_update_dict)
-        self._make_example(sentence_note, example.note_id, note)
+        self._make_example(sentence_note, self._updates[example.note_id].link_id, note)
         notes_to_update_dict[note.id] = note
         return True
 
@@ -366,6 +420,9 @@ class SentenceMigration:
         block = self._config[self._sentence_type]
         for key, value in new.fields.items():
             note[block[key]] = value
+        # Its ID from the start: its vocab notes name it by that once it is added, and the
+        # adding keeps it through other add-ons' hooks (base_ops.link_id_kept)
+        note[self._sentence_id_field] = str(new.link_id)
         note.tags = list(new.tags)
         return note
 
@@ -382,25 +439,35 @@ class SentenceMigration:
         if update.tags_to_add:
             sentence_note.tags = [*sentence_note.tags, *update.tags_to_add]
         if update.word_list is not None or update.tags_to_add:
+            self._fill_link_id(sentence_note, self._sentence_id_field)
             notes_to_update_dict[sentence_note.id] = sentence_note
         self._joined[sentence_id] = sentence_note
         return sentence_note
 
-    def _make_example(self, sentence_note: Note, sentence_id: int, vocab_note: Note) -> None:
+    def _make_example(self, sentence_note: Note, sentence_link_id: int, vocab_note: Note) -> None:
         copy_example(
             self._config,
             self._vocab_type,
             sentence_note=sentence_note,
-            sentence_id=sentence_id,
+            sentence_id=sentence_link_id,
             vocab_note=vocab_note,
         )
-        self._remove_tags(vocab_note)
+        self._remove_tags_and_fill_id(vocab_note)
 
-    def _remove_tags(self, vocab_note: Note) -> None:
+    def _remove_tags_and_fill_id(self, vocab_note: Note) -> None:
+        """What every vocab note the run changes gets, example or not: the tags the plan moves
+        off it taken off, and its note id in an ID field holding none."""
         lost = self._plan.tags_to_remove.get(vocab_note.id)
         if lost:
             gone = {tag.casefold() for tag in lost}
             vocab_note.tags = [tag for tag in vocab_note.tags if tag.casefold() not in gone]
+        self._fill_link_id(vocab_note, self._vocab_id_field)
+
+    def _fill_link_id(self, note: Note, field: str) -> None:
+        # The plan's, which names only notes whose field holds no link ID
+        text = self._plan.link_id_fills.get(note.id)
+        if text is not None:
+            note[field] = text
 
     def add_examples(
         self,
@@ -445,8 +512,10 @@ class SentenceMigration:
     ) -> dict[NoteId, Note]:
         """The vocab notes added sentence note `index` changes: each it is the example of gets
         the copy, and each loses the tags the plan moves off it (an unselected origin only
-        those). In memory; returned only if every one of them could be changed."""
-        examples = set(self._plan.new_sentences[index].vocab_ids)
+        those) and gets its note id in an ID field holding none. In memory; returned only if
+        every one of them could be changed."""
+        new = self._plan.new_sentences[index]
+        examples = set(new.vocab_ids)
         changed: dict[NoteId, Note] = {}
         for vocab_id in vocab_ids:
             vocab_note = self._loaded.get(vocab_id)
@@ -454,9 +523,10 @@ class SentenceMigration:
                 # An unselected origin, which the run did not load
                 vocab_note = self.col.get_note(NoteId(vocab_id))
             if vocab_id in examples:
-                self._make_example(sentence_note, sentence_note.id, vocab_note)
+                # Named by the ID the plan gave it, which the add kept in its field
+                self._make_example(sentence_note, new.link_id, vocab_note)
             else:
-                self._remove_tags(vocab_note)
+                self._remove_tags_and_fill_id(vocab_note)
             changed[vocab_note.id] = vocab_note
         return changed
 

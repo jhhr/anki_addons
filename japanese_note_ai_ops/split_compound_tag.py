@@ -50,7 +50,8 @@ from aqt.utils import tooltip
 
 from .call_logging import start_call_log
 from .configuration import REGENERATE_TAG
-from .note_roles import LayoutError, note_type_search, sentence_type_of
+from .link_ids import field_search, link_id
+from .note_roles import LayoutError, link_id_field, note_type_search, sentence_type_of
 from .word_array import generator
 from .word_array.match_flags import (
     iter_words,
@@ -74,7 +75,8 @@ TOOLTIP_MS = 6000
 class Compound(NamedTuple):
     """A note tagged SPLIT_COMPOUND_TAG, with what a sweep needs of it."""
 
-    note_id: int
+    # What the arrays link the note by (link_ids.py): its link ID field's ID, else its note id
+    link_id: int
     word: str  # its word field, without furigana or tags
     # The note type whose word arrays link it: its own in the one-type layout, its sentence type
     # in the two-type one
@@ -133,7 +135,9 @@ def tagged_compounds(col: Collection, config: dict) -> list[Compound]:
         if not word or not list_field:
             logger.warning("nid:%s is tagged, but has no word or no word array field", note_id)
             continue
-        compounds.append(Compound(note_id, word, arrays_type, list_field))
+        id_field = link_id_field(config, name)
+        held = link_id(note[id_field] if id_field and id_field in note else "", note.id)
+        compounds.append(Compound(held, word, arrays_type, list_field))
     return compounds
 
 
@@ -143,18 +147,20 @@ def not_listed(compounds: Sequence[Compound], config: dict) -> list[Compound]:
 
 
 def _array_search(compound: Compound, regex: str) -> str:
-    return f'{note_type_search(compound.notetype)} "{compound.list_field}:re:{regex}"'
+    in_array = field_search(compound.list_field, f"re:{regex}")
+    return f"{note_type_search(compound.notetype)} {in_array}"
 
 
 def compound_forms(col: Collection, compound: Compound) -> list[str]:
     """What to list for a compound: its note's word, then the dictionary form of every array
-    element linked to the note, where an array shows the word by another."""
+    element linked to the note, where an array shows the word by another. The elements hold the
+    note's link ID, which is its note id only while its link ID field holds none."""
     forms = [compound.word]
-    linked_to_it = _array_search(compound, word_array_link_regex(compound.note_id))
+    linked_to_it = _array_search(compound, word_array_link_regex(compound.link_id))
     for note_id in col.find_notes(linked_to_it):
         array, _problem = read_word_array(col.get_note(note_id)[compound.list_field])
         for _depth, element in iter_words(array or []):
-            if matched_note_id(element) == compound.note_id and element[2] not in forms:
+            if matched_note_id(element) == compound.link_id and element[2] not in forms:
                 forms.append(element[2])
     return forms
 

@@ -40,9 +40,10 @@ SENTENCE_KEYS: tuple[str, ...] = (
 
 class LayoutError(Exception):
     """The config gives a note type no usable layout: it is not configured, it and the type
-    it names do not name each other, one of them lacks its role, or a field it names is not on
-    the note. A class of its own so that a pre-flight or a hook can tell a config problem, whose
-    message is for the user, from a bug: `utils.get_field_config` raises a plain Exception."""
+    it names do not name each other, one of them lacks its role, a link ID key would make the
+    wrong field its notes' ID, or a field it names is not on the note. A class of its own so
+    that a pre-flight or a hook can tell a config problem, whose message is for the user, from
+    a bug: `utils.get_field_config` raises a plain Exception."""
 
 
 class NoteFields(Protocol):
@@ -154,6 +155,36 @@ def _pair_error(config: Mapping[str, Any], sentence_type: str, vocab_type: str) 
             f' word_list_field in the settings: only the sentence note type "{sentence_type}"'
             " may."
         )
+    return _link_id_key_error(vocab_type, vocab_block, False) or _link_id_key_error(
+        sentence_type, sentence_block, True
+    )
+
+
+def _link_id_key_error(
+    note_type_name: str, block: Mapping[str, Any], is_pair_sentence_type: bool
+) -> Optional[str]:
+    """Why the block's link ID keys cannot stand, if so. `sentence_id_field` belongs to the
+    sentence type of a two-type layout alone: on any other block it would win over
+    `new_note_id_field` as the link ID field (link_id_field) without a word, while code that
+    reads `new_note_id_field` by its key, and the user's CopyAnywhere definitions, take that
+    one for the notes' ID. And an example field that is the type's own link ID field would
+    have each copied example write over the note's ID, which the arrays link the note by."""
+    sentence_id = _name(block, "sentence_id_field")
+    if sentence_id and not is_pair_sentence_type:
+        return (
+            f'"{note_type_name}" has sentence_id_field "{sentence_id}" in the settings, which'
+            " only the sentence note type of a two-type layout may name: on any other type it"
+            " would be taken for the link ID field in place of new_note_id_field. Name the"
+            " field as new_note_id_field instead."
+        )
+    example = _name(block, "example_sentence_id_field")
+    own_key = "sentence_id_field" if sentence_id else "new_note_id_field"
+    if example and example == _name(block, own_key):
+        return (
+            f'"{note_type_name}" has the field "{example}" as both its'
+            f" example_sentence_id_field and its {own_key} in the settings: each example"
+            " copied into a note would write over the note's own link ID."
+        )
     return None
 
 
@@ -168,7 +199,8 @@ def layout_error(config: Mapping[str, Any], note_type_name: str) -> Optional[str
     A pair is checked whichever of its types is asked about: the type's own `vocab_note_type`
     or `sentence_note_type`, and any other block naming this type under either key, must all be
     answered by the other block naming it back. A type nothing names and naming nothing is the
-    one-type layout and always usable.
+    one-type layout, usable as long as its link ID keys are (`_link_id_key_error`, checked on
+    both blocks of a pair too).
     """
     block = _block(config, note_type_name)
     if block is None:
@@ -195,6 +227,8 @@ def layout_error(config: Mapping[str, Any], note_type_name: str) -> Optional[str
         error = _pair_error(config, sentence_type, vocab_type)
         if error:
             return error
+    if not pairs:
+        return _link_id_key_error(note_type_name, block, False)
     return None
 
 
@@ -331,6 +365,22 @@ def example_id_field(config: Mapping[str, Any], vocab_type_name: str) -> Optiona
     return _name(vocab_block, "example_sentence_id_field") or None
 
 
+def link_id_field(config: Mapping[str, Any], note_type_name: str) -> Optional[str]:
+    """The field holding this type's notes' link IDs (link_ids.py): `sentence_id_field` when
+    its block names one, else `new_note_id_field`, else None, and every note's link ID is its
+    note id. Never raises.
+
+    Two keys because the vocab type's field already had a key, the one the match op wrote its
+    placeholders to; a sentence block has no such key, and the one-type layout's block keeps
+    `new_note_id_field`. Read from the type's own block alone, so a type outside any layout
+    answers as well as one in a pair.
+    """
+    block = _block(config, note_type_name)
+    if block is None:
+        return None
+    return _name(block, "sentence_id_field") or _name(block, "new_note_id_field") or None
+
+
 def copy_example(
     config: Mapping[str, Any],
     vocab_type_name: str,
@@ -343,9 +393,10 @@ def copy_example(
     field, and write `sentence_id` into the `example_id_field` when there is one.
 
     The id comes as an argument rather than off the note so that a test's note can be a dict;
-    it must be a real note id, since a link to a sentence note not added yet (id 0) leads
-    nowhere. The notes are keyword-only because both are the same shape: swapped, the copy
-    would overwrite the sentence note without a word.
+    it is the sentence note's link ID (link_ids.py, D14), its note id only while its ID field
+    holds none, and must be one: 0, a sentence note not added yet holding no ID, leads nowhere.
+    The notes are keyword-only because both are the same shape: swapped, the copy would
+    overwrite the sentence note without a word.
 
     Every field is checked before any is written, so a field the config names but the note
     lacks raises LayoutError and leaves the vocab note as it was. One note as both, in the

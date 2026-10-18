@@ -103,8 +103,17 @@ class OpsPassTheirRoleOnlyTests(unittest.TestCase):
             mock.patch.object(module, "mw"),
             mock.patch.object(gate, "report_error"),
         ]
-        # What the ops read before they start their driver: files and the name lexicon
-        for name in ("load_meanings_dict_from_file", "extract_words_op", "read_names_file"):
+        # What the ops read before they start their driver: files (set furigana's names file
+        # among them), the name lexicon, the match op's vocab type's link IDs
+        # (refuse_duplicate_link_ids), of the notes handed on, and find_missing's every type's
+        # (link_indexes)
+        for name in (
+            "load_meanings_dict_from_file",
+            "extract_words_op",
+            "read_names_file",
+            "refuse_duplicate_link_ids",
+            "link_indexes",
+        ):
             if hasattr(module, name):
                 patches.append(mock.patch.object(module, name))
         with contextlib.ExitStack() as stack:

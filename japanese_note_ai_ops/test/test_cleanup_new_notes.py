@@ -2,10 +2,15 @@
 
 A cancelled match run used to add none of the new notes it had prepared: the adding loop
 stopped on the dialog's cancel flag, which stays set for the rest of a cancelled run. The
-notes' meanings were paid for, and their placeholder ids were already in the saved word
-arrays. The cleanup now re-arms that flag and gives the adding a cancel of its own, which
-stops it and unlinks the notes it left out. These tests drive `add_new_notes` against a
-stand-in collection.
+notes' meanings were paid for, and their IDs were already in the saved word arrays. The
+cleanup now re-arms that flag and gives the adding a cancel of its own, which stops it and
+unlinks the notes it left out. These tests drive `add_new_notes` against a stand-in
+collection.
+
+A new note holds its link ID (link_ids.py) from the moment the match op makes it, in its
+new_note_id_field, and the arrays link it by that before and after the add: nothing is
+rewritten once it is added (SPEC D18), and a note not added, cancelled or failed, has its ID
+taken out of the arrays again.
 """
 
 import contextlib
@@ -15,14 +20,18 @@ import types
 import unittest
 from unittest import mock
 
-from addon_modules import FakeClock, load_ops_module, mw
+from addon_modules import FakeClock, load_addon_module, load_ops_module, mw
 
+link_ids = load_addon_module("link_ids", subdir="")
 base_ops = load_ops_module("base_ops")
 mwtn = load_ops_module("match_words_to_notes")
 cm = load_ops_module("clean_meaning")
 controls_module = load_ops_module("progress_controls")
 
 POS = 101
+# Link IDs as the match op generates them for its new notes (link_ids.new_link_id: 16 digits,
+# never a 13-digit note id)
+NEW_1, NEW_2, NEW_3, NEW_4 = (int(str(n) * 16) for n in range(1, 5))
 
 
 class FakeNote:
@@ -129,8 +138,9 @@ class FakeUpdater:
 CONFIG = {"Word": {"insert_deck": "Vocab", **{key: key for key in mwtn.MATCH_FIELD_KEYS}}}
 
 
-def new_note(placeholder: str) -> FakeNote:
-    return FakeNote({"word_list_field": "", "new_note_id_field": placeholder})
+def new_note(held) -> FakeNote:
+    """A new note as the match op prepares it: holding its link ID `held`, not added yet."""
+    return FakeNote({"word_list_field": "", "new_note_id_field": str(held)})
 
 
 def writes_its_id(note: FakeNote) -> None:
@@ -158,7 +168,7 @@ class AddNewNotesAfterCancelTests(unittest.TestCase):
 
     def test_every_prepared_note_is_added_and_handed_on_with_its_id(self):
         col = FakeCollection()
-        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
         handed: list = []
 
         def new_notes_op(new_notes, config, progress_updater):
@@ -178,7 +188,7 @@ class AddNewNotesAfterCancelTests(unittest.TestCase):
 
     def test_what_new_notes_op_rewrote_is_saved_into_the_same_undo_entry(self):
         col = FakeCollection()
-        notes = [new_note("-1111111")]
+        notes = [new_note(NEW_1)]
         referencing = FakeNote({"word_list_field": "[]"}, note_id=2)
 
         def new_notes_op(new_notes, config, progress_updater):
@@ -191,12 +201,15 @@ class AddNewNotesAfterCancelTests(unittest.TestCase):
         # The added note is saved but counted as added, not as a note edited
         self.assertEqual(result.updated_nids, [2])
 
-    def test_a_note_that_fails_to_add_keeps_its_placeholder_where_it_is_referenced(self):
-        failing = new_note("-1111111")
-        added = new_note("-2222222")
+    def test_a_note_that_fails_to_add_is_unlinked_and_one_added_keeps_its_link_id(self):
+        """A failed add's ID was kept in the arrays as a debugging hint, back when the next
+        match run reset any placeholder no note held. A link ID no note holds is a link to no
+        note, which no match run resets: it is taken out as a cancel's notes are."""
+        failing = new_note(NEW_1)
+        added = new_note(NEW_2)
         arr = [
-            ["様", "noun", "様", "さま", [-1111111, 3], []],
-            ["本", "noun", "本", "ほん", [-2222222], []],
+            ["様", "noun", "様", "さま", [NEW_1, 3], []],
+            ["本", "noun", "本", "ほん", [NEW_2], []],
         ]
         referencing = FakeNote({"word_list_field": json.dumps(arr)}, note_id=2)
         referencing["new_note_id_field"] = ""
@@ -207,22 +220,24 @@ class AddNewNotesAfterCancelTests(unittest.TestCase):
             mock.patch.object(mwtn, "col_get_notes", lambda _: [referencing]),
         ):
             result = base_ops.add_new_notes(
-                col, [failing, added], CONFIG, POS, self.updater, mwtn.update_fake_note_ids
+                col, [failing, added], CONFIG, POS, self.updater,
+                unadded_notes_op=mwtn.clear_unadded_note_ids,
             )
 
         self.assertEqual((failing.id, added.id), (0, 501))
         saved = json.loads(referencing["word_list_field"])
-        self.assertEqual([saved[0][4], saved[1][4]], [[-1111111, 3], [501]])
-        self.assertEqual(failing["new_note_id_field"], "-1111111")
-        self.assertEqual(added["new_note_id_field"], "501")
-        self.assertEqual(result.added, 1)
+        self.assertEqual([saved[0][4], saved[1][4]], [["match"], [NEW_2]])
+        self.assertEqual(added["new_note_id_field"], str(NEW_2))
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 1, 0))
         self.assertEqual(self.updater.adding[-1], (1, 2, 1))
-        self.assertEqual(col.updated, [referencing, added])
+        # Only the unlinking's write: the added note is saved by its add alone
+        self.assertEqual(col.updated, [referencing])
+        self.assertEqual(result.updated_nids, [2])
 
     def test_without_new_notes_op_the_notes_are_still_added(self):
         col = FakeCollection()
 
-        result = base_ops.add_new_notes(col, [new_note("-1111111")], CONFIG, POS, self.updater)
+        result = base_ops.add_new_notes(col, [new_note(NEW_1)], CONFIG, POS, self.updater)
 
         self.assertEqual((result.added, result.updated_nids), (1, []))
         self.assertEqual(col.updated, [])
@@ -288,50 +303,51 @@ class NoteAddRecordTests(unittest.TestCase):
         return [(note_id, json.loads(payload)) for note_id, payload in rows]
 
     def test_each_add_is_timed_apart_from_its_merge_and_a_failed_add_is_named(self):
-        failing = new_note("-2222222")
+        failing = new_note(NEW_2)
         col = UndoCountingCollection(failing=(failing,))
 
         base_ops.add_new_notes(
-            col, [new_note("-1111111"), failing], CONFIG, POS, self.updater
+            col, [new_note(NEW_1), failing], CONFIG, POS, self.updater
         )
 
         [(added_id, added), (failed_id, failed)] = self.events()
-        self.assertEqual((added_id, added["placeholder"]), (501, -1111111))
+        # Named by the link ID each was made with, under the payload's old key
+        self.assertEqual((added_id, added["placeholder"]), (501, NEW_1))
         self.assertGreaterEqual(added["seconds"], 0)
         self.assertGreaterEqual(added["merge_seconds"], 0)
         self.assertEqual(added["undo_before"]["last_step"], 3)
         self.assertEqual(added["undo_after"]["last_step"], POS)
         self.assertIsNone(added["add_error"])
-        self.assertEqual((failed_id, failed["placeholder"]), (None, -2222222))
+        self.assertEqual((failed_id, failed["placeholder"]), (None, NEW_2))
         self.assertIsNone(failed["merge_seconds"])
         self.assertIn("refused", failed["add_error"])
 
-    def test_an_add_hook_that_writes_the_id_field_does_not_change_the_placeholder_recorded(self):
-        # Read off the note after the add, both were 0: an export then knew neither which
-        # placeholder the added note replaced nor which one the failed add left in the arrays
-        failing = new_note("-2222222")
+    def test_an_add_hook_that_writes_the_id_field_does_not_change_the_link_id_recorded(self):
+        # Read off the note after the add, both were 0: an export then knew neither which ID
+        # the added note was linked by nor which one the failed add left in the arrays
+        failing = new_note(NEW_2)
         col = UndoCountingCollection(failing=(failing,))
         col.hook = writes_its_id
 
         base_ops.add_new_notes(
-            col, [new_note("-1111111"), failing], CONFIG, POS, self.updater
+            col, [new_note(NEW_1), failing], CONFIG, POS, self.updater
         )
 
         [(added_id, added), (failed_id, failed)] = self.events()
-        self.assertEqual((added_id, added["placeholder"]), (501, -1111111))
-        self.assertEqual((failed_id, failed["placeholder"]), (None, -2222222))
+        self.assertEqual((added_id, added["placeholder"]), (501, NEW_1))
+        self.assertEqual((failed_id, failed["placeholder"]), (None, NEW_2))
 
     def test_a_note_with_no_deck_to_go_to_is_recorded_as_a_failed_add(self):
         # Counted failed and left out of the capture, its placeholder was one an export could
         # not tell from a word's, and it stayed in the expected word arrays, random every run
-        no_deck = new_note("-3333333")
+        no_deck = new_note(NEW_3)
         no_deck.note_type = lambda: {"name": "Other"}  # type: ignore[method-assign]
         config = {**CONFIG, "Other": {**CONFIG["Word"], "insert_deck": "Missing"}}
 
         base_ops.add_new_notes(UndoCountingCollection(), [no_deck], config, POS, self.updater)
 
         [(note_id, failed)] = self.events()
-        self.assertEqual((note_id, failed["placeholder"]), (None, -3333333))
+        self.assertEqual((note_id, failed["placeholder"]), (None, NEW_3))
         self.assertEqual(failed["add_error"], "no deck to add it to")
         self.assertIsNone(failed["merge_seconds"])
 
@@ -340,7 +356,7 @@ class NoteAddRecordTests(unittest.TestCase):
 
         with self.assertRaises(RuntimeError):
             base_ops.add_new_notes(
-                col, [new_note("-1111111"), new_note("-2222222")], CONFIG, POS, self.updater
+                col, [new_note(NEW_1), new_note(NEW_2)], CONFIG, POS, self.updater
             )
 
         [_, (_, refused)] = self.events()
@@ -374,7 +390,7 @@ class ReArmedCancelTests(unittest.TestCase):
 
     def test_the_first_cancel_does_not_stop_the_adding_once_re_armed(self):
         """What 'every prepared note is added with the flag set' means now."""
-        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
         col = FakeCollection()
 
         self.updater.begin_cleanup()
@@ -384,7 +400,7 @@ class ReArmedCancelTests(unittest.TestCase):
         self.assertEqual(result.counts, base_ops.NewNotesCounts(3, 0, 0))
 
     def test_a_second_cancel_stops_it(self):
-        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
         col = FakeCollection()
         col_add = col.add_note
 
@@ -414,7 +430,7 @@ class ReArmedCancelTests(unittest.TestCase):
         """Pressed while the results were flushed or the edited notes written, with Cancel
         saying it cancels the run: as a press during the API work, it keeps the notes prepared,
         where stopping the adding would drop every one the run paid for."""
-        notes = [new_note("-1111111"), new_note("-2222222")]
+        notes = [new_note(NEW_1), new_note(NEW_2)]
         col = FakeCollection()
 
         with mock.patch.object(base_ops, "run_cancelled", lambda: False):
@@ -428,7 +444,7 @@ class ReArmedCancelTests(unittest.TestCase):
         """Without the dialog the first cancel set, or with one the reset fails on, the flag
         is left as it was; the adding cannot be cancelled then, but it is not stopped by the
         cancel of the API work either."""
-        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
         col = FakeCollection()
         unlinking: list = []
 
@@ -450,7 +466,7 @@ class ReArmedCancelTests(unittest.TestCase):
 
     def test_the_dedupe_runs_with_the_first_cancel_already_reset(self):
         """It is the first stage the cancel stops, so the arming comes before it."""
-        notes = [new_note("-1111111"), new_note("-2222222")]
+        notes = [new_note(NEW_1), new_note(NEW_2)]
         seen: list = []
 
         def dedupe(notes, config, progress_updater):
@@ -475,7 +491,7 @@ class ReArmedCancelTests(unittest.TestCase):
         self.updater.begin_cleanup()
         with self.assertRaisesRegex(Exception, "has not been configured"):
             base_ops.add_new_notes(
-                FakeCollection(), [unconfigured_note("-1111111")], CONFIG, POS, self.updater
+                FakeCollection(), [unconfigured_note(NEW_1)], CONFIG, POS, self.updater
             )
         self.win.wantCancel = True
 
@@ -520,7 +536,7 @@ class CleanupStageClockTests(unittest.TestCase):
 
     def test_each_stage_starts_its_own_clock_and_its_progress_calls_do_not_restart_it(self):
         col = SlowCollection(self.clock)
-        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
 
         def new_notes_op(new_notes, config, progress_updater):
             for processed in (1, 2):
@@ -565,7 +581,7 @@ class FakeSearch:
     """The collection behind `col_find_notes` / `col_get_notes`, holding the notes as saved:
     nothing the op changes reaches it, as nothing is saved until cleanup gets the notes back,
     and each read is a fresh note. A `"field:*text*"` term is a substring search, as in Anki,
-    so a longer placeholder holding a shorter one's digits is found too."""
+    so a longer number holding an ID's digits is found too."""
 
     def __init__(self, *notes: FakeNote):
         self.saved = {note.id: dict(note.fields) for note in notes}
@@ -626,49 +642,51 @@ class FakeSearch:
 
 
 class ClearUnaddedNoteIdsTests(unittest.TestCase):
-    """The new notes a cancel of the adding left out: the words linked to them are matched
-    again, since no note will ever hold their placeholders. A failed add keeps its own."""
+    """The new notes the cleanup did not add, a cancel's or a failed add's: the words linked to
+    them are matched again, since no note will ever hold their link IDs."""
 
     def setUp(self):
         self.updater = FakeUpdater()
 
     def test_the_words_of_a_note_not_added_are_cleared_where_they_are_saved(self):
-        not_added = new_note("-1111111")
-        # its add was attempted and raised; not among the notes handed over
-        failed = new_note("-2222222")
-        both = sentence(2, w("様", [-1111111, 3]), w("本", [-2222222]))
-        nested = sentence(3, w("本棚", ["dontmatch"], (w("本", [-1111111]), w("棚", [444]))))
-        longer = sentence(4, w("机", [-11111112]))
+        not_added = new_note(NEW_1)
+        # another new note's, added: not among the notes handed over
+        added = new_note(NEW_2)
+        both = sentence(2, w("様", [NEW_1, 3]), w("本", [NEW_2]))
+        nested = sentence(3, w("本棚", ["dontmatch"], (w("本", [NEW_1]), w("棚", [444]))))
+        # A longer number holding the ID's digits, which the substring search finds too
+        longer_id = int(f"9{NEW_1}")
+        longer = sentence(4, w("机", [longer_id]))
         search = FakeSearch(both, nested, longer)
 
         with search.patched():
             updated = mwtn.clear_unadded_note_ids([not_added], CONFIG, self.updater)
 
-        # found by the substring search, but its placeholder is another note's: not handed
-        # back to be saved
+        # found by the substring search, but its ID is another one: not handed back to be
+        # saved
         self.assertEqual(sorted(updated), [2, 3])
-        self.assertEqual(match_data(updated[2]), [["match"], [-2222222]])
+        self.assertEqual(match_data(updated[2]), [["match"], [NEW_2]])
         self.assertEqual(match_data(updated[3]), [["dontmatch"], ["match"], [444]])
         self.assertEqual(search.read, [2, 3, 4])
-        self.assertEqual(search.queries, ['("word_list_field:*-1111111*")'])
-        self.assertEqual((not_added.id, not_added["new_note_id_field"]), (0, "-1111111"))
-        self.assertEqual(failed["new_note_id_field"], "-2222222")
+        self.assertEqual(search.queries, [f'("word_list_field:*{NEW_1}*")'])
+        self.assertEqual((not_added.id, not_added["new_note_id_field"]), (0, str(NEW_1)))
+        self.assertEqual(added["new_note_id_field"], str(NEW_2))
         self.assertEqual(self.updater.clearing, [(0, 1), (1, 1)])
 
-    def test_many_placeholders_are_searched_for_together_and_a_note_is_read_once(self):
-        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
-        first_and_last = sentence(2, w("様", [-1111111]), w("本", [-3333333, 2]))
-        second = sentence(3, w("棚", [-2222222]))
+    def test_many_link_ids_are_searched_for_together_and_a_note_is_read_once(self):
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
+        first_and_last = sentence(2, w("様", [NEW_1]), w("本", [NEW_3, 2]))
+        second = sentence(3, w("棚", [NEW_2]))
         search = FakeSearch(first_and_last, second)
 
-        with search.patched(), mock.patch.object(mwtn, "PLACEHOLDERS_PER_SEARCH", 2):
+        with search.patched(), mock.patch.object(mwtn, "LINK_IDS_PER_SEARCH", 2):
             updated = mwtn.clear_unadded_note_ids(notes, CONFIG, self.updater)
 
         self.assertEqual(
             search.queries,
             [
-                '("word_list_field:*-1111111*" OR "word_list_field:*-2222222*")',
-                '("word_list_field:*-3333333*")',
+                f'("word_list_field:*{NEW_1}*" OR "word_list_field:*{NEW_2}*")',
+                f'("word_list_field:*{NEW_3}*")',
             ],
         )
         # the second search finds the first note again, in the collection as it was saved, and
@@ -680,26 +698,29 @@ class ClearUnaddedNoteIdsTests(unittest.TestCase):
         self.assertEqual(self.updater.clearing, [(0, 3), (2, 3), (3, 3)])
 
     def test_a_field_that_is_no_array_is_left_as_it_is_and_tagged(self):
-        broken_text = '[["様", "noun", "様", "さま", [-1111111], ['
+        broken_text = f'[["様", "noun", "様", "さま", [{NEW_1}], ['
         broken = FakeNote({"word_list_field": broken_text, "new_note_id_field": ""}, 5)
         # a note of a kind the match op writes no arrays into, whatever its field holds
-        other_kind = FakeNote({"word_list_field": "-1111111"}, 6)
+        other_kind = FakeNote({"word_list_field": str(NEW_1)}, 6)
         search = FakeSearch(broken, other_kind)
 
         with search.patched():
-            updated = mwtn.clear_unadded_note_ids([new_note("-1111111")], CONFIG, self.updater)
+            updated = mwtn.clear_unadded_note_ids([new_note(NEW_1)], CONFIG, self.updater)
 
         self.assertEqual(search.read, [5, 6])
         self.assertEqual(list(updated), [5])
         self.assertEqual(updated[5]["word_list_field"], broken_text)
         self.assertEqual(updated[5].tags, [mwtn.INVALID_WORD_ARRAY_TAG])
 
-    def test_a_note_holding_no_placeholder_is_not_searched_for(self):
-        search = FakeSearch(sentence(2, w("様", [42])))
+    def test_a_note_holding_no_link_id_is_not_searched_for(self):
+        """Nor by the note id a link ID falls back to: a note not added has none, and the
+        words linked to any other note are not this one's to clear. A legacy placeholder is
+        no link ID either (link_ids.parse_link_id)."""
+        search = FakeSearch(sentence(2, w("様", [-1111111]), w("本", [0])))
 
         with search.patched():
             updated = mwtn.clear_unadded_note_ids(
-                [new_note(""), new_note("42")], CONFIG, self.updater
+                [new_note(""), new_note("0"), new_note("-1111111")], CONFIG, self.updater
             )
 
         self.assertEqual((search.queries, updated), ([], {}))
@@ -717,6 +738,9 @@ class SearchableCollection(FakeCollection):
 
     def add_note(self, note, deck_id):
         super().add_note(note, deck_id)
+        if note.id:
+            # Written as the note_will_be_added hooks left it, as Anki's add does
+            self.search.saved[note.id] = dict(note.fields)
         # From the note_will_be_added hooks, which run to the end whatever is pressed
         if note is self.press_cancel_during:
             self.updater.cancel_pressed = True
@@ -742,10 +766,10 @@ class Recorder:
         return self.returns
 
 
-def meaning_note(sort: str, meaning: str, placeholder: str) -> FakeNote:
+def meaning_note(sort: str, meaning: str, held: int) -> FakeNote:
     return FakeNote({
         "word_list_field": "",
-        "new_note_id_field": placeholder,
+        "new_note_id_field": str(held),
         "word_sort_field": sort,
         "english_meaning_field": meaning,
         "meaning_field": "",
@@ -755,8 +779,8 @@ def meaning_note(sort: str, meaning: str, placeholder: str) -> FakeNote:
 class CancelledAddingTests(unittest.TestCase):
     """The cleanup's own cancel, pressed during the adding or the dedupe before it (SPEC D11).
 
-    Added notes are resolved, failed ones keep their placeholders, and the ones never tried
-    are unlinked: their words go back to be matched again.
+    Added notes keep the link IDs the arrays link them by; the failed ones and the ones never
+    tried are unlinked: their words go back to be matched again.
     """
 
     def setUp(self):
@@ -766,55 +790,43 @@ class CancelledAddingTests(unittest.TestCase):
         self.updater = FakeUpdater()
 
     def add(self, col, notes, **ops):
-        new_notes_op = ops.pop("new_notes_op", mwtn.update_fake_note_ids)
-        return base_ops.add_new_notes(
-            col, notes, CONFIG, POS, self.updater, new_notes_op, **ops
-        )
+        # The match op's: no new_notes_op, since nothing is rewritten after the add
+        return base_ops.add_new_notes(col, notes, CONFIG, POS, self.updater, **ops)
 
     def test_a_cancel_between_adds_leaves_the_rest_to_be_unlinked(self):
-        notes = [new_note(p) for p in ("-1111111", "-2222222", "-3333333", "-4444444")]
+        notes = [new_note(held) for held in (NEW_1, NEW_2, NEW_3, NEW_4)]
         added_first, failing, added_last, left_out = notes
         referencing = sentence(
             2,
-            w("様", [-1111111]),
-            w("本", [-2222222, 3]),
-            w("棚", [-3333333]),
-            w("机", [-4444444, 2]),
+            w("様", [NEW_1]),
+            w("本", [NEW_2, 3]),
+            w("棚", [NEW_3]),
+            w("机", [NEW_4, 2]),
         )
         search = FakeSearch(referencing)
         col = SearchableCollection(search, self.updater, failing=(failing,))
         col.press_cancel_during = added_last
-        resolved: list = []
-
-        def new_notes_op(new_notes, config, progress_updater):
-            resolved.extend(new_notes)
-            return mwtn.update_fake_note_ids(new_notes, config, progress_updater)
 
         with search.patched():
-            result = self.add(
-                col,
-                notes,
-                new_notes_op=new_notes_op,
-                unadded_notes_op=mwtn.clear_unadded_note_ids,
-            )
+            result = self.add(col, notes, unadded_notes_op=mwtn.clear_unadded_note_ids)
 
         # The note being added when Cancel was pressed is added: its hooks run to the end
         self.assertEqual([note for note, _ in col.added], [added_first, added_last])
-        self.assertEqual(resolved, [added_first, added_last])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(2, 1, 1))
         self.assertEqual(left_out.id, 0)
         saved = FakeNote(dict(search.saved[2]), 2)
-        # resolved, kept as the trace of a failed add, resolved, matched again
-        self.assertEqual(match_data(saved), [[501], [-2222222, 3], [502], ["match"]])
+        # linked as it was, matched again (a failed add), linked as it was, matched again
+        self.assertEqual(match_data(saved), [[NEW_1], ["match"], [NEW_3], ["match"]])
         self.assertTrue(self.updater.cancel_ended)
-        self.assertEqual(self.updater.clearing[-1], (1, 1))
+        # The failed add and the note never tried, in one search
+        self.assertEqual(self.updater.clearing[-1], (2, 2))
         # Every write in the run's one undo entry, the unlinking's last
         self.assertEqual(set(col.merged), {POS})
         self.assertEqual(result.op_changes, f"changes after {len(col.merged)} merges")
         self.assertIn(2, result.updated_nids)
 
-    def test_the_unlinking_gets_only_the_notes_never_tried(self):
-        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+    def test_the_unlinking_gets_the_failed_adds_and_the_notes_never_tried(self):
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
         col = SearchableCollection(FakeSearch(), self.updater, failing=(notes[0],))
         col.press_cancel_during = notes[1]
         resolving, unlinking = Recorder(), Recorder()
@@ -822,12 +834,12 @@ class CancelledAddingTests(unittest.TestCase):
         result = self.add(col, notes, new_notes_op=resolving, unadded_notes_op=unlinking)
 
         self.assertEqual(resolving.handed, [[notes[1]]])
-        self.assertEqual(unlinking.handed, [[notes[2]]])
+        self.assertEqual(unlinking.handed, [[notes[0], notes[2]]])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 1, 1))
         self.assertEqual(self.updater.adding[-1], (1, 3, 1))
 
     def test_a_cancel_before_the_first_add_adds_nothing_and_unlinks_everything(self):
-        notes = [new_note("-1111111"), new_note("-2222222")]
+        notes = [new_note(NEW_1), new_note(NEW_2)]
         col = FakeCollection()
         self.updater.cancel_pressed = True
         resolving, unlinking = Recorder(), Recorder()
@@ -840,21 +852,21 @@ class CancelledAddingTests(unittest.TestCase):
         self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 0, 2))
         self.assertTrue(self.updater.cancel_ended)
 
-    def test_without_a_cancel_nothing_is_unlinked(self):
-        notes = [new_note("-1111111"), new_note("-2222222")]
+    def test_without_a_cancel_only_the_failed_adds_are_unlinked(self):
+        notes = [new_note(NEW_1), new_note(NEW_2)]
         col = FakeCollection(failing=(notes[1],))
         resolving, unlinking = Recorder(), Recorder()
 
         result = self.add(col, notes, new_notes_op=resolving, unadded_notes_op=unlinking)
 
         self.assertEqual(resolving.handed, [[notes[0]]])
-        self.assertEqual(unlinking.handed, [])
+        self.assertEqual(unlinking.handed, [[notes[1]]])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 1, 0))
         # Nothing is left for the Cancel to stop once the adding is over
         self.assertTrue(self.updater.cancel_ended)
 
     def test_a_note_with_no_deck_to_go_to_is_a_failed_add(self):
-        no_deck = new_note("-1111111")
+        no_deck = new_note(NEW_1)
         no_deck.note_type = lambda: {"name": "Other"}  # type: ignore[method-assign]
         config = {**CONFIG, "Other": {**CONFIG["Word"], "insert_deck": "Missing"}}
         col = FakeCollection()
@@ -866,11 +878,11 @@ class CancelledAddingTests(unittest.TestCase):
 
         self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 1, 0))
         self.assertEqual(self.updater.adding[-1], (0, 1, 1))
-        self.assertEqual(unlinking.handed, [])
+        self.assertEqual(unlinking.handed, [[no_deck]])
 
     def test_a_note_type_with_no_insert_deck_adds_to_the_default_deck(self):
         """The key is optional, as config.md says; left out, it stopped every add."""
-        note = new_note("-1111111")
+        note = new_note(NEW_1)
         config = {"Word": {k: v for k, v in CONFIG["Word"].items() if k != "insert_deck"}}
         col = FakeCollection()
 
@@ -882,9 +894,9 @@ class CancelledAddingTests(unittest.TestCase):
     def test_a_cancel_during_the_dedupe_unlinks_every_note_as_prepared(self):
         """The duplicate the dedupe dropped included: an interrupted dedupe leaves some of
         its references pointing at it."""
-        kept, duplicate, other = new_note("-1111111"), new_note("-2222222"), new_note("-3333333")
-        remapped = FakeNote({"word_list_field": "[[-1111111]]"}, note_id=2)
-        removed = FakeNote({"word_list_field": "[[-1111111]]"}, note_id=3)
+        kept, duplicate, other = new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)
+        remapped = FakeNote({"word_list_field": f"[[{NEW_1}]]"}, note_id=2)
+        removed = FakeNote({"word_list_field": f"[[{NEW_1}]]"}, note_id=3)
         col = FakeCollection()
         unlinking = Recorder(returns={4: FakeNote({}, 4), 0: FakeNote({}, 0)})
 
@@ -916,7 +928,7 @@ class CancelledAddingTests(unittest.TestCase):
     def test_a_cancel_in_the_adding_after_a_finished_dedupe_leaves_its_duplicates_out(self):
         """The dedupe remapped every reference to a duplicate it dropped, so only the rest of
         the deduped list is left to unlink."""
-        kept, duplicate, other = new_note("-1111111"), new_note("-2222222"), new_note("-3333333")
+        kept, duplicate, other = new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)
         col = SearchableCollection(FakeSearch(), self.updater)
         col.press_cancel_during = kept
         unlinking = Recorder()
@@ -937,14 +949,14 @@ class CancelledAddingTests(unittest.TestCase):
         dedupe = Recorder()
         unlinking = Recorder()
         self.updater.cancel_pressed = True
-        notes = [new_note("-1111111")]
+        notes = [new_note(NEW_1)]
 
         self.add(FakeCollection(), notes, filter_new_notes_op=dedupe, unadded_notes_op=unlinking)
 
         self.assertEqual((dedupe.handed, unlinking.handed), ([], [notes]))
 
     def test_the_cancel_is_armed_before_the_dedupe_with_every_note_as_prepared(self):
-        notes = [new_note("-1111111"), new_note("-2222222"), new_note("-3333333")]
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
         armed_at_dedupe: list = []
 
         def dedupe(notes, config, progress_updater):
@@ -966,7 +978,7 @@ class CancelledAddingTests(unittest.TestCase):
         self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 0, 0))
 
     def test_an_unlinking_that_raises_loses_nothing_else(self):
-        notes = [new_note("-1111111"), new_note("-2222222")]
+        notes = [new_note(NEW_1), new_note(NEW_2)]
         col = FakeCollection()
         col_add = col.add_note
 
@@ -991,21 +1003,21 @@ class CancelledAddingTests(unittest.TestCase):
         self.assertEqual(result.updated_nids, [2])
 
 
-def unconfigured_note(placeholder: str) -> FakeNote:
+def unconfigured_note(held: int) -> FakeNote:
     """A new note whose note type the config does not know: get_field_config raises for it."""
-    note = new_note(placeholder)
+    note = new_note(held)
     note.note_type = lambda: {"name": "Unconfigured"}  # type: ignore[method-assign]
     return note
 
 
 class AddHookWritesIdFieldTests(unittest.TestCase):
-    """An add hook that writes `new_note_id_field`, the one record of a new note's placeholder.
+    """An add hook that writes `new_note_id_field`, which holds the link ID the arrays link a
+    new note by (base_ops.link_id_kept).
 
     `col.add_note` runs every addon's note_will_be_added hook on the note before adding it. A
-    CopyAnywhere definition filling that field with the note's id wrote "0" there, and the
-    resolving, which read the placeholder back off the note, took it for a note with nothing
-    to resolve: it searched for nothing, wrote the note's id into the field, and every array
-    linking the note kept the placeholder.
+    CopyAnywhere definition filling that field with the note's id writes "0" there: the note's
+    link ID would then be its note id, which no array links, and the arrays saved before the
+    adding would link nothing.
     """
 
     def setUp(self):
@@ -1015,41 +1027,54 @@ class AddHookWritesIdFieldTests(unittest.TestCase):
         self.updater = FakeUpdater()
 
     def add(self, col, notes, **ops):
-        return base_ops.add_new_notes(
-            col, notes, CONFIG, POS, self.updater, mwtn.update_fake_note_ids, **ops
-        )
+        return base_ops.add_new_notes(col, notes, CONFIG, POS, self.updater, **ops)
 
-    def test_the_arrays_linking_the_note_are_resolved_all_the_same(self):
-        added = new_note("-1111111")
-        search = FakeSearch(sentence(2, w("様", [-1111111, 4])), sentence(3, w("本", [77])))
+    def test_the_note_keeps_its_link_id_and_is_saved_again_holding_it(self):
+        added = new_note(NEW_1)
+        linking = sentence(2, w("様", [NEW_1, 4]))
+        search = FakeSearch(linking, sentence(3, w("本", [77])))
         col = SearchableCollection(search, self.updater)
         col.hook = writes_its_id
 
         with search.patched():
             result = self.add(col, [added])
 
-        self.assertEqual(search.queries, ['"word_list_field:*-1111111*"'])
-        self.assertEqual(match_data(FakeNote(dict(search.saved[2]), 2)), [[501, 4]])
-        self.assertEqual(result.updated_nids, [2])
-        # Saved holding its own id, as a note no hook touched is
-        self.assertEqual(search.saved[501]["new_note_id_field"], "501")
+        self.assertEqual(added["new_note_id_field"], str(NEW_1))
+        # The add wrote the hook's "0"; saved again holding the ID, in the run's undo entry
+        self.assertEqual(col.updated, [added])
+        self.assertEqual(search.saved[501]["new_note_id_field"], str(NEW_1))
+        self.assertEqual(col.merged, [POS, POS])
+        # Nothing looked for and nothing rewritten: the array links the note already
+        self.assertEqual(search.queries, [])
+        self.assertEqual(search.saved[2], linking.fields)
+        # The added note is counted as added, not as an edited note
+        self.assertEqual(result.updated_nids, [])
 
-    def test_a_note_whose_add_then_fails_keeps_its_placeholder(self):
-        failing = new_note("-1111111")
-        search = FakeSearch(sentence(2, w("様", [-1111111])))
+    def test_a_note_no_hook_touched_is_not_saved_again(self):
+        added = new_note(NEW_1)
+        col = SearchableCollection(FakeSearch(), self.updater)
+
+        self.add(col, [added])
+
+        self.assertEqual((col.updated, col.merged), ([], [POS]))
+        self.assertEqual(col.search.saved[501]["new_note_id_field"], str(NEW_1))
+
+    def test_a_note_whose_add_then_fails_is_unlinked_by_the_id_it_was_made_with(self):
+        failing = new_note(NEW_1)
+        search = FakeSearch(sentence(2, w("様", [NEW_1])))
         col = SearchableCollection(search, self.updater, failing=(failing,))
         col.hook = writes_its_id
 
         with search.patched():
-            result = self.add(col, [failing])
+            result = self.add(col, [failing], unadded_notes_op=mwtn.clear_unadded_note_ids)
 
         self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 1, 0))
-        self.assertEqual(failing["new_note_id_field"], "-1111111")
-        self.assertEqual(match_data(FakeNote(dict(search.saved[2]), 2)), [[-1111111]])
+        self.assertEqual(failing["new_note_id_field"], str(NEW_1))
+        self.assertEqual(match_data(FakeNote(dict(search.saved[2]), 2)), [["match"]])
 
     def test_a_cancel_during_the_hook_still_unlinks_the_notes_left_out(self):
-        added, left_out = new_note("-1111111"), new_note("-2222222")
-        search = FakeSearch(sentence(2, w("様", [-1111111]), w("本", [-2222222, 3])))
+        added, left_out = new_note(NEW_1), new_note(NEW_2)
+        search = FakeSearch(sentence(2, w("様", [NEW_1]), w("本", [NEW_2, 3])))
         col = SearchableCollection(search, self.updater)
         col.hook = writes_its_id
         col.press_cancel_during = added
@@ -1057,9 +1082,10 @@ class AddHookWritesIdFieldTests(unittest.TestCase):
         with search.patched():
             self.add(col, [added, left_out], unadded_notes_op=mwtn.clear_unadded_note_ids)
 
-        self.assertEqual(match_data(FakeNote(dict(search.saved[2]), 2)), [[501], ["match"]])
+        self.assertEqual(match_data(FakeNote(dict(search.saved[2]), 2)), [[NEW_1], ["match"]])
+        self.assertEqual(search.saved[501]["new_note_id_field"], str(NEW_1))
 
-    def test_a_field_holding_no_placeholder_is_the_hooks_to_write(self):
+    def test_a_field_holding_no_link_id_is_the_hooks_to_write(self):
         # A note some other op prepared: there is nothing of the match op's in the field
         note = new_note("")
         col = FakeCollection()
@@ -1084,7 +1110,7 @@ class CleanupTailTests(unittest.TestCase):
         self.updater = FakeUpdater()
 
     def test_a_resolving_that_raises_after_a_partial_cancel_still_unlinks_then_fails(self):
-        notes = [new_note("-1111111"), new_note("-2222222")]
+        notes = [new_note(NEW_1), new_note(NEW_2)]
         col = SearchableCollection(FakeSearch(), self.updater)
         col.press_cancel_during = notes[0]
         unlinked = FakeNote({"word_list_field": "[]"}, note_id=9)
@@ -1111,12 +1137,12 @@ class CleanupTailTests(unittest.TestCase):
             base_ops.logger, "ERROR"
         ):
             base_ops.add_new_notes(
-                FakeCollection(), [new_note("-1111111")], CONFIG, POS, self.updater,
+                FakeCollection(), [new_note(NEW_1)], CONFIG, POS, self.updater,
                 Recorder(raises=True), unadded_notes_op=Recorder(),
             )
 
     def test_a_raise_in_the_add_loop_still_ends_the_cancel(self):
-        notes = [new_note("-1111111"), unconfigured_note("-2222222")]
+        notes = [new_note(NEW_1), unconfigured_note(NEW_2)]
 
         with self.assertRaisesRegex(Exception, "has not been configured"):
             base_ops.add_new_notes(FakeCollection(), notes, CONFIG, POS, self.updater)
@@ -1130,7 +1156,7 @@ class CleanupTailTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "the dedupe broke"):
             base_ops.add_new_notes(
-                FakeCollection(), [new_note("-1111111")], CONFIG, POS, self.updater,
+                FakeCollection(), [new_note(NEW_1)], CONFIG, POS, self.updater,
                 filter_new_notes_op=dedupe,
             )
 
@@ -1166,10 +1192,11 @@ class EditedNotesCountTests(unittest.TestCase):
         self.assertEqual((edited, other), ([2, 3], [8, 9]))
 
     def test_through_a_cancelled_adding_the_added_notes_are_not_counted_as_edited(self):
-        """They are counted as added; the notes rewritten for them are what was edited."""
-        added_note, left_out = new_note("-1111111"), new_note("-2222222")
-        selected = sentence(2, w("様", [-1111111]))
-        not_selected = sentence(9, w("本", [-2222222, 3]))
+        """They are counted as added; the notes rewritten for them are what was edited: here
+        only the unlinked one, as the sentence linking the added note needs no rewriting."""
+        added_note, left_out = new_note(NEW_1), new_note(NEW_2)
+        selected = sentence(2, w("様", [NEW_1]))
+        not_selected = sentence(9, w("本", [NEW_2, 3]))
         search = FakeSearch(selected, not_selected)
         col = SearchableCollection(search, self.updater)
         col.press_cancel_during = added_note
@@ -1177,16 +1204,15 @@ class EditedNotesCountTests(unittest.TestCase):
         with search.patched():
             result = base_ops.add_new_notes(
                 col, [added_note, left_out], CONFIG, POS, self.updater,
-                mwtn.update_fake_note_ids, unadded_notes_op=mwtn.clear_unadded_note_ids,
+                unadded_notes_op=mwtn.clear_unadded_note_ids,
             )
         edited: list = []
         other: list = []
         base_ops.count_new_notes_edits(result, {2}, edited, other)
 
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 1))
-        # The added note was saved too, with its own id written in
-        self.assertIn(added_note, col.updated)
-        self.assertEqual((edited, other), ([2], [9]))
+        self.assertNotIn(added_note, col.updated)
+        self.assertEqual((edited, other), ([], [9]))
 
 
 class DedupeCancelTests(unittest.TestCase):
@@ -1195,12 +1221,12 @@ class DedupeCancelTests(unittest.TestCase):
     def setUp(self):
         self.updater = FakeUpdater()
         self.notes = [
-            meaning_note("hon(m1)", "book", "-1000001"),
-            meaning_note("hon(m2)", "book", "-1000002"),
-            meaning_note("yama(m1)", "mountain", "-1000003"),
-            meaning_note("yama(m2)", "mountain", "-1000004"),
+            meaning_note("hon(m1)", "book", NEW_1),
+            meaning_note("hon(m2)", "book", NEW_2),
+            meaning_note("yama(m1)", "mountain", NEW_3),
+            meaning_note("yama(m2)", "mountain", NEW_4),
         ]
-        self.search = FakeSearch(sentence(2, w("本", [-1000002]), w("山", [-1000004, 2])))
+        self.search = FakeSearch(sentence(2, w("本", [NEW_2]), w("山", [NEW_4, 2])))
         find_notes = self.search.find_notes
 
         def find_and_press(query):
@@ -1216,7 +1242,7 @@ class DedupeCancelTests(unittest.TestCase):
 
         self.assertEqual(notes, self.notes)
         # The first merge remapped its duplicate to the note kept; the second never ran
-        self.assertEqual(match_data(updated[2]), [[-1000001], [-1000004, 2]])
+        self.assertEqual(match_data(updated[2]), [[NEW_1], [NEW_4, 2]])
         self.assertEqual(len(self.search.queries), 1)
 
     def test_without_an_updater_nothing_stops_it(self):
@@ -1225,7 +1251,8 @@ class DedupeCancelTests(unittest.TestCase):
             notes, updated = mwtn.deduplicate_notes_list(self.notes, CONFIG)
 
         self.assertEqual(notes, [self.notes[0], self.notes[2]])
-        self.assertEqual(match_data(updated[2]), [[-1000001], [-1000003, 2]])
+        # Repointed by link ID, the match_quality kept
+        self.assertEqual(match_data(updated[2]), [[NEW_1], [NEW_3, 2]])
 
     def test_through_the_cleanup_every_word_linked_to_a_prepared_note_is_matched_again(self):
         col = SearchableCollection(self.search, self.updater)
@@ -1240,7 +1267,6 @@ class DedupeCancelTests(unittest.TestCase):
                 CONFIG,
                 POS,
                 self.updater,
-                mwtn.update_fake_note_ids,
                 filter_new_notes_op=mwtn.deduplicate_notes_list,
                 unadded_notes_op=mwtn.clear_unadded_note_ids,
             )
@@ -1250,6 +1276,49 @@ class DedupeCancelTests(unittest.TestCase):
         # The remapped word and the one the dedupe never reached, both unlinked
         saved = FakeNote(dict(self.search.saved[2]), 2)
         self.assertEqual(match_data(saved), [["match"], ["match"]])
+
+
+class DedupeRepointTests(unittest.TestCase):
+    """The words linked to a duplicate are linked to the note kept, by link ID, in the decoded
+    array: the field's text holding the ID's digits only finds the note."""
+
+    def test_a_number_holding_the_duplicate_s_digits_is_another_note_s(self):
+        """The dedupe of existing notes repoints a note linked by its note id, 13 digits, which
+        a generated ID can hold: replaced in the field's text, that ID was cut into another."""
+        kept = FakeNote(
+            {"new_note_id_field": "", "word_sort_field": "hon(m1)",
+             "english_meaning_field": "book", "meaning_field": "本"},
+            1674931277301,
+        )
+        duplicate = FakeNote(
+            {"new_note_id_field": "", "word_sort_field": "hon(m2)",
+             "english_meaning_field": "book, volume", "meaning_field": "書物"},
+            1674931277302,
+        )
+        holding_its_digits = int(f"3{duplicate.id}12")
+        linking = sentence(2, w("本", [duplicate.id, 4]), w("冊", [holding_its_digits]))
+        search = FakeSearch(linking)
+
+        with search.patched():
+            notes, updated = mwtn.deduplicate_notes_list([kept, duplicate], CONFIG)
+
+        self.assertEqual(notes, [kept])
+        self.assertEqual(match_data(updated[2]), [[kept.id, 4], [holding_its_digits]])
+
+    def test_two_pending_duplicates_are_merged_by_their_link_ids(self):
+        kept = meaning_note("hon(m1)", "book", NEW_1)
+        duplicate = meaning_note("hon(m2)", "book, volume", NEW_2)
+        search = FakeSearch(sentence(2, w("本", [NEW_2, 3]), w("本", [NEW_1])))
+
+        with search.patched():
+            notes, updated = mwtn.deduplicate_notes_list([kept, duplicate], CONFIG)
+
+        self.assertEqual(notes, [kept])
+        self.assertEqual(search.queries, [f'"word_list_field:*{NEW_2}*"'])
+        self.assertEqual(match_data(updated[2]), [[NEW_1, 3], [NEW_1]])
+        # The kept note holds its own ID still, and the longer meaning
+        self.assertEqual(kept["new_note_id_field"], str(NEW_1))
+        self.assertEqual(kept["english_meaning_field"], "book, volume")
 
 
 # The two-type layout: the arrays are in "Sentence" notes, under a field name the "Word" block
@@ -1306,32 +1375,18 @@ class TwoTypeLayoutCleanupTests(unittest.TestCase):
 
     def setUp(self):
         self.updater = FakeUpdater()
-        self.old_array = old_array_note(7, w("様", [-1111111]), w("本", [1674931277302]))
-
-    def test_a_new_vocab_note_s_placeholder_is_resolved_in_the_sentence_notes(self):
-        new = FakeNote({"new_note_id_field": "-1111111"}, 501)
-        linking = sentence_note(2, w("様", [-1111111, 3]), w("本", [444]))
-        search = two_type_search(linking, self.old_array)
-
-        with search.patched():
-            updated = mwtn.update_fake_note_ids([new], TWO_TYPE_CONFIG, self.updater)
-
-        self.assertEqual(search.queries, ['"note:Sentence" "s_array:*-1111111*"'])
-        self.assertEqual(list(updated), [2, 501])
-        self.assertEqual(array_match_data(updated[2]), [[501, 3], [444]])
-        self.assertEqual(new["new_note_id_field"], "501")
-        self.assertEqual(search.read, [2])
+        self.old_array = old_array_note(7, w("様", [NEW_1]), w("本", [1674931277302]))
 
     def test_the_words_of_a_vocab_note_not_added_are_cleared_in_the_sentence_notes(self):
-        linking = sentence_note(2, w("様", [-1111111, 3]), w("本", [444]))
+        linking = sentence_note(2, w("様", [NEW_1, 3]), w("本", [444]))
         search = two_type_search(linking, self.old_array)
 
         with search.patched():
             updated = mwtn.clear_unadded_note_ids(
-                [FakeNote({"new_note_id_field": "-1111111"})], TWO_TYPE_CONFIG, self.updater
+                [FakeNote({"new_note_id_field": str(NEW_1)})], TWO_TYPE_CONFIG, self.updater
             )
 
-        self.assertEqual(search.queries, ['"note:Sentence" ("s_array:*-1111111*")'])
+        self.assertEqual(search.queries, [f'"note:Sentence" ("s_array:*{NEW_1}*")'])
         self.assertEqual(list(updated), [2])
         self.assertEqual(array_match_data(updated[2]), [["match"], [444]])
 
@@ -1364,9 +1419,46 @@ class TwoTypeLayoutCleanupTests(unittest.TestCase):
         self.assertEqual(kept["english_meaning_field"], "book, volume")
         self.assertEqual(array_match_data(kept), [[1674931277302]])
 
-    def test_through_a_cancelled_adding_the_sentence_notes_are_resolved_and_unlinked(self):
-        added, left_out = (FakeNote({"new_note_id_field": p}) for p in ("-1111111", "-2222222"))
-        linking = sentence_note(2, w("様", [-1111111]), w("本", [-2222222, 3]))
+    def test_saved_duplicates_are_referred_to_by_their_link_ids(self):
+        """A saved note is linked by its link ID (link_ids.py): the generated ID its field
+        holds, else its note id, whatever else the field holds. A "0" there (CopyAnywhere's
+        `{{__Note_ID}}` written while the note had no id yet) was taken for the kept note's
+        reference, and every array linking the duplicate was pointed at 0."""
+        generated = 1160697660039337
+        kept = FakeNote(
+            {
+                "new_note_id_field": "0",
+                "word_sort_field": "hon(m1)",
+                "english_meaning_field": "book",
+                "meaning_field": "本",
+            },
+            1674931277301,
+        )
+        duplicate = FakeNote(
+            {
+                "new_note_id_field": str(generated),
+                "word_sort_field": "hon(m2)",
+                "english_meaning_field": "book, volume",
+                "meaning_field": "書物",
+            },
+            1674931277302,
+        )
+        # Linked by the duplicate's ID, and by its note id, which is no link to it
+        linking = sentence_note(2, w("本", [generated, 4]), w("本", [1674931277302]))
+        search = two_type_search(linking)
+
+        with search.patched():
+            notes, updated = mwtn.deduplicate_notes_list([kept, duplicate], TWO_TYPE_CONFIG)
+
+        self.assertEqual(notes, [kept])
+        self.assertEqual(search.queries, [f'"note:Sentence" "s_array:*{generated}*"'])
+        self.assertEqual(sorted(updated), [2, 1674931277301])
+        self.assertEqual(array_match_data(updated[2]), [[1674931277301, 4], [1674931277302]])
+
+    def test_through_a_cancelled_adding_the_sentence_notes_keep_the_added_note_s_id(self):
+        """And lose the one left out's; nothing is rewritten for the note added."""
+        added, left_out = (FakeNote({"new_note_id_field": str(h)}) for h in (NEW_1, NEW_2))
+        linking = sentence_note(2, w("様", [NEW_1]), w("本", [NEW_2, 3]))
         search = two_type_search(linking, self.old_array)
         col = SearchableCollection(search, self.updater)
         col.press_cancel_during = added
@@ -1377,37 +1469,57 @@ class TwoTypeLayoutCleanupTests(unittest.TestCase):
         with search.patched():
             result = base_ops.add_new_notes(
                 col, [added, left_out], TWO_TYPE_CONFIG, POS, self.updater,
-                mwtn.update_fake_note_ids, filter_new_notes_op=mwtn.deduplicate_notes_list,
+                filter_new_notes_op=mwtn.deduplicate_notes_list,
                 unadded_notes_op=mwtn.clear_unadded_note_ids,
             )
 
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 1))
-        self.assertEqual(array_match_data(FakeNote(search.saved[2])), [[501], ["match"]])
-        self.assertEqual(search.saved[501]["new_note_id_field"], "501")
+        self.assertEqual(array_match_data(FakeNote(search.saved[2])), [[NEW_1], ["match"]])
+        self.assertEqual(search.saved[501]["new_note_id_field"], str(NEW_1))
         self.assertNotIn(7, [note.id for note in col.updated])
 
 
-class UpdateFakeNoteIdsTypesTests(unittest.TestCase):
-    """New notes of two note types, each with its own name for new_note_id_field."""
+class NewNotesOfTwoTypesTests(unittest.TestCase):
+    """New notes of two note types, each with its own name for its link ID field
+    (note_roles.link_id_field): each note's ID is kept through the add, and unlinked, by its
+    own type's field."""
 
-    def test_each_new_note_is_saved_by_its_own_type_s_id_field(self):
-        """The saving after the resolving read the field of the note that came last, and so
-        left a note of the other type unsaved, its own id written but never stored."""
+    def test_each_note_s_link_id_is_kept_and_unlinked_by_its_own_type_s_field(self):
         config = {
             **CONFIG,
             "Other": {**CONFIG["Word"], "new_note_id_field": "other_id_field"},
         }
-        word_note = FakeNote({"word_list_field": "", "new_note_id_field": "-1111111"}, 501)
-        other_note = FakeNote({"word_list_field": "", "other_id_field": "-2222222"}, 502)
-        other_note.note_type = lambda: {"name": "Other"}  # type: ignore[method-assign]
-        search = FakeSearch()
+        added = new_note(NEW_1)
+        failing = FakeNote({"word_list_field": "", "other_id_field": str(NEW_2)})
+        failing.note_type = lambda: {"name": "Other"}  # type: ignore[method-assign]
+        # In the one-type layout a note holding arrays is told apart by having the new note's
+        # type's ID field (_ArrayLinks.holds_array): one sentence of each kind
+        other_sentence = FakeNote(
+            {"word_list_field": mwtn.format_word_array([w("本", [NEW_2, 3])]),
+             "other_id_field": ""},
+            3,
+        )
+        search = FakeSearch(sentence(2, w("様", [NEW_1])), other_sentence)
+        updater = FakeUpdater()
+        col = SearchableCollection(search, updater, failing=(failing,))
 
-        with search.patched():
-            updated = mwtn.update_fake_note_ids([word_note, other_note], config, FakeUpdater())
+        def writes_both(note):
+            for field in ("new_note_id_field", "other_id_field"):
+                if field in note:
+                    note[field] = "0"
 
-        self.assertEqual(updated, {501: word_note, 502: other_note})
-        self.assertEqual(word_note["new_note_id_field"], "501")
-        self.assertEqual(other_note["other_id_field"], "502")
+        col.hook = writes_both
+        with mock.patch.object(base_ops, "phase_log", lambda _: contextlib.nullcontext()):
+            with search.patched():
+                base_ops.add_new_notes(
+                    col, [added, failing], config, POS, updater,
+                    unadded_notes_op=mwtn.clear_unadded_note_ids,
+                )
+
+        self.assertEqual(search.saved[501]["new_note_id_field"], str(NEW_1))
+        self.assertEqual(failing["other_id_field"], str(NEW_2))
+        self.assertEqual(match_data(FakeNote(dict(search.saved[2]), 2)), [[NEW_1]])
+        self.assertEqual(match_data(FakeNote(dict(search.saved[3]), 3)), [["match"]])
 
 
 def vocab_note(sort: str, note_id: int = 0, **fields: str) -> FakeNote:
@@ -1458,6 +1570,8 @@ class NewNoteHarness(unittest.TestCase):
         self.to_add: dict = {}
         self.to_update: dict = {}
         self.current = vocab_note("", 1)
+        # The run's index of the vocab type, which hands out the new notes' link IDs
+        self.link_index = mwtn.LinkIndex.from_rows([])
         # What the stand-in kana_highlight makes of the next new reading's furigana
         self.processed_furigana = ""
         stack = contextlib.ExitStack()
@@ -1490,6 +1604,7 @@ class NewNoteHarness(unittest.TestCase):
             "word_note_index": index,
             "sentence_cache": None,
             "note_cache": None,
+            "vocab_link_index": self.link_index,
         }
 
     def new_meaning(self, en_meaning: str, *matching: FakeNote) -> FakeNote:
@@ -1537,7 +1652,6 @@ class NewNoteHarness(unittest.TestCase):
                 CONFIG,
                 POS,
                 self.updater,
-                mwtn.update_fake_note_ids,
                 filter_new_notes_op=mwtn.deduplicate_notes_list,
                 unadded_notes_op=mwtn.clear_unadded_note_ids,
             )
@@ -1598,8 +1712,9 @@ class SiblingMarkersTests(NewNoteHarness):
         # word is linked to it and nothing is added or renamed; the quality rated the meaning
         # that is not added, so the word is left to be rated
         first = vocab_note(self.WORD, 1)
-        pending = vocab_note(f"{self.WORD} (m2)", 0, new_note_id_field="-5550001")
-        for holder, linked_id in ((first, 1), (pending, -5550001)):
+        pending = vocab_note(f"{self.WORD} (m2)", 0, new_note_id_field=str(NEW_4))
+        # Each by its link ID: the added note's its note id, its field holding none
+        for holder, linked_id in ((first, 1), (pending, NEW_4)):
             with self.subTest(linked_id=linked_id):
                 tuples: dict = {}
                 qualities = {0: 5}
@@ -1708,11 +1823,11 @@ class SiblingMarkersTests(NewNoteHarness):
         search = FakeSearch(vocab_note(self.WORD, 2))
         with search.patched():
             second = self.new_meaning("words", search.get_note(2))
-        placeholder = int(second["new_note_id_field"])
+        held = int(second["new_note_id_field"])
         # Edited elsewhere in the run: its meaning, and its sentence linked to the new note
         renamed = self.to_update[2]
         renamed["meaning_field"] = "新しい意味"
-        renamed["word_list_field"] = mwtn.format_word_array([w(self.WORD, [placeholder, 3])])
+        renamed["word_list_field"] = mwtn.format_word_array([w(self.WORD, [held, 3])])
 
         self.clean_up(search)
 
@@ -1837,6 +1952,95 @@ class OneTypeNewNoteTests(NewNoteHarness):
         self.assert_sentence_copied(new)
         self.assertEqual(new["word_list_field"], "")
 
+    def test_the_processed_note_names_no_example_and_its_id_field_is_left_empty(self):
+        """Nothing names an example in the one-type layout, so nothing is filled (SPEC D17 is
+        the two-type layout's): the note is as before but for the new note's link ID."""
+        args = {**self.args(index=FakeMarkerIndex()), "word_path": [1]}
+        with FakeSearch().patched():
+            self.assertTrue(mwtn.create_new_note_without_matching(self.CONFIG, "", args))
+
+        new = self.to_add[self.WORD][-1]
+        self.assertEqual(self.current["new_note_id_field"], "")
+        # Keyed by the processed note's link ID, its note id while its field holds none
+        key = f"vocab|{self.current.id}|1|{self.WORD}|ことば"
+        self.assertEqual(new["new_note_id_field"], str(link_ids.new_link_id(key, ())))
+
+
+class NewNoteLinkIdTests(NewNoteHarness):
+    """A new note's link ID (SPEC D16, D18): generated when the note is made, from the processed
+    note's link ID, the word's place in its array, the word and its reading; in the note's
+    new_note_id_field and in its word's result from then on, and kept once added."""
+
+    def made(self, reading: str = "げんご", word_path=(2,), run=None) -> FakeNote:
+        if run is not None:
+            self.link_index = run
+        args = {**self.args(reading, FakeMarkerIndex()), "word_path": list(word_path)}
+        with FakeSearch().patched():
+            self.assertTrue(mwtn.create_new_note_without_matching(CONFIG, "", args))
+        self.tuples = args["processed_word_tuples"]
+        return self.to_add[self.WORD][-1]
+
+    def test_the_word_is_linked_by_the_id_the_note_holds(self):
+        new = self.made()
+
+        held = int(new["new_note_id_field"])
+        self.assertTrue(link_ids.GENERATED_FLOOR <= held < link_ids.LINK_ID_LIMIT)
+        key = f"vocab|{self.current.id}|2|{self.WORD}|げんご"
+        self.assertEqual(held, link_ids.new_link_id(key, ()))
+        self.assertEqual(self.tuples, {0: (self.WORD, "げんご", self.WORD, held)})
+
+    def test_the_same_input_gets_the_same_id_in_another_run(self):
+        first = int(self.made(run=mwtn.LinkIndex.from_rows([]))["new_note_id_field"])
+        again = int(self.made(run=mwtn.LinkIndex.from_rows([]))["new_note_id_field"])
+        elsewhere = int(self.made(word_path=(3,), run=mwtn.LinkIndex.from_rows([]))[
+            "new_note_id_field"
+        ])
+
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, elsewhere)
+
+    def test_two_notes_of_one_run_never_share_an_id(self):
+        """Not even made from one key: two sentence notes holding one link ID, at the same
+        word, and not an ID a vocab note held when the run read its index."""
+        key = f"vocab|{self.current.id}|2|{self.WORD}|げんご"
+        first_choice = link_ids.new_link_id(key, ())
+        run = mwtn.LinkIndex.from_rows([(5, str(first_choice))])
+
+        made = [int(self.made(run=run)["new_note_id_field"]) for _ in range(3)]
+
+        self.assertEqual(len(set(made)), 3)
+        self.assertNotIn(first_choice, made)
+        self.assertEqual(made[0], link_ids.new_link_id(key, {first_choice}))
+
+    def test_a_copied_note_gets_an_id_of_its_own(self):
+        """The copy brings the copied note's ID along, which would make it a second holder."""
+        old = vocab_note(self.WORD, 2, new_note_id_field=str(NEW_3))
+        mwtn.create_new_note_from_matched_note(CONFIG, old, [old], 2, "意味", "sense", "", {
+            **self.args(), "word_path": [2],
+        })
+
+        new = self.to_add[self.WORD][-1]
+        key = f"vocab|{self.current.id}|2|{self.WORD}|ことば"
+        self.assertEqual(new["new_note_id_field"], str(link_ids.new_link_id(key, ())))
+        self.assertEqual(old["new_note_id_field"], str(NEW_3))
+
+    def test_the_id_is_in_the_array_before_the_add_and_unchanged_after_it(self):
+        new = self.made()
+        held = int(new["new_note_id_field"])
+        # The processed note as the match op saves it before the adding: its word linked by
+        # the new note's ID (match_targets.save_results)
+        linking = sentence(9, w(self.WORD, [held, 4]))
+        search = FakeSearch(linking)
+
+        col = self.clean_up(search, cancel_during=NO_CANCEL, tidy=False)
+
+        self.assertEqual([note for note, _ in col.added], [new])
+        self.assertEqual(search.saved[new.id]["new_note_id_field"], str(held))
+        self.assertEqual(new["new_note_id_field"], str(held))
+        # Nothing rewritten after the add, and nothing looked for
+        self.assertEqual(search.saved[9], linking.fields)
+        self.assertEqual(search.queries, [])
+
 
 # The two-type layout as the match op makes new notes in it, each sentence field named apart per
 # block: the sentence type's names, which the vocab type has too (a vocab note's sentence and
@@ -1923,6 +2127,9 @@ class TwoTypeNewNoteTests(unittest.TestCase):
         self.sentence = processed_sentence_note()
         self.cleaned: list = []
         self.looked_up: list = []
+        self.config = NEW_NOTE_CONFIG
+        # The run's index of the vocab type, which hands out the new notes' link IDs
+        self.link_index = mwtn.LinkIndex.from_rows([])
         collection = types.SimpleNamespace(models=types.SimpleNamespace(by_name=self.by_name))
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
@@ -1954,7 +2161,7 @@ class TwoTypeNewNoteTests(unittest.TestCase):
 
     def args(self, index=None) -> dict:
         return {
-            **mwtn.get_match_fields(NEW_NOTE_CONFIG, {"name": "Sentence"}),
+            **mwtn.get_match_fields(self.config, {"name": "Sentence"}),
             "word": self.WORD,
             "reading": "ことば",
             "sentence": self.sentence["s_furigana"],
@@ -1971,20 +2178,31 @@ class TwoTypeNewNoteTests(unittest.TestCase):
             "word_note_index": index or FakeMarkerIndex(),
             "sentence_cache": None,
             "note_cache": None,
+            "word_path": [1],
+            "vocab_link_index": self.link_index,
         }
 
     def made_without_a_match(self) -> TypedNote:
         with FakeSearch().patched():
-            created = mwtn.create_new_note_without_matching(NEW_NOTE_CONFIG, "", self.args())
+            created = mwtn.create_new_note_without_matching(self.config, "", self.args())
         self.assertTrue(created)
         return self.to_add[self.WORD][-1]
 
     def copied_from(self, note_to_copy: TypedNote) -> TypedNote:
         created = mwtn.create_new_note_from_matched_note(
-            NEW_NOTE_CONFIG, note_to_copy, [note_to_copy], 2, "意味", "sense", "", self.args()
+            self.config, note_to_copy, [note_to_copy], 2, "意味", "sense", "", self.args()
         )
         self.assertTrue(created)
         return self.to_add[self.WORD][-1]
+
+    def with_sentence_id_field(self, value: str) -> None:
+        """The sentence type's block names its link ID field, which the processed sentence
+        note holds `value` in."""
+        self.config = {
+            **NEW_NOTE_CONFIG,
+            "Sentence": {**NEW_NOTE_CONFIG["Sentence"], "sentence_id_field": "s_id"},
+        }
+        self.sentence.fields["s_id"] = value
 
     def old_note(self) -> TypedNote:
         """A vocab note of the word holding its own example, and its sentence and array from
@@ -2051,6 +2269,61 @@ class TwoTypeNewNoteTests(unittest.TestCase):
     def test_a_copied_note_is_cleaned_with_the_target_s_sentence(self):
         self.assert_cleaned_with_the_target_s_sentence(self.copied_from(self.old_note()))
 
+    def test_a_new_vocab_note_holds_its_link_id_keyed_by_the_sentence_note_s(self):
+        for make in (self.made_without_a_match, lambda: self.copied_from(self.old_note())):
+            with self.subTest(make=make):
+                self.link_index = mwtn.LinkIndex.from_rows([])
+                new = make()
+
+                key = f"vocab|{self.sentence.id}|1|{self.WORD}|ことば"
+                self.assertEqual(new["new_note_id_field"], str(link_ids.new_link_id(key, ())))
+
+    def test_the_sentence_note_s_empty_id_field_is_filled_with_its_note_id(self):
+        """The new note names it by that, the ID it has anyway (SPEC D15), now written so that
+        it travels with the note (D17): the note is saved by the run in any case, its array
+        linking the new note."""
+        self.with_sentence_id_field("")
+
+        new = self.made_without_a_match()
+
+        self.assertEqual(self.sentence["s_id"], "20")
+        self.assertEqual(new["v_example_id"], "20")
+
+    def test_a_sentence_note_holding_a_link_id_is_named_by_it_and_left_as_it_is(self):
+        held = 4000000000000001
+        self.with_sentence_id_field(str(held))
+
+        new = self.made_without_a_match()
+
+        self.assertEqual((self.sentence["s_id"], new["v_example_id"]), (str(held), str(held)))
+        key = f"vocab|{held}|1|{self.WORD}|ことば"
+        self.assertEqual(new["new_note_id_field"], str(link_ids.new_link_id(key, ())))
+
+    def test_the_new_note_s_id_is_in_the_sentence_array_before_the_add_and_after_it(self):
+        new = self.made_without_a_match()
+        held = int(new["new_note_id_field"])
+        linking = TypedNote("Sentence", {"s_array": mwtn.format_word_array(
+            [w("その", ["dontmatch"]), w(self.WORD, [held, 4])]
+        )}, 20)
+        search = FakeSearch(linking)
+        search.note_types[20] = "Sentence"
+        updater = FakeUpdater()
+        col = SearchableCollection(search, updater)
+
+        with search.patched(), mock.patch.object(
+            base_ops, "phase_log", lambda _: contextlib.nullcontext()
+        ):
+            result = base_ops.add_new_notes(
+                col, [new], self.config, POS, updater,
+                filter_new_notes_op=mwtn.deduplicate_notes_list,
+                unadded_notes_op=mwtn.clear_unadded_note_ids,
+            )
+
+        self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 0, 0))
+        self.assertEqual(search.saved[new.id]["new_note_id_field"], str(held))
+        self.assertEqual(search.saved[20], linking.fields)
+        self.assertEqual(search.queries, [])
+
     def test_a_field_the_sentence_note_lacks_stops_the_note_before_any_rename(self):
         # The copy is checked before the word's other notes are renamed for the new one, which
         # nothing would take back but the tidying
@@ -2089,9 +2362,11 @@ class FinalMessageTests(unittest.TestCase):
 
         self.assertIn("Added 2 of 7 new notes.", message)
         self.assertIn("4 not added, as the adding was cancelled", message)
-        self.assertIn("left to be matched again", message)
-        self.assertIn("1 could not be added", message)
-        self.assertIn("keep their placeholder ids", message)
+        self.assertIn(
+            "1 could not be added: the words linked to them are left to be matched again",
+            message,
+        )
+        self.assertNotIn("placeholder", message)
 
     def test_a_cancel_before_the_first_add_is_said_too(self):
         message = self.succeed(0, not_added=5)
@@ -2552,8 +2827,8 @@ class SelectedNotesOpTidyTests(unittest.TestCase):
         self.assertEqual(self.finished, [([2], [], base_ops.NewNotesCounts(added=1))])
 
     def test_a_note_registered_after_the_op_answered_is_not_added(self):
-        """By a thread a cancel abandoned, during the edited notes' write: its placeholder is
-        in no result saved, so added it would be a note no sentence links to."""
+        """By a thread a cancel abandoned, during the edited notes' write: its link ID is in
+        no result saved, so added it would be a note no sentence links to."""
         search = FakeSearch(vocab_note("言葉", 2))
         answered, late = vocab_note("言葉 (m2)"), vocab_note("言葉 (m3)")
         col = RunCollection(search, self.updater)

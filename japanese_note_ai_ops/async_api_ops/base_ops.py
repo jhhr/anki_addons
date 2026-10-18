@@ -75,6 +75,8 @@ from .run_errors import take_run as take_run_errors
 from .step_failure import failed_step_outcome
 
 from ..call_logging import bulk_op_logging, phase_log
+from ..link_ids import parse_link_id
+from ..note_roles import link_id_field
 from ..utils import get_field_config, print_error_traceback
 
 
@@ -2402,11 +2404,12 @@ async def bulk_nested_notes_op(
 
     # The notes to add are the ones registered by now, taken before the flush: a thread a
     # cancel abandoned goes on registering new notes, and one registered after the flush has
-    # its placeholder in no result saved, so added it would be a note no sentence links to,
-    # and its word matched again for a duplicate. A note is registered before its placeholder
-    # goes into its result, so every one taken here is linked once flushed; one registered
-    # during the flush can leave a placeholder of a note never added, which the next match
-    # run resets. Deep: the thread appends to the word's list, not just the dict.
+    # its link ID in no result saved, so added it would be a note no sentence links to, and
+    # its word matched again for a duplicate. A note is registered before its link ID goes
+    # into its result, so every one taken here is linked once flushed; one registered during
+    # the flush can leave the link ID of a note never added in an array, a link to no note,
+    # which "Find missing matched note ids" puts back to be matched. Deep: the thread appends
+    # to the word's list, not just the dict.
     registered = {word: list(word_notes) for word, word_notes in list(notes_to_add_dict.items())}
     # Only once the driver has returned: until then a note's own save may still come. Outside
     # the finally, as a run the driver raised out of fails before cleanup and keeps nothing
@@ -2814,9 +2817,8 @@ class NewNotesCounts(NamedTuple):
     """How a run's new notes fared in the cleanup, for the final message."""
 
     added: int = 0
-    # Attempted and raised, or skipped with no note type or deck. The arrays keep their
-    # placeholders until the next match run puts them back to be matched: a short-lived
-    # hint for debugging, not a record to rely on.
+    # Attempted and raised, or skipped with no note type or deck. Their words were unlinked,
+    # as those of the notes never attempted were: no note will hold the IDs they link.
     failed: int = 0
     # Never attempted, because the adding was cancelled first. Their words were unlinked.
     not_added: int = 0
@@ -2849,8 +2851,8 @@ def new_notes_message(counts: NewNotesCounts) -> str:
         )
     if counts.failed:
         message += (
-            f"<br>{counts.failed} could not be added: the words linked to them keep their"
-            " placeholder ids."
+            f"<br>{counts.failed} could not be added: the words linked to them are left to be"
+            " matched again."
         )
     return message
 
@@ -2956,7 +2958,8 @@ class NewNotesAdded(NamedTuple):
     # The last merge into the run's undo entry; None when nothing was written
     op_changes: Optional[OpChanges]
     # Notes new_notes_op or unadded_notes_op rewrote that were then saved, bar the added notes
-    # themselves (their own id written in), which the counts have as added
+    # themselves (saved again when an add hook wrote over their link ID), which the counts
+    # have as added
     updated_nids: list[NoteId]
     # Notes filter_new_notes_op rewrote that were then saved
     filtered_nids: list[NoteId]
@@ -2978,7 +2981,7 @@ def count_new_notes_edits(
     """Count the notes the note adding saved into the final message's two figures, each once:
     a selected note as one of the selection edited, any other as an other note.
 
-    The resolving and the unlinking rewrite whichever sentences link to the new notes, often
+    The dedupe and the unlinking rewrite whichever sentences link to the new notes, often
     mostly outside the selection. All were once counted as selected, the added notes
     included, which read "in 50/10 selected notes" and left the other-notes line short.
     """
@@ -3034,43 +3037,51 @@ def _insert_deck_id(col: Collection, config: dict, note: Note) -> Optional[DeckI
     return insert_deck_id
 
 
+class KeptLinkId:
+    """What `link_id_kept` did to one note: `restored` when it put the note's link ID back
+    after an add hook wrote over it."""
+
+    __slots__ = ("restored",)
+
+    def __init__(self) -> None:
+        self.restored = False
+
+
 @contextmanager
-def placeholder_kept(config: dict, note: Note) -> Iterator[None]:
-    """Around one `col.add_note`: the note comes out holding the placeholder it went in with.
+def link_id_kept(config: dict, note: Note) -> Iterator[KeptLinkId]:
+    """Around one `col.add_note`: the note comes out holding the link ID it went in with.
 
-    A new note's placeholder id is how the word arrays link it until the resolving has swapped
-    it for the note's own id, and the note's `new_note_id_field` (the match op's) is the only
-    record of which placeholder that is. `col.add_note` first runs every addon's
+    A new note gets its link ID (link_ids.py) when it is made, in its type's link ID field
+    (note_roles.link_id_field), and the word arrays saved before the adding link it by that
+    ID: the field is what makes the ID the note's. `col.add_note` first runs every addon's
     note_will_be_added hook on the note, and a hook can write that field: a CopyAnywhere
-    definition filling it with the note's id wrote "0", the id of a note not added yet. The
-    resolving, which reads the placeholder back off the note, took that for a note with nothing
-    to resolve, and every array linking the note kept its placeholder until the next match run
-    found no note holding it and asked about the word again. The capture's records of the add
-    read the same field.
+    definition filling it with the note's id writes "0", the id of a note not added yet, and
+    the note's link ID would then be its note id, which no array links (SPEC D18: the user is
+    to remove such a definition; this keeps the IDs right meanwhile).
 
-    Only the note in memory gets it back. The collection holds what the hook wrote until the
-    resolving saves the note with its own id in the field, which is where it leaves every
-    added note. A field holding no placeholder when the add starts is the hook's to write.
+    The add writes the note to the collection as the hook left it, so putting the field back
+    in the note in memory is not enough: `restored` says the note has to be saved again, which
+    add_new_notes does into the run's undo entry. Put back after a failed add too: the ID it
+    was made with is what the unlinking looks for in the arrays, and what the capture names it
+    by. A field holding no link ID when the add starts is the hook's to write.
     """
+    kept = KeptLinkId()
     note_type = note.note_type()
-    model_config = config.get(note_type["name"]) if note_type else None
-    field = model_config.get("new_note_id_field") if isinstance(model_config, dict) else None
-    # A placeholder as the resolving tells one (update_fake_note_ids)
-    if not field or field not in note or not note[field].startswith("-"):
-        yield
+    field = link_id_field(config, note_type["name"]) if note_type else None
+    if not field or field not in note or parse_link_id(note[field]) is None:
+        yield kept
         return
-    placeholder = note[field]
+    held = note[field]
     try:
-        yield
+        yield kept
     finally:
-        # After a failed add too: its placeholder stays in the arrays, and names it in the
-        # capture
-        if note[field] != placeholder:
+        if note[field] != held:
             logger.debug(
-                f"An add hook wrote {note[field]!r} into {field} of a new note: its placeholder"
-                f" {placeholder} is put back for the resolving"
+                f"An add hook wrote {note[field]!r} into {field} of a new note: its link ID"
+                f" {held} is put back"
             )
-            note[field] = placeholder
+            note[field] = held
+            kept.restored = True
 
 
 def add_new_notes(
@@ -3085,33 +3096,36 @@ def add_new_notes(
     unadded_notes_op: Optional[NewNotesOp] = None,
     notes_to_remove: Optional[set[NoteId]] = None,
 ) -> NewNotesAdded:
-    """Add a run's new notes to the collection: dedupe them, add them, resolve their ids.
+    """Add a run's new notes to the collection: dedupe them, add them, unlink the rest.
 
     The cleanup's note adding, finished and cancelled runs alike. Every write is merged into
     the run's undo entry `pos` as it is made, so the whole run stays one undo step.
+
+    A new note holds its link ID (link_ids.py) from the moment it is made, and the word arrays
+    linking it, saved before this, hold the same ID: an added note needs nothing rewritten.
 
     The adding has a cancel of its own (`arm_cleanup_cancel` re-arms the dialog's, here, when
     there is anything to add), honoured before the dedupe, between its merges, right after it,
     and before each note; never inside one `add_note`, whose hooks run to the end. Once it is
     seen the rest is not added, and the notes are split three ways:
 
-    - added: `new_notes_op` resolves their placeholder ids, as in a finished run, each read
-      off its note, which holds it whatever the add's hooks wrote (`placeholder_kept`);
-    - failed (attempted and raised, or no note type or deck): handed to neither op, so their
-      placeholders stay in the arrays, a hint for debugging that lasts only until the next
-      match run resets them (match_targets.resolve_placeholder_ids);
+    - added: each still holds the link ID it was made with, whatever the add's hooks wrote
+      (`link_id_kept`, and saved again where a hook wrote over it); `new_notes_op`, given,
+      gets them, each with its id;
+    - failed (attempted and raised, or no note type or deck) and
     - not added (never attempted): `unadded_notes_op` puts the words linked to them back to
-      be matched again, since no note will ever hold their placeholders.
+      be matched again, since no note will ever hold their IDs.
 
     Which notes are "not added" depends on where the cancel was seen. Before the first add
     (before, during or right after the dedupe) it is every note as prepared, the dedupe's
     duplicates included: an interrupted dedupe has remapped only some references of a
-    duplicate it dropped, and the rest still point at its placeholder. During the adding it
-    is the rest of the deduped list only. The dedupe finished then, so every reference to a
-    duplicate points at the note kept in its place, which is in that list or already added.
+    duplicate it dropped, and the rest still point at its ID. During the adding it is the
+    rest of the deduped list only. The dedupe finished then, so every reference to a duplicate
+    points at the note kept in its place, which is in that list or already added.
 
-    Resolving and unlinking always run to the end: they are what leaves the arrays
-    consistent. A resolving that raises fails the op, but only after the unlinking has run.
+    `new_notes_op` and the unlinking always run to the end: the unlinking is what leaves the
+    arrays consistent. A `new_notes_op` that raises fails the op, but only after the unlinking
+    has run.
     """
     total_notes = len(notes_to_add)
     logger.debug(f"Adding {total_notes} new notes to note_will_be_added hooks will be run")
@@ -3120,8 +3134,10 @@ def add_new_notes(
     prepared = list(notes_to_add)
     notes = prepared
     added_notes: list[Note] = []
-    failed_cnt = 0
+    failed_notes: list[Note] = []
     not_added: list[Note] = []
+    # The added notes whose link ID an add hook wrote over: the add saved them as it left them
+    rewritten: list[Note] = []
     op_changes: Optional[OpChanges] = None
     updated_nids: list[NoteId] = []
     filtered_nids: list[NoteId] = []
@@ -3183,9 +3199,9 @@ def add_new_notes(
                         break
                     insert_deck_id = _insert_deck_id(col, config, note)
                     if insert_deck_id is None:
-                        failed_cnt += 1
-                        # A failed add like one add_note refuses: its placeholder stays in the
-                        # word arrays, and this is how a notes run tells it from an added note
+                        failed_notes.append(note)
+                        # A failed add like one add_note refuses: its words are unlinked, and
+                        # this is how a notes run tells it from an added note
                         if capture.notes_on():
                             capture_notes.record_note_add(
                                 col, note, config, 0.0, None, capture_notes.undo_step(col),
@@ -3201,14 +3217,14 @@ def add_new_notes(
                         add_started = time.perf_counter()
                         try:
                             logger.debug(f"Adding note {index} to deck {insert_deck_id}")
-                            with placeholder_kept(config, note):
+                            with link_id_kept(config, note) as kept:
                                 col.add_note(note, insert_deck_id)
                         except Exception as e:
                             logger.error(f"Error adding note {index}: {e}")
                             print_error_traceback(e, logger)
                             with note_context(note):
                                 report_exception(e, "Adding the note")
-                            failed_cnt += 1
+                            failed_notes.append(note)
                             if recording:
                                 capture_notes.record_note_add(
                                     col, note, config, time.perf_counter() - add_started, None,
@@ -3218,6 +3234,8 @@ def add_new_notes(
                             one_add = time.perf_counter() - add_started
                             add_seconds += one_add
                             added_notes.append(note)
+                            if kept.restored:
+                                rewritten.append(note)
                             merge_started = time.perf_counter()
                             try:
                                 op_changes = col.merge_undo_entries(pos)
@@ -3239,13 +3257,13 @@ def add_new_notes(
                     progress_updater.update_note_adding_progress(
                         notes_added=len(added_notes),
                         total_notes=total_notes,
-                        failed=failed_cnt,
+                        failed=len(failed_notes),
                     )
             started = log_phase(
                 "cleanup: add_note loop",
                 started,
                 added=len(added_notes),
-                failed=failed_cnt,
+                failed=len(failed_notes),
                 not_added=len(not_added),
                 # Of the loop's time, the adds with their hooks, and the merges
                 add_seconds=round(add_seconds, 3),
@@ -3257,8 +3275,20 @@ def add_new_notes(
         # live and armed there would say it can be stopped. Around the arming too, so a
         # re-arm still queued when it raised does nothing once it lands.
         progress_updater.end_cleanup_cancel()
-    counts = NewNotesCounts(len(added_notes), failed_cnt, len(not_added))
-    # Which placeholder each added note replaces, before new_notes_op resolves them
+    if rewritten:
+        # The add wrote these as an add hook left them: saved again holding the link IDs the
+        # arrays link them by (link_id_kept). Whether the adding was cancelled or not, since
+        # they are in the collection either way
+        try:
+            col.update_notes(rewritten)
+        except Exception as e:
+            logger.error(f"Error saving the link IDs an add hook wrote over: {e}")
+            print_error_traceback(e, logger)
+            report_exception(e, "Saving the link IDs of the notes an add hook changed")
+        op_changes = col.merge_undo_entries(pos)
+        started = log_phase("cleanup: link IDs kept", started, notes=len(rewritten))
+    counts = NewNotesCounts(len(added_notes), len(failed_notes), len(not_added))
+    # The link ID each added note was made with, and the id it got
     capture_notes.record_added(added_notes, config)
     if not_added:
         logger.info(
@@ -3279,18 +3309,14 @@ def add_new_notes(
         except Exception as e:
             # Raised again once the unlinking has run: the words of notes that will never
             # exist must not be left linked to them. Nothing the op rewrote in memory is
-            # saved: the arrays and the added notes' id fields keep the placeholders, and the
-            # next match run over those sentences resolves each as a placeholder one note
-            # holds (or, where an add hook wrote the id field, as one no note holds: the word
-            # is matched again, placeholder_kept). Still a failed op, as it always was: the
-            # user has to see it.
+            # saved. Still a failed op, as it always was: the user has to see it.
             logger.error(f"Error resolving the new notes' ids: {e}")
             print_error_traceback(e, logger)
             resolving_error = e
         started = log_phase("cleanup: new_notes_op", started)
 
-        # Every note the op is given has an id, and so has every note it rewrites; a failed
-        # add is given to no op, and keeps no record but its placeholder
+        # Every note the op is given has an id, and so has every note it rewrites; a note not
+        # added is given to the unlinking only
         valid_notes = list(additional_updates_notes_dict.values())
         if valid_notes:
             try:
@@ -3303,16 +3329,19 @@ def add_new_notes(
             updated_nids = [note.id for note in valid_notes if note.id not in added_nids]
             saved_notes.extend(valid_notes)
 
-    if unadded_notes_op and not_added:
-        # After the resolving has saved its notes: the unlinking reads the arrays from the
-        # collection, and an added note's own array may link to a note that was not added
+    # The failed adds with the notes never attempted: no note will hold the IDs of either
+    unadded = [*failed_notes, *not_added]
+    if unadded_notes_op and unadded:
+        # After new_notes_op's notes are saved: the unlinking reads the arrays from the
+        # collection, and a note that op saved may link to a note that was not added
         progress_updater.begin_cleanup_stage()
         unlinked_notes_dict: dict[NoteId, Note] = {}
         try:
-            unlinked_notes_dict = unadded_notes_op(list(not_added), config, progress_updater)
+            unlinked_notes_dict = unadded_notes_op(unadded, config, progress_updater)
         except Exception as e:
-            # Such as a note type missing from the config. The placeholders it leaves are
-            # repaired by the next match run, which finds no note holding them.
+            # Such as a note type missing from the config. The IDs it leaves link no note:
+            # rating leaves such a word be, and "Find missing matched note ids" puts it back
+            # to be matched.
             logger.error(f"Error unlinking the new notes not added: {e}")
             print_error_traceback(e, logger)
             report_exception(e, "Unlinking the new notes not added")
@@ -3506,8 +3535,8 @@ def notes_run(
             logger.debug("[phase] bulk op returned, starting cleanup")
             # From here on this thread is saving what the run managed to do, which is the whole
             # point of cancelling gracefully - so it keeps its access to the collection even
-            # though the run is cancelled. Some ops have real work left here, such as resolving
-            # the ids of the notes they added. Cleared in run_bulk_op's finally.
+            # though the run is cancelled. Some ops have real work left here, such as unlinking
+            # the notes they could not add. Cleared in run_bulk_op's finally.
             begin_cleanup_phase()
             # Greys the buttons, and waits for that: nothing here heeds a cancel until
             # add_new_notes arms its own

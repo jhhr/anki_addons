@@ -261,6 +261,41 @@ class CompoundFormsTests(unittest.TestCase):
         self.assertEqual(forms, ["心地よい"])
 
 
+class LinkIdTests(unittest.TestCase):
+    """A tagged note whose ID field holds a generated ID (link_ids.py) is linked by that: the
+    arrays are searched for it and their elements holding it give the forms. Its note id is no
+    link to it then."""
+
+    LINK_ID = 1160697660039337
+    CONFIG = {
+        "Vocab": {
+            "word_kanjified_field": "word",
+            "word_list_field": "words",
+            "new_note_id_field": "id",
+        }
+    }
+
+    def test_a_compound_is_listed_by_the_forms_its_link_id_is_held_at(self):
+        note = compound_note()
+        note.fields["id"] = str(self.LINK_ID)
+        [compound] = tag.tagged_compounds(tagged(note), self.CONFIG)
+        self.assertEqual(compound, tag.Compound(self.LINK_ID, "毛羽立つ", "Vocab", "words"))
+        linked = FakeNote(
+            5, {"words": match_flags.format_word_array([element("毛羽立ち", [self.LINK_ID, 3])])}
+        )
+        by_note_id = FakeNote(
+            6, {"words": match_flags.format_word_array([element("毛羽立って", [COMPOUND])])}
+        )
+        col = FakeCollection([linked, by_note_id], {"words:re:": [5, 6]})
+
+        forms = tag.compound_forms(col, compound)
+
+        self.assertEqual(forms, ["毛羽立つ", "毛羽立ち"])
+        [search] = col.searches
+        self.assertIn(str(self.LINK_ID), search)
+        self.assertNotIn(str(COMPOUND), search)
+
+
 class ListCompoundsTests(unittest.TestCase):
     def run_listing(self, compounds, whole):
         """`whole`: form -> the notes whose array has it whole."""

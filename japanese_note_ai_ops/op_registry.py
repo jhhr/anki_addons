@@ -49,9 +49,11 @@ from .async_api_ops.set_furigana import set_furigana_selected_notes
 from .async_api_ops.transcribe_audio import transcribe_selected_notes
 from .async_api_ops.translate_field import translate_selected_notes
 from .async_api_ops.word_matching_judge import word_matching_judge_from_selected_notes
+from .link_ids import FILL_LINK_IDS
 from .sync_local_ops.deduplicate_existing_meaning_notes import (
     deduplicate_existing_meaning_notes_selected_notes,
 )
+from .sync_local_ops.fill_link_ids import fill_link_ids_from_selected
 from .sync_local_ops.find_missing_matched_note_ids import (
     find_missing_matched_note_ids_selected_notes,
 )
@@ -285,6 +287,14 @@ OPS: tuple[OpSpec, ...] = (
         lambda nids, parent, chain: refresh_example_sentences_from_selected(
             nids, parent=parent, chain=chain
         ),
+        needs_generator=False,
+        group=GROUP_SYNC,
+    ),
+    OpSpec(
+        "fill_link_ids",
+        # The name the refusals over duplicate link IDs tell the user to run
+        FILL_LINK_IDS,
+        lambda nids, parent, chain: fill_link_ids_from_selected(nids, parent=parent, chain=chain),
         needs_generator=False,
         group=GROUP_SYNC,
     ),

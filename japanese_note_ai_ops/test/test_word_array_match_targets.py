@@ -101,10 +101,10 @@ class SaveResultsTests(unittest.TestCase):
         sub = word("様", ["match"])
         arr = [word("様に", ["match"], [sub, word("に", ["dontmatch"])]), word("本", ["match"])]
         targets = match_targets.gather_targets(arr)
-        results = {1: ("様", "さま", "様 (m2)", "-1234567"), 2: None}
+        results = {1: ("様", "さま", "様 (m2)", str(NOT_ADDED)), 2: None}
         self.assertEqual(match_targets.save_results(targets, results), 1)
-        # a new note's placeholder id is saved as an int, like a real one
-        self.assertEqual(sub[4], [-1234567])
+        # a new note's link ID given as text is saved as an int, like any other
+        self.assertEqual(sub[4], [NOT_ADDED])
         self.assertEqual(arr[0][4], ["match"])
         self.assertEqual(arr[1][4], ["match"])
 
@@ -166,6 +166,19 @@ class HighlightedSentenceTests(unittest.TestCase):
         self.assertEqual(example("field", text, "棚", "たな", 333), "field")
         self.assertEqual(example("field", '{"nouns": []}', "本", "ほん", 111), "field")
 
+    def test_an_example_sentence_marks_the_occurrence_holding_the_notes_link_id(self):
+        example = match_targets.example_sentence
+        generated = 1160697660039337
+        # The note's note id 111 is no link to it once its field holds an ID: the array holds that
+        arr = [word("本", [111], reading="ほん"), word("と"), word("本", [generated, 4]), ["。"]]
+        text = json.dumps(arr, ensure_ascii=False)
+        self.assertEqual(example("field", text, "本", "ほん", generated), "本と<b>本</b>。")
+        # A note nothing can link yet has no occurrence of its own; an unlinked element's id is
+        # None as well, and is not taken for it
+        unlinked_first = [word("棚"), word("と"), word("本", [111], reading="ほん")]
+        text = json.dumps(unlinked_first, ensure_ascii=False)
+        self.assertEqual(example("field", text, "本", "ほん", None), "棚と<b>本</b>")
+
 
 class WordPathTests(unittest.TestCase):
     def test_the_path_indexes_down_to_the_very_element(self):
@@ -208,48 +221,76 @@ class ResolvePlaceholderIdsTests(unittest.TestCase):
         self.assertFalse(match_targets.has_placeholder_ids([real, word("本", ["match"])]))
 
 
-class ClearPlaceholderIdsTests(unittest.TestCase):
-    """The placeholders of new notes a cancel left out of the adding: no note will hold them."""
+# Link IDs the match op generates for its new notes (link_ids.new_link_id: 16 digits)
+NOT_ADDED, FAILED_ADD, OTHER_NEW = 1111111111111111, 2222222222222222, 3333333333333333
+
+
+class ClearLinkIdsTests(unittest.TestCase):
+    """The link IDs of new notes the cleanup did not add, cancelled or failed: no note will
+    hold them."""
 
     def test_the_words_of_notes_not_added_are_matched_again(self):
-        rated = word("様", [-1111111, 4])
+        rated = word("様", [NOT_ADDED, 4])
         # two levels down, the sub-word of a sub-word
-        nested = word("本", [-1111111])
-        other_not_added = word("棚", [-3333333])
-        failed_add = word("為る", [-2222222], pos="verb")
-        longer = word("机", [-11111112])
-        real = word("椅子", [1111111])
+        nested = word("本", [NOT_ADDED])
+        failed_add = word("為る", [FAILED_ADD], pos="verb")
+        added = word("棚", [OTHER_NEW])
+        longer = word("机", [int(f"9{NOT_ADDED}")])
+        note_id = word("椅子", [1674931277303, 3])
         arr = [
             word("様に", ["dontmatch"], [rated, word("に", ["dontmatch"])]),
             word("本棚", ["dontmatch"], [word("本", [], [nested])]),
-            other_not_added,
             failed_add,
+            added,
             longer,
-            real,
+            note_id,
             ["。"],
         ]
 
-        changed = match_targets.clear_placeholder_ids(arr, [-1111111, -3333333])
+        changed = match_targets.clear_link_ids(arr, [NOT_ADDED, FAILED_ADD])
 
         self.assertEqual(changed, 3)
         self.assertEqual(
-            [e[4] for e in (rated, nested, other_not_added)], [["match"], ["match"], ["match"]]
+            [e[4] for e in (rated, nested, failed_add)], [["match"], ["match"], ["match"]]
         )
-        # a failed add's placeholder is kept on purpose, and a longer placeholder holding the
-        # digits of a cleared one is another note's
-        self.assertEqual([failed_add[4], longer[4], real[4]], [[-2222222], [-11111112], [1111111]])
+        # Another new note's ID stays, and so do a longer number holding the digits of a
+        # cleared one and every note id
+        self.assertEqual(
+            [added[4], longer[4], note_id[4]],
+            [[OTHER_NEW], [int(f"9{NOT_ADDED}")], [1674931277303, 3]],
+        )
 
-    def test_a_real_id_is_never_cleared(self):
-        real = word("本", [1234567, 3])
+    def test_an_id_not_given_is_never_cleared(self):
+        linked = word("本", [OTHER_NEW, 3])
 
-        self.assertEqual(match_targets.clear_placeholder_ids([real], [1234567]), 0)
-        self.assertEqual(real[4], [1234567, 3])
+        self.assertEqual(match_targets.clear_link_ids([linked], [NOT_ADDED]), 0)
+        self.assertEqual(linked[4], [OTHER_NEW, 3])
 
     def test_nothing_to_clear(self):
-        arr = [word("本", ["match"]), word("様", []), word("棚", [-1234567])]
+        arr = [word("本", ["match"]), word("様", []), word("棚", [NOT_ADDED])]
 
-        self.assertEqual(match_targets.clear_placeholder_ids(arr, []), 0)
-        self.assertEqual(arr[2][4], [-1234567])
+        self.assertEqual(match_targets.clear_link_ids(arr, []), 0)
+        self.assertEqual(arr[2][4], [NOT_ADDED])
+
+
+class ReplaceLinkIdTests(unittest.TestCase):
+    """A duplicate merged into the note kept (deduplicate_notes_list): its words are linked to
+    that note, by exact id in the decoded array."""
+
+    def test_every_word_linked_to_the_duplicate_is_linked_to_the_note_kept(self):
+        rated = word("本", [NOT_ADDED, 4])
+        nested = word("本", [NOT_ADDED])
+        # A note id is what an existing duplicate is linked by, which a generated ID can hold
+        holding_its_digits = word("冊", [int(f"3{1674931277302}12")])
+        other = word("棚", [OTHER_NEW])
+        arr = [rated, word("本棚", ["dontmatch"], [nested]), holding_its_digits, other]
+
+        self.assertEqual(match_targets.replace_link_id(arr, NOT_ADDED, FAILED_ADD), 2)
+        self.assertEqual(match_targets.replace_link_id(arr, 1674931277302, 1674931277301), 0)
+
+        self.assertEqual([rated[4], nested[4]], [[FAILED_ADD, 4], [FAILED_ADD]])
+        self.assertEqual(holding_its_digits[4], [int(f"3{1674931277302}12")])
+        self.assertEqual(other[4], [OTHER_NEW])
 
 
 class UnlinkMissingNotesTests(unittest.TestCase):
@@ -306,6 +347,21 @@ class FakeNote:
 class WordIndexCache:
     async def get(self, _):
         return None
+
+
+class LinkIndexCache:
+    """The run's link indexes (link_lookup.LinkIndexCache) over `notes`, as the real one reads
+    a type's notes: each holds what its new_note_id_field holds as its link ID, else its note
+    id. Built with the LinkIndex the module under test resolves link IDs with."""
+
+    def __init__(self, mwtn, *notes):
+        self.mwtn = mwtn
+        self.rows = [(note.id, note.fields.get("new_note_id_field", "")) for note in notes]
+        self.asked = []
+
+    async def get(self, config, note_type_name):
+        self.asked.append(note_type_name)
+        return self.mwtn.LinkIndex.from_rows(self.rows)
 
 
 class MatchWordsToNotesArrayTests(unittest.TestCase):
@@ -422,7 +478,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             seen.append((args["word"], args["part_of_speech"], args["prompt_sentence"]))
             if args["word"] == "様":
                 results = args["processed_word_tuples"]
-                results[args["word_index"]] = ("様", "よみ", "様", -1234567)
+                results[args["word_index"]] = ("様", "よみ", "様", NOT_ADDED)
                 args["match_qualities"][args["word_index"]] = 3
             return True
 
@@ -452,7 +508,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         # each word's prompt has its own occurrence in <b>
         self.assertEqual(seen, [("様", "Suffix", "<b>様</b>本"), ("本", "Noun", "様に<b>本</b>")])
         saved = json.loads(note["word_list_field"])
-        self.assertEqual(saved[0][5][0][4], [-1234567, 3])
+        self.assertEqual(saved[0][5][0][4], [NOT_ADDED, 3])
         self.assertEqual(saved[1][4], ["match"])
         self.assertEqual(updates, {1: note})
         self.assertEqual(edited_nids, [1])
@@ -523,7 +579,10 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             return process
 
         updates, edited_nids = {}, []
-        plan = self.plan(note, arr, Progress(), updates, edited_nids, note_cache=Cache())
+        links = LinkIndexCache(self.mwtn, *meanings.values())
+        plan = self.plan(
+            note, arr, Progress(), updates, edited_nids, note_cache=Cache(), link_index_cache=links
+        )
         # 本, 棚 and 箱 rated; 様 already has its quality
         self.assertEqual(plan.task_count, 3)
 
@@ -547,6 +606,74 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         saved = json.loads(note["word_list_field"])
         self.assertEqual([w[4] for w in saved], [[111, 4], ["dontmatch"], [222], [333, 5], [444]])
         self.assertEqual(edited_nids, [1])
+
+    def test_a_linked_word_is_rated_against_the_note_holding_its_link_id(self):
+        generated, other_generated = 1160697660039337, 1841288010442579
+        # 333 holds the generated ID 本 is linked by; 222 holds another, so the 222 棚 holds is
+        # no link to it (an index answers so, a fetch by note id would not)
+        holder = FakeNote(
+            {
+                "meaning_field": "書物",
+                "english_meaning_field": "book",
+                "new_note_id_field": str(generated),
+            },
+            333,
+        )
+        moved = FakeNote(
+            {
+                "meaning_field": "物を載せる板",
+                "english_meaning_field": "shelf",
+                "new_note_id_field": str(other_generated),
+            },
+            222,
+        )
+        arr = [word("本", [generated], reading="ほん"), word("と"), word("棚", [222])]
+        note = FakeNote({"word_list_field": json.dumps(arr, ensure_ascii=False)})
+        fetched = []
+
+        class Cache:
+            async def get_notes(self, ids):
+                fetched.extend(ids)
+                return {i: n for i, n in ((333, holder), (222, moved)) if i in ids}
+
+        prompts = []
+
+        def get_response(model, prompt, **kwargs):
+            prompts.append((prompt, kwargs["context"]))
+            return {"match_quality": 4}
+
+        def inner_bulk_op(config, op, **_):
+            async def process(**op_args):
+                return await op(config, **op_args)
+
+            return process
+
+        links = LinkIndexCache(self.mwtn, holder, moved)
+        plan = self.plan(
+            note, arr, Progress(), {}, [], note_cache=Cache(), link_index_cache=links
+        )
+        self.assertEqual(plan.task_count, 2)
+
+        async def run():
+            tasks = []
+            plan.spawn(tasks)
+            await asyncio.gather(*tasks)
+
+        with (
+            mock.patch.object(self.mwtn, "get_response", get_response),
+            mock.patch.object(self.mwtn, "make_inner_bulk_op", inner_bulk_op),
+        ):
+            asyncio.run(run())
+
+        # The vocab type's index, and only its holder fetched
+        self.assertEqual(set(links.asked), {"Word"})
+        self.assertEqual(fetched, [333])
+        [(prompt, context)] = prompts
+        self.assertIn("書物", prompt)
+        # The capture context names the note rated, by its note id
+        self.assertEqual(context["note_id"], 333)
+        saved = json.loads(note["word_list_field"])
+        self.assertEqual([w[4] for w in saved], [[generated, 4], [], [222]])
 
     def test_words_matched_again_are_not_rated_too(self):
         arr = [word("本", ["match"]), word("様", [111])]
@@ -576,7 +703,8 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         updates, edited_nids = {}, []
         with mock.patch.object(self.mwtn, "col_find_notes", find_notes):
             plan = self.plan(note, arr, Progress(), updates, edited_nids)
-        # the note itself holds -111, -222 was added as note 55, -333 never was: matched again
+        # the note itself holds -111, -222 was added as note 55, -333 never was: matched again.
+        # Each holder's link ID: its note id, its field holding no ID but the placeholder
         saved = json.loads(note["word_list_field"])
         self.assertEqual([w[4] for w in saved], [[1], [55, 4], ["match"]])
         self.assertEqual(len(queries), 2)
@@ -584,49 +712,26 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         self.assertEqual(plan.task_count, 2)
         self.assertEqual((updates, edited_nids), ({1: note}, [1]))
 
-    def test_a_new_notes_placeholder_id_is_replaced_in_an_array_field(self):
-        arr = [word("様", [-1234567, 3]), word("本", [1674931277303, 4])]
-        fields = {"word_list_field": json.dumps(arr), "new_note_id_field": ""}
-        referencing = FakeNote(fields, note_id=2)
-        new_note = FakeNote({"word_list_field": "", "new_note_id_field": "-1234567"}, 99)
-        with (
-            mock.patch.object(self.mwtn, "col_find_notes", lambda _: [2]),
-            mock.patch.object(self.mwtn, "col_get_notes", lambda _: [referencing]),
+    def test_nothing_is_rewritten_after_the_add(self):
+        """A new note holds its link ID from the moment it is made, so neither entry point
+        hands the cleanup a new_notes_op: what swapped placeholders for note ids is gone
+        (SPEC D18). The notes not added are unlinked, the duplicates merged."""
+        self.assertIsNone(self.mwtn.match_words_spec().new_notes_op)
+        config = {**self.config, "replace_existing_matched_words": False}
+        for start in (
+            self.mwtn.match_words_to_notes_from_selected,
+            self.mwtn.match_single_word_to_notes_from_selected,
         ):
-            updated = self.mwtn.update_fake_note_ids([new_note], self.config, Progress())
-        saved = json.loads(referencing["word_list_field"])
-        self.assertEqual([saved[0][4], saved[1][4]], [[99, 3], [1674931277303, 4]])
-        self.assertEqual(set(updated), {2, 99})
-        # and the note is left holding its own id, which is what the card reads to know
-        # which word of a sentence is its own
-        self.assertEqual(new_note["new_note_id_field"], "99")
-
-    def test_a_new_note_nothing_refers_to_still_gets_its_own_id(self):
-        """It used to keep its placeholder for good: the id was only written where a
-        reference had been rewritten, and nothing had referred to this note."""
-        new_note = FakeNote({"word_list_field": "", "new_note_id_field": "-7654321"}, 42)
-        with (
-            mock.patch.object(self.mwtn, "col_find_notes", lambda _: []),
-            mock.patch.object(self.mwtn, "col_get_notes", lambda _: []),
-        ):
-            updated = self.mwtn.update_fake_note_ids([new_note], self.config, Progress())
-        self.assertEqual(new_note["new_note_id_field"], "42")
-        self.assertEqual(set(updated), {42})
-
-    def test_a_note_already_holding_its_own_id_is_not_searched_for(self):
-        """The field means 'this is me' once it is not a placeholder, so there is nothing to
-        rewrite and no reason to go looking."""
-        searched = []
-        new_note = FakeNote({"word_list_field": "", "new_note_id_field": "42"}, 42)
-        with (
-            mock.patch.object(
-                self.mwtn, "col_find_notes", lambda query: searched.append(query) or []
-            ),
-            mock.patch.object(self.mwtn, "col_get_notes", lambda _: []),
-        ):
-            self.mwtn.update_fake_note_ids([new_note], self.config, Progress())
-        self.assertEqual(searched, [])
-        self.assertEqual(new_note["new_note_id_field"], "42")
+            with self.subTest(start=start.__name__), mock.patch.object(
+                self.mwtn, "selected_notes_op"
+            ) as run, mock.patch.object(self.mwtn, "mw") as fake_mw:
+                fake_mw.addonManager.getConfig.return_value = config
+                start([1], None)
+            [call] = run.call_args_list
+            self.assertEqual(len(call.args), 5)
+            self.assertNotIn("new_notes_op", call.kwargs)
+            self.assertIs(call.kwargs["unadded_notes_op"], self.mwtn.clear_unadded_note_ids)
+            self.assertIs(call.kwargs["filter_new_notes_op"], self.mwtn.deduplicate_notes_list)
 
 
 class SentenceNote(FakeNote):
@@ -816,8 +921,8 @@ def passthrough_inner_bulk_op(config, op, **_):
 class CancelledMatchRunTests(unittest.TestCase):
     """A note's word array is saved once all its word tasks are done, by a task a cancel
     cancels too. So a cancelled run lost every finished word of the notes it was in the middle
-    of, the placeholders of new notes it had made for them among them: cleanup added the new
-    notes, and nothing referred to them."""
+    of, the links to new notes it had made for them among them: cleanup added the new notes,
+    and nothing referred to them."""
 
     def setUp(self):
         self.mwtn = load_ops_module("match_words_to_notes")
@@ -846,7 +951,8 @@ class CancelledMatchRunTests(unittest.TestCase):
         never_started = note(2, [word("棚", ["match"])])
         never_started_field = never_started["word_list_field"]
         linked = FakeNote({"meaning_field": "書物", "english_meaning_field": "book"}, 111)
-        new_note = FakeNote({"new_note_id_field": "-1234567"}, 0)
+        # Made by the run, holding the link ID it was made with
+        new_note = FakeNote({"new_note_id_field": str(NOT_ADDED)}, 0)
         notes_to_add = {}
         updates = {111: linked}
         edited_nids = []
@@ -862,7 +968,7 @@ class CancelledMatchRunTests(unittest.TestCase):
                 # As create_new_note_without_matching does: the note is registered first
                 args["notes_to_add_dict"].setdefault("Word", []).append(new_note)
                 args["match_qualities"][index] = 3
-                args["processed_word_tuples"][index] = ("本", "よみ", "本", -1234567)
+                args["processed_word_tuples"][index] = ("本", "よみ", "本", NOT_ADDED)
             else:
                 args["processed_word_tuples"][index] = ("箱", "よみ", "箱", 555)
             return True
@@ -907,15 +1013,18 @@ class CancelledMatchRunTests(unittest.TestCase):
             mock.patch.object(self.mwtn, "load_meanings_dict_from_file", dict),
             mock.patch.object(self.mwtn, "mw", fake_mw),
             mock.patch.object(self.mwtn, "WordIndexCache", WordIndexCache),
+            mock.patch.object(
+                self.mwtn, "LinkIndexCache", lambda: LinkIndexCache(self.mwtn, linked)
+            ),
             mock.patch.object(self.mwtn, "match_single_word_in_word_tuple", match_word),
             mock.patch.object(self.mwtn, "get_response", lambda *a, **k: {"match_quality": 4}),
         ):
             writes_at_flush = asyncio.run(run())
 
         saved = json.loads(cancelled["word_list_field"])
-        # the new note's placeholder with its quality, the unfinished word left to match, and
-        # the rating that finished
-        self.assertEqual([w[4] for w in saved], [[-1234567, 3], ["match"], [111, 4]])
+        # the new note's link ID with its quality, the unfinished word left to match, and the
+        # rating that finished
+        self.assertEqual([w[4] for w in saved], [[NOT_ADDED, 3], ["match"], [111, 4]])
         self.assertEqual((writes_at_flush, cancelled.array_writes), (1, 1))
         self.assertEqual(writes_at_on_end, [1])
         self.assertIs(updates[1], cancelled)
@@ -995,6 +1104,104 @@ class CancelledMatchRunTests(unittest.TestCase):
         self.assertEqual((updates, edited_nids), ({1: note}, [1]))
         # the note's own task still counts it done
         self.assertEqual(progress.notes_done, 1)
+
+
+class DuplicateLinkIdsRefusalTests(unittest.TestCase):
+    """While two notes of the vocab type hold one link ID, the run refuses before any request
+    (the lead's decision after P11): a word matched to the newer would be linked by an ID that
+    names the older, and its new notes' IDs handed out beside them."""
+
+    HELD_TWICE = 4000000000000001
+
+    def setUp(self):
+        self.mwtn = load_ops_module("match_words_to_notes")
+        self.config = {
+            "Sentence": {"vocab_note_type": "Word", "word_list_field": "s_array"},
+            "Word": {
+                "sentence_note_type": "Sentence",
+                "word_sort_field": "sort",
+                "new_note_id_field": "word_id",
+            },
+            "match_words_model": "model",
+        }
+        self.rows = {"Word": [(10, str(self.HELD_TWICE)), (11, str(self.HELD_TWICE)), (12, "")]}
+
+    def run_op(self, notes):
+        """bulk_match_words_to_notes over `notes`: the refusal it raised (None without one),
+        the types whose index it read, and its driver, which plans the notes and makes every
+        request."""
+        mwtn = self.mwtn
+        rows = self.rows
+        asked: list = []
+        driver = mock.AsyncMock(return_value="driven")
+
+        class Indexes:
+            async def get(self, config, note_type_name):
+                asked.append(note_type_name)
+                return mwtn.LinkIndex.from_rows(rows.get(note_type_name, []))
+
+        fake_mw = mock.MagicMock()
+        fake_mw.addonManager.getConfig.return_value = self.config
+        with (
+            mock.patch.object(mwtn, "mw", fake_mw),
+            mock.patch.object(mwtn, "LinkIndexCache", Indexes),
+            mock.patch.object(mwtn, "bulk_nested_notes_op", driver),
+            mock.patch.object(mwtn, "load_meanings_dict_from_file", dict),
+        ):
+            try:
+                asyncio.run(
+                    mwtn.bulk_match_words_to_notes(
+                        col=None,
+                        notes=notes,
+                        edited_nids=[],
+                        progress_updater=Progress(),
+                        notes_to_add_dict={},
+                        notes_to_update_dict={},
+                    )
+                )
+            except mwtn.DuplicateLinkIdsError as refusal:
+                return refusal, asked, driver
+        return None, asked, driver
+
+    def test_two_vocab_notes_holding_one_id_refuse_the_run_before_its_first_request(self):
+        refusal, asked, driver = self.run_op([SentenceNote({"s_array": "[]"}, 1)])
+
+        self.assertIsNotNone(refusal)
+        driver.assert_not_called()
+        self.assertEqual(asked, ["Word"])
+        message = str(refusal)
+        # Names the type, the ID, both notes, the way to fix it and a search for them
+        self.assertIn('Notes of "Word"', message)
+        self.assertIn(f"{self.HELD_TWICE} by notes 10, 11", message)
+        self.assertIn('Run "Fill link IDs" on these notes first', message)
+        self.assertIn("nid:10,11", message)
+
+    def test_without_duplicates_the_run_goes_on_reading_each_vocab_type_once(self):
+        self.rows = {"Word": [(10, str(self.HELD_TWICE)), (11, ""), (12, "")]}
+
+        refusal, asked, driver = self.run_op([SentenceNote({"s_array": "[]"}, 1)])
+
+        self.assertIsNone(refusal)
+        driver.assert_awaited_once()
+        self.assertEqual([note.id for note in driver.call_args.kwargs["notes"]], [1])
+        # The sentence notes' vocab type's index, read once into the run's cache
+        self.assertEqual(asked, ["Word"])
+
+    def test_in_the_one_type_layout_the_processed_type_s_own_index_is_asked(self):
+        self.config = {
+            "Word": {
+                "word_list_field": "array",
+                "word_sort_field": "sort",
+                "new_note_id_field": "word_id",
+            },
+            "match_words_model": "model",
+        }
+
+        refusal, asked, driver = self.run_op([FakeNote({"array": "[]"}, 1)])
+
+        self.assertIsNotNone(refusal)
+        self.assertEqual(asked, ["Word"])
+        driver.assert_not_called()
 
 
 if __name__ == "__main__":

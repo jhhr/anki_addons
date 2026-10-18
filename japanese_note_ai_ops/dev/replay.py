@@ -13,8 +13,8 @@ A fixture is what a replay of one capture run needs, as three JSON files a perso
   call's kind and the values its prompt was built from, so a reworded prompt still finds it),
   in the order the run received them.
 - expected.json: the notes as the run left them, normalized (`normalized_notes`): the ids a
-  replay cannot know, the new notes' and their placeholders' and the placeholders a failed add
-  leaves in the word arrays, replaced by symbols. The file
+  replay cannot know, the new notes' note ids and link IDs (placeholders, in a fixture recorded
+  before link IDs) and those of the notes whose add failed, replaced by symbols. The file
   holds only the notes the run added or changed, and the keys of those it removed; a note it
   holds no entry for is as the corpus has it (`Fixture.read` puts the whole list together).
 
@@ -93,6 +93,11 @@ SYNTHETIC_UNKNOWN_BASE = 1_500_000_000_000
 # A note id in a field: 13 digits standing alone. Anki's ids are milliseconds since 1970, 13
 # digits from 2001 to 2286
 ID_RE = re.compile(r"(?<![\d.])(\d{13})(?![\d.])")
+# A link ID the addon generated (link_ids.new_link_id) in a field: 16 digits standing alone, all
+# of [10^15, 2^53) being 16 digits long. Keyed by the link ID of the note it was made from, its
+# note id while its field is empty, which a corpus makes synthetic: a note a replay makes can get
+# another ID than the note its capture run made
+GENERATED_ID_RE = re.compile(r"(?<![\d.])(\d{16})(?![\d.])")
 # Note types the addon's code names, which a fixture keeps: renaming one would change what runs
 HARDCODED_NOTETYPES = frozenset({"Japanese vocab note", "Kanji draw"})
 # The config key naming the deck new notes go into, in a note type's config
@@ -933,15 +938,24 @@ def _cassette_entries(calls: Iterable[sqlite3.Row]) -> list[dict]:
 # --- normalizing ---------------------------------------------------------------------------
 
 
-# A new note's placeholder in a field: make_new_note_id's negative number, standing alone
+# A legacy placeholder in a field: the negative number a new note was named by, standing alone,
+# before new notes had link IDs of their own
 PLACEHOLDER_RE = re.compile(r"(?<![\d-])-\d{7}(?!\d)")
 
 
+def _ids_masked(value: str) -> str:
+    """`value` with every id that differs from a capture run to its replay masked, note ids,
+    generated link IDs and placeholders: what new notes are ordered by. Masked alike, so that a
+    new note holding its note id (a run before link IDs) reads as one holding its link ID."""
+    return PLACEHOLDER_RE.sub("#", GENERATED_ID_RE.sub("#", ID_RE.sub("#", value)))
+
+
 def _failed_adds(connection: sqlite3.Connection, run_id: Optional[int] = None) -> list[int]:
-    """The placeholders of a run's notes whose add failed (`note.add` with an `add_error`), in
-    the order of the notes' content as the cleanup proposed them, ids and placeholders masked:
-    the same order in every run of the same work, whatever order the adds came in. Every run's
-    in the store without `run_id` (a replay's own store holds its one run)."""
+    """The link IDs (placeholders, in a run before link IDs) of a run's notes whose add failed
+    (`note.add` with an `add_error`), in the order of the notes' content as the cleanup
+    proposed them, ids masked (`_ids_masked`): the same order in every run of the same work,
+    whatever order the adds came in. Every run's in the store without `run_id` (a replay's own
+    store holds its one run)."""
     where, params = ("", ()) if run_id is None else (" AND run_id = ?", (run_id,))
     placeholders = []
     for (payload_json,) in connection.execute(
@@ -962,9 +976,7 @@ def _failed_adds(connection: sqlite3.Connection, run_id: Optional[int] = None) -
 
     def content(placeholder: int) -> str:
         fields = (proposed.get(placeholder) or {}).get("fields", {})
-        masked = {
-            name: PLACEHOLDER_RE.sub("#", ID_RE.sub("#", value)) for name, value in fields.items()
-        }
+        masked = {name: _ids_masked(value) for name, value in fields.items()}
         return json.dumps(masked, ensure_ascii=False, sort_keys=True)
 
     return sorted(set(placeholders), key=content)
@@ -977,46 +989,57 @@ def normalized_notes(
     failed: Sequence[int] = (),
 ) -> list[dict]:
     """Notes as a replay can compare them: each `{"id", "notetype", "deck", "fields", "tags"}`,
-    `new_notes` the run's added notes (id -> the placeholder it replaced, or None).
+    `new_notes` the run's added notes (id -> what its `note.add` event names it by: its link
+    ID, a negative placeholder in a run before link IDs, or None).
 
-    A new note's id is whatever the collection handed out, and its placeholder was random, so
-    both become symbols: `new-N`, numbered in the order of the notes' content (ids masked),
-    and `placeholder:new-N`, wherever they appear. `failed` are the placeholders of the notes
-    whose add failed, in a fixed order (`_failed_adds`): the word arrays keep them on purpose,
-    and they become `placeholder:failed-N`. `ids`, given, maps every other id in a field
-    (`_IdMap.text`); a replay's are synthetic already. Tags sorted; the list in note order.
+    A new note's id is whatever the collection handed out, and its link ID or placeholder
+    differs from a capture run to its replay too (GENERATED_ID_RE), so each becomes a symbol
+    wherever it appears, numbered in the order of the notes' content (`_ids_masked`). `new-N`
+    is what the word arrays link the note by: its link ID, or in a run before link IDs its note
+    id, which the arrays held once it was added, so a fixture recorded then replays as it did.
+    The other is `nid:new-N` (an array linking a new note by its note id differs) or
+    `placeholder:new-N`. `failed` are the link IDs or placeholders of the notes whose add
+    failed, in a fixed order (`_failed_adds`): `failed-N` and `placeholder:failed-N`. `ids`,
+    given, maps every other id in a field (`_IdMap.text`); a replay's are synthetic already.
+    Tags sorted; the list in note order.
     """
     notes = list(notes)
 
     def content(note: Mapping[str, Any]) -> str:
-        masked = {name: ID_RE.sub("#", value) for name, value in note["fields"].items()}
+        masked = {name: _ids_masked(value) for name, value in note["fields"].items()}
         return json.dumps([note["notetype"], masked], ensure_ascii=False, sort_keys=True)
 
     new = sorted((note for note in notes if note["id"] in new_notes), key=content)
-    symbols = {int(note["id"]): f"new-{index + 1}" for index, note in enumerate(new)}
-    placeholders = {
-        str(placeholder): f"placeholder:{symbols[nid]}"
-        for nid, placeholder in new_notes.items()
-        if placeholder is not None and nid in symbols
-    }
-    placeholders.update(
-        {str(placeholder): f"placeholder:failed-{n + 1}" for n, placeholder in enumerate(failed)}
-    )
+    keys = {int(note["id"]): f"new-{index + 1}" for index, note in enumerate(new)}
+    # The new notes' note ids, and the link IDs and placeholders of the new and failed notes
+    note_ids: dict[int, str] = {}
+    linked: dict[str, str] = {}
+    for nid, key in keys.items():
+        held = new_notes.get(nid)
+        if held is not None and held > 0:
+            note_ids[nid], linked[str(held)] = f"nid:{key}", key
+        else:
+            note_ids[nid] = key
+            if held is not None:
+                linked[str(held)] = f"placeholder:{key}"
+    for n, failed_id in enumerate(failed):
+        symbol = f"failed-{n + 1}" if failed_id > 0 else f"placeholder:failed-{n + 1}"
+        linked[str(failed_id)] = symbol
 
     def text(value: str) -> str:
         if ids is not None:
-            value = ids.text(value, keep=symbols)  # type: ignore[attr-defined]
+            value = ids.text(value, keep=note_ids)  # type: ignore[attr-defined]
         else:
-            value = ID_RE.sub(lambda m: symbols.get(int(m.group(1)), m.group(1)), value)
-        for placeholder, symbol in placeholders.items():
-            value = re.sub(rf"(?<![\d-]){re.escape(placeholder)}(?!\d)", symbol, value)
+            value = ID_RE.sub(lambda m: note_ids.get(int(m.group(1)), m.group(1)), value)
+        for linking, symbol in linked.items():
+            value = re.sub(rf"(?<![\d-]){re.escape(linking)}(?!\d)", symbol, value)
         return value
 
     normalized = []
     for note in notes:
         nid = int(note["id"])
-        if nid in symbols:
-            key = symbols[nid]
+        if nid in keys:
+            key = keys[nid]
         elif ids is not None:
             key = str(ids(nid))
         else:
@@ -1261,6 +1284,10 @@ def build_collection(
 # Background notes' ids, clear of the corpus's and of the ids its fields name
 BACKGROUND_BASE = 2_000_000_000_000
 BACKGROUND_LINK_BASE = 3_000_000_000_000
+# And the link IDs their fields hold for the ones the addon generated (GENERATED_ID_RE), 16 digits
+# below 2^53 like those: copied as they were, two notes would hold one ID, and the match op
+# refuses to run while two do
+BACKGROUND_GENERATED_BASE = 8_000_000_000_000_000
 # Where a background note's Japanese goes: the Hangul syllables, a block no word, reading or
 # sentence a run asks about has a character in
 _HANGUL_FIRST, _HANGUL_COUNT = 0xAC00, 11172
@@ -1271,11 +1298,13 @@ def _is_japanese(char: str) -> bool:
     return 0x3040 <= code <= 0x30FF or 0x3400 <= code <= 0x9FFF or 0xFF66 <= code <= 0xFF9F
 
 
-def _background_text(text: str, links: Iterator[int]) -> str:
-    """`text` with every Japanese character moved into Hangul, one to one, and every note id
-    replaced by one no note has: the same length and shape (the same HTML, the same JSON of a
-    word array), so a scan pays for it as for a real note, and nothing the run looks for in it."""
+def _background_text(text: str, links: Iterator[int], generated: Iterator[int]) -> str:
+    """`text` with every Japanese character moved into Hangul, one to one, and every note id and
+    generated link ID replaced by one no note has: the same length and shape (the same HTML, the
+    same JSON of a word array), so a scan pays for it as for a real note, and nothing the run
+    looks for in it."""
     text = ID_RE.sub(lambda _: str(next(links)), text)
+    text = GENERATED_ID_RE.sub(lambda _: str(next(generated)), text)
     return "".join(
         chr(_HANGUL_FIRST + ord(char) % _HANGUL_COUNT) if _is_japanese(char) else char
         for char in text
@@ -1292,6 +1321,7 @@ def background_notes(corpus: Mapping[str, Any], count: int) -> list[dict]:
     if not templates or count <= 0:
         return []
     links = iter(range(BACKGROUND_LINK_BASE, BACKGROUND_LINK_BASE + 10**12, 10))
+    generated = iter(range(BACKGROUND_GENERATED_BASE, BACKGROUND_GENERATED_BASE + 10**12, 10))
     notes = []
     for index in range(count):
         template = templates[index % len(templates)]
@@ -1302,7 +1332,7 @@ def background_notes(corpus: Mapping[str, Any], count: int) -> list[dict]:
                 "deck": template["deck"],
                 "guid": f"bg{index:09d}",
                 "fields": {
-                    name: _background_text(value, links)
+                    name: _background_text(value, links, generated)
                     for name, value in template["fields"].items()
                 },
                 "tags": list(template["tags"]),
