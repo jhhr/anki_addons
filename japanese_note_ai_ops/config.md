@@ -279,14 +279,14 @@ The roles can be in one note type or in two.
       mined from) of the selected vocab notes given it as their example, and those notes lose
       it. A vocab note left unselected keeps its tags until a run selects it.
     - each `migration_copy_tags` tag (about the word too: a frequency band) of the vocab notes
-      the sentence came from, selected or not, and they keep it. The copies the match op
-      made (tagged `new_matched_jp_word`) give none: theirs are about their own word.
+      the sentence came from, selected or not, and they keep it.
 
-    A name matches as a `tag:` search does, in any case and with its `::` children
-    (`Made_Up_Show` also matches `Made_Up_Show::ep01`, not `Made_Up_Show_2`), but with no
-    wildcards. A tag under both lists moves. The run's report counts, per listed tag, the vocab
-    notes it was moved or copied from. A moved tag no longer finds the vocab notes in a search
-    (a filtered deck, another addon's search).
+    The notes the match op made (tagged `new_matched_jp_word`) give no tag and lose none: the
+    move leaves them alone. A name matches as a `tag:` search does, in any case and with its
+    `::` children (`Made_Up_Show` also matches `Made_Up_Show::ep01`, not `Made_Up_Show_2`), but
+    with no wildcards. A tag under both lists moves. The run's report counts, per listed tag,
+    the vocab notes it was moved or copied from. A moved tag no longer finds the vocab notes in
+    a search (a filtered deck, another addon's search).
 
     How and when to run "Move sentences to sentence notes" is in "Moving to sentence notes"
     below.
@@ -405,11 +405,14 @@ a text export has no note ids at all.
 From the one-type layout to the two-type one, once. The op "Move sentences to sentence notes"
 (AI helper menu, sync ops) makes a sentence note of each sentence the vocab notes hold, with
 their word array, and makes it the example sentence of every vocab note that showed it: the
-vocab note gets its link ID and a copy of its translation and audio. It does not clear the
-vocab notes' old sentence fields and array (you delete those fields at the end), and it can be
-run again: a vocab note that already names an existing sentence note is skipped, and a
-sentence already in a sentence note is joined rather than made twice. The field and tag names
-below are illustrations, as in the example above.
+vocab note gets its link ID and a copy of its translation and audio. The notes the match op
+made (tagged `new_matched_jp_word`), which hold copies of other notes' sentences, it leaves
+alone, selected or not: they get no example, and a sentence only they hold gets no sentence
+note and goes with the old fields. It does not clear the vocab notes' old sentence fields and
+array (you delete those fields at the end), and it can be run again: a vocab note that already
+names an existing sentence note is skipped, and a sentence already in a sentence note is joined
+rather than made twice. The field and tag names below are illustrations, as in the example
+above.
 
 1. **Back up.** Sync, then File > Create Backup. The run changes nearly every vocab note.
 2. **Give every vocab note a link ID of its own** (see "link IDs" above), with the settings
@@ -419,8 +422,9 @@ below are illustrations, as in the example above.
      gives each new note a 16-digit link ID in that field, which the word arrays link the note
      by, and a definition writing the note id there breaks those links (on a note's add the
      match op puts its ID back; after any other trigger nothing does);
-   - run "Fill link IDs" over every note of the vocab type, the way step 7 runs the move, and
-     read its report (the end message names it): the IDs two notes held and what each got,
+   - run "Fill link IDs" over every note of the vocab type, the notes the match op made
+     included (search `"note:Japanese vocab note"`, then as step 7 runs the move), and read
+     its report (the end message names it): the IDs two notes held and what each got,
      the fields that held something else, the placeholders. The move refuses to run while two
      notes of a type hold one link ID. Run it now, not after the configuring below: with two
      note types it no longer reads the vocab notes' old word arrays, and the move would then
@@ -469,12 +473,12 @@ below are illustrations, as in the example above.
    given**: never point it at a profile's own. At the end it prints a summary with the path of
    the report, `user_files/sentence_migration_<timestamp>.txt` in the addon's folder, which
    every run writes before it changes a note:
-   - its counts (vocab notes read, sources, the copies the match op made, sentence notes to
-     add and existing ones joined, the vocab and existing sentence notes whose ID field gets
-     their note id, the legacy placeholders, and per listed tag the notes it was moved or
-     copied from: a 0 shows a typo);
+   - its counts (vocab notes read, sources, the notes the match op made and how many of them
+     were selected and skipped, sentence notes to add and existing ones joined, the vocab and
+     existing sentence notes whose ID field gets their note id, the legacy placeholders, and
+     per listed tag the notes it was moved or copied from: a 0 shows a typo);
    - every case that needed a decision, with note ids: vocab notes given no example (no
-     sentence text, no sentence linking a copy), arrays that could not be read or combined,
+     sentence text), arrays that could not be read or combined,
      sentences with two links to different notes on one word (tagged
      `sentence-migration-conflict`), sentences without an array (tagged
      `sentence-needs-extract`), each legacy placeholder in an array it copies (linked to the
@@ -485,18 +489,19 @@ below are illustrations, as in the example above.
 
    Fix in the real collection what the report shows wrong, then copy and practise again. To
    look at the result, open the copy in a profile of its own, never synced.
-7. **Run it.** In the browser search `"note:Japanese vocab note"`, open Edit > "Japanese AI
-   ops...", choose "Move sentences to sentence notes" and "Use all notes from current search"
-   (selecting every row of a large collection makes the browser slow), and Run. Or two runs:
-   first `"note:Japanese vocab note" -tag:new_matched_jp_word`, which makes every sentence
-   note, then the whole type again, which gives the copies the match op made their example
-   from the sentence notes the first run made. The end message names the report. A cancelled run keeps
-   the sentence notes it added, with their vocab notes; run it again for the rest. One Undo
-   takes back the whole run, the suspension included.
+7. **Run it.** In the browser search `"note:Japanese vocab note" -tag:new_matched_jp_word`
+   (the notes the match op made would only be skipped), open Edit > "Japanese AI ops...",
+   choose "Move sentences to sentence notes" and "Use all notes from current search"
+   (selecting every row of a large collection makes the browser slow), and Run. The end
+   message names the report. A cancelled run keeps the sentence notes it added, with their
+   vocab notes; run it again for the rest. One Undo takes back the whole run, the suspension
+   included.
 8. **Check.** Read the report. In the browser: `tag:sentence-needs-extract` (run "Extract
    words + Judge matchability", then "Match extracted words to notes" on them, and take the
    tag off), `tag:sentence-migration-conflict`, vocab notes with no example
-   (`"note:Japanese vocab note" "Example sentence id:"`) and sentence notes not suspended
+   (`"note:Japanese vocab note" "Example sentence id:" -tag:new_matched_jp_word`; the notes the
+   match op made have none, and "Refresh example sentences" run over them gives each the
+   oldest sentence note whose array links it) and sentence notes not suspended
    (`"note:Sentence note" -is:suspended`, none after the run). Look at some vocab cards.
 9. **Update what reads the old fields.** A CopyAnywhere definition that reads the sentence or
    the word array off a vocab note reads them off its example sentence note now. One Query

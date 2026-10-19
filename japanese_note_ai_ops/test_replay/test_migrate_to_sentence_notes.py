@@ -5,15 +5,15 @@ note type, and the run started through its NotesRunSpec, as a script starts it.
 The notes, all made up here, in the order they are added (so the first of a sentence is the
 oldest):
 
-- 猫が魚を食べた。: the dependent CAT, then the source FISH, whose array links CAT and leaves
-  its own word for the link check. FISH carries a child of a moved tag, a copied tag and the
-  addon's kanjify_sentence_mismatch; CAT a moved tag put on by hand and a copied tag, which a
-  dependent does not give.
+- 猫が魚を食べた。: CAT, a note the match op made (tagged new_matched_jp_word), then the source
+  FISH, whose array links CAT and leaves its own word for the link check. FISH carries a child
+  of a moved tag, a copied tag and the addon's kanjify_sentence_mismatch; CAT a moved tag and a
+  copied tag, and the run leaves it as it is, selected or not.
 - 犬が走る。: two sources, DOG and RUN, each linking its own word in its own array: one sentence
   note, both links.
 - 箱がある。: BOX, a source with no array: a sentence note for Extract words to fill.
-- 本を読む。: the dependent READ, then BOOK, the origin of its sentence, which carries the
-  addon's tag and a moved tag. Left unselected, it still loses the addon's tag once its
+- 本を読む。: READ, a source with no array, then BOOK, the origin of its sentence, which carries
+  the addon's tag and a moved tag. Left unselected, it still loses the addon's tag once its
   sentence note exists, and keeps the moved one until a run selects it.
 """
 
@@ -227,12 +227,7 @@ def build(col: Any) -> dict[str, int]:
     )
     ids["box"] = add_vocab(col, "箱", "はこ", "<b>箱</b>がある。", "<b> 箱[はこ]</b>がある。")
     ids["read"] = add_vocab(
-        col,
-        "読む",
-        "よむ",
-        "本を<b>読む</b>。",
-        " 本[ほん]を<b> 読[よ]む</b>。",
-        tags=(DEPENDENT,),
+        col, "読む", "よむ", "本を<b>読む</b>。", " 本[ほん]を<b> 読[よ]む</b>。"
     )
     ids["book"] = add_vocab(
         col,
@@ -326,8 +321,9 @@ def test_a_run_moves_the_sentences_and_one_undo_takes_it_all_back(col, tmp_path)
         cat_fish_array([ids["cat"]], [ids["fish"]])
     )
     assert cat_fish["Times seen"] == "7"
-    # Moved from the origin, from a source's child tag and a dependent's; copied from the source
-    assert set(cat_fish.tags) == {MISMATCH, f"{SHOW}::ep01", SHOW, BAND}
+    # Moved from the origin and from a source's child tag; copied from the source. CAT, which
+    # the match op made, gives none
+    assert set(cat_fish.tags) == {MISMATCH, f"{SHOW}::ep01", BAND}
     dog_runs = notes[DOG_RUNS]
     assert dog_runs["Word array"] == format_word_array(dog_runs_array([ids["dog"]], [ids["runs"]]))
     assert dog_runs["Times seen"] == "3"
@@ -346,7 +342,6 @@ def test_a_run_moves_the_sentences_and_one_undo_takes_it_all_back(col, tmp_path)
 
     after = state(col, ids.values())
     example = {
-        "cat": cat_fish,
         "fish": cat_fish,
         "dog": dog_runs,
         "runs": dog_runs,
@@ -364,18 +359,20 @@ def test_a_run_moves_the_sentences_and_one_undo_takes_it_all_back(col, tmp_path)
         # The old fields stay until the user deletes them
         for field in SENTENCE_FIELDS.values():
             assert fields[field] == old_fields[field], (name, field)
-    assert after[ids["cat"]][0]["Example translation"] == CAT_FISH_TRANSLATION
-    assert after[ids["cat"]][1] == {DEPENDENT, BAND}
+    # Made by the match op: as it was, its moved tag and empty example id and ID field included
+    assert after[ids["cat"]] == before[ids["cat"]]
     assert after[ids["fish"]][1] == {BAND}
-    assert after[ids["read"]][1] == {DEPENDENT}
+    assert after[ids["read"]][1] == set()
     # Saved for the tag it loses, its ID field filled with that
     assert after[ids["book"]][0] == {**before[ids["book"]][0], "Word ID": str(ids["book"])}
     assert after[ids["book"]][1] == {SHOW}
 
     report = Path(migration.report_path).read_text(encoding="utf-8")
     assert "sentence notes to add: 4" in report
-    assert "vocab notes whose ID field gets their note id: 7" in report
-    assert f'tag "{SHOW}" moved from vocab notes: 2' in report
+    assert "vocab notes whose ID field gets their note id: 6" in report
+    assert f"made by the match op (tagged {DEPENDENT}), left alone: 1" in report
+    assert "skipped: made by the match op: 1" in report
+    assert f'tag "{SHOW}" moved from vocab notes: 1' in report
     assert f'tag "{BAND}" copied from vocab notes: 1' in report
     assert f"Linked to its word by the link check (1)\n  {ids['fish']}: " in report
 
@@ -421,32 +418,32 @@ def test_a_rerun_over_every_note_joins_the_sentence_notes_a_first_run_made(col, 
     migrate(col, sources, tmp_path / "first")
     first = {sentence: note.id for sentence, note in sentence_notes(col).items()}
     assert set(first) == {CAT_FISH, DOG_RUNS, BOX, BOOK}
-    assert state(col, [ids["cat"]])[ids["cat"]][0]["Example sentence id"] == ""
+    assert state(col, [ids["read"]])[ids["read"]][0]["Example sentence id"] == ""
+    cat_before = state(col, [ids["cat"]])
 
     migration, result = migrate(col, list(ids.values()), tmp_path / "second")
 
     assert result.new_notes.prepared == 0
     notes = sentence_notes(col)
     assert {sentence: note.id for sentence, note in notes.items()} == first
-    cat_fields, cat_tags = state(col, [ids["cat"]])[ids["cat"]]
-    assert cat_fields["Example sentence id"] == notes[CAT_FISH]["Sentence ID"]
-    assert cat_fields["Word ID"] == str(ids["cat"])
-    assert cat_tags == {DEPENDENT, BAND}
-    # The dependent's moved tag goes to the sentence note it joins
-    assert SHOW in notes[CAT_FISH].tags
     read_fields, _ = state(col, [ids["read"]])[ids["read"]]
     assert read_fields["Example sentence id"] == notes[BOOK]["Sentence ID"]
+    assert read_fields["Word ID"] == str(ids["read"])
+    # Made by the match op: as it was, and its moved tag stays with it
+    assert state(col, [ids["cat"]]) == cat_before
+    assert SHOW not in notes[CAT_FISH].tags
     report = Path(migration.report_path).read_text(encoding="utf-8")
     assert "sentence notes to add: 0" in report
-    assert "existing sentence notes joined: 2" in report
+    assert "existing sentence notes joined: 1" in report
     assert "skipped: already migrated: 5" in report
+    assert "skipped: made by the match op: 1" in report
 
 
 def every_note_has_its_example(col: Any, ids: dict[str, int]) -> None:
+    """Every source names its sentence's note, and CAT, which the match op made, none."""
     notes = sentence_notes(col)
     assert set(notes) == {CAT_FISH, DOG_RUNS, BOX, BOOK}
     sentence_of = {
-        "cat": CAT_FISH,
         "fish": CAT_FISH,
         "dog": DOG_RUNS,
         "runs": DOG_RUNS,
@@ -458,6 +455,8 @@ def every_note_has_its_example(col: Any, ids: dict[str, int]) -> None:
         note = col.get_note(ids[name])
         assert note["Example sentence id"] == notes[sentence]["Sentence ID"], name
         assert note["Word ID"] == str(ids[name]), name
+    cat = col.get_note(ids["cat"])
+    assert (cat["Example sentence id"], cat["Word ID"]) == ("", "")
 
 
 def test_a_cancelled_adding_leaves_the_rest_untouched_and_a_rerun_finishes(
@@ -486,9 +485,9 @@ def test_a_cancelled_adding_leaves_the_rest_untouched_and_a_rerun_finishes(
     # Added in the plan's order, oldest origin first
     assert set(sentence_notes(col)) == {CAT_FISH, DOG_RUNS}
     after = state(col, ids.values())
-    for name in ("box", "read", "book"):
+    for name in ("cat", "box", "read", "book"):
         assert after[ids[name]] == before[ids[name]], name
-    for name in ("cat", "fish", "dog", "runs"):
+    for name in ("fish", "dog", "runs"):
         assert after[ids[name]][0]["Example sentence id"], name
 
     _, result = migrate(col, list(ids.values()), tmp_path / "rerun")
@@ -509,7 +508,7 @@ def test_a_run_cancelled_between_notes_adds_what_it_registered_and_a_rerun_finis
     def cancelling(self: SentenceMigration, **kwargs: Any) -> bool:
         done = note_op(self, **kwargs)
         processed.append(kwargs["note"].id)
-        if len(processed) == 2:
+        if len(processed) == 3:
             stub.progress.set_cancel(True)
         return done
 
@@ -518,19 +517,20 @@ def test_a_run_cancelled_between_notes_adds_what_it_registered_and_a_rerun_finis
     monkeypatch.undo()
     stub.progress.set_cancel(False)
 
-    # The first two notes are the two of the first sentence in the plan, which they registered
-    assert sorted(processed) == sorted([ids["cat"], ids["fish"]])
+    # The first three notes are those of the first two sentences in the plan, which they
+    # registered; CAT, given no example, comes last
+    assert sorted(processed) == sorted([ids["fish"], ids["dog"], ids["runs"]])
     assert result.cancelled
-    assert result.new_notes == base_ops.NewNotesCounts(added=1)
-    assert set(sentence_notes(col)) == {CAT_FISH}
+    assert result.new_notes == base_ops.NewNotesCounts(added=2)
+    assert set(sentence_notes(col)) == {CAT_FISH, DOG_RUNS}
     after = state(col, ids.values())
-    for name in ("dog", "runs", "box", "read", "book"):
+    for name in ("cat", "box", "read", "book"):
         assert after[ids[name]] == before[ids[name]], name
 
     _, result = migrate(col, list(ids.values()), tmp_path / "rerun")
 
     assert not result.cancelled
-    assert result.new_notes == base_ops.NewNotesCounts(added=3)
+    assert result.new_notes == base_ops.NewNotesCounts(added=2)
     every_note_has_its_example(col, ids)
 
 
@@ -618,9 +618,10 @@ def eating(cat: list, fish: list, eat: list) -> list:
 
 def test_links_are_read_as_link_ids_and_each_note_written_holds_its_own(col, tmp_path):
     """IDs other than note ids: the source 魚 holds a generated ID, which its array links it
-    by; the dependent 食べる's add was never resolved, so its field and that array hold a
-    legacy placeholder; the sentence note of 犬が走る。 holds an ID of its own, which 犬 names
-    as its example (migrated by a first run), and the one of 本を読む。 holds none."""
+    by; 食べる, which the match op made, had its add never resolved, so its field and that array
+    hold a legacy placeholder (resolved in the array, the note itself left alone); the sentence
+    note of 犬が走る。 holds an ID of its own, which 犬 names as its example (migrated by a first
+    run), and the one of 本を読む。 holds none."""
     ids: dict[str, int] = {}
     ids["cat"] = add_vocab(
         col,
@@ -697,8 +698,10 @@ def test_links_are_read_as_link_ids_and_each_note_written_holds_its_own(col, tmp
     assert cat_fish["Word array"] == format_word_array(
         eating([ids["cat"]], [FISH_ID], [ids["eat"]])
     )
-    for name in ("cat", "eat", "fish"):
-        assert col.get_note(ids[name])["Example sentence id"] == cat_fish["Sentence ID"], name
+    assert col.get_note(ids["fish"])["Example sentence id"] == cat_fish["Sentence ID"]
+    # Made by the match op: as they were
+    for name in ("cat", "eat"):
+        assert state(col, [ids[name]]) == {ids[name]: before[ids[name]]}, name
     # Joined by the IDs they hold
     assert col.get_note(ids["runs"])["Example sentence id"] == str(DOG_RUNS_ID)
     assert notes[DOG_RUNS]["Word array"] == format_word_array(
@@ -710,8 +713,9 @@ def test_links_are_read_as_link_ids_and_each_note_written_holds_its_own(col, tmp
     assert notes[BOOK]["Sentence ID"] == str(book)
     word_ids = {name: col.get_note(nid)["Word ID"] for name, nid in ids.items()}
     assert word_ids == {
-        "cat": str(ids["cat"]),
-        "eat": str(ids["eat"]),
+        # Not written: what they held
+        "cat": "",
+        "eat": str(PLACEHOLDER),
         "fish": str(FISH_ID),
         # Migrated already: not written
         "dog": "",
@@ -722,6 +726,7 @@ def test_links_are_read_as_link_ids_and_each_note_written_holds_its_own(col, tmp
     assert "legacy placeholders linked to the note holding them: 1" in report
     assert "existing sentence notes whose ID field gets their note id: 1" in report
     assert "skipped: already migrated: 1" in report
+    assert "skipped: made by the match op: 2" in report
 
     col.undo()
     assert state(col, everything) == before
