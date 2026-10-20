@@ -112,6 +112,11 @@ class AnswersTest(unittest.TestCase):
         self.assertEqual(arbiter.answers_from_response(response, 2), {})
         self.assertEqual(arbiter.answers_from_response(None, 2), {})
 
+    def test_a_boolean_is_no_word_number(self):
+        # True == 1 in Python; a provider that does not enforce the schema can send one
+        response = {"words": [{"n": True, "reading": "た", "sure": True}]}
+        self.assertEqual(arbiter.answers_from_response(response, 2), {})
+
 
 class ChecksTest(unittest.TestCase):
     def test_heard_at_the_word_with_a_mora_of_a_neighbour_spared(self):

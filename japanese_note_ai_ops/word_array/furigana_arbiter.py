@@ -172,7 +172,8 @@ def review_prompt(
 
 def answers_from_response(response: Any, count: int) -> dict[int, Answer]:
     """The answer for each word by its number, 1 to `count`. A word answered twice, or with a
-    reading that is not all kana, has none."""
+    reading that is not all kana, has none, and neither does a number that is a boolean,
+    which Python takes for 1 or 0: a provider that does not enforce the schema can send one."""
     items = response.get(WORDS) if isinstance(response, dict) else None
     if not isinstance(items, list):
         return {}
@@ -181,7 +182,9 @@ def answers_from_response(response: Any, count: int) -> dict[int, Answer]:
         if not isinstance(item, dict):
             continue
         n, reading, sure = item.get("n"), item.get("reading"), item.get("sure")
-        if not isinstance(n, int) or not 1 <= n <= count or not isinstance(reading, str):
+        if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= count:
+            continue
+        if not isinstance(reading, str):
             continue
         reading = reading.strip()
         if KANA_RE.fullmatch(reading):
