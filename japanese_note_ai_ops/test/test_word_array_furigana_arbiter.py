@@ -74,6 +74,18 @@ class InputsTest(unittest.TestCase):
             arbiter.translation_text(field), "Where are the others?\nWon't it open?"
         )
 
+    def test_div_lines_are_lines_too(self):
+        # Anki's editor writes a field's lines as <div> blocks
+        for field in (
+            "<div>Where are the others?</div><div>Won't it open?</div>",
+            "Where are the others?<div>Won't it open?</div>",
+            "<p>Where are the others?</p>\n<p>Won't it open?<br></p>",
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(
+                    arbiter.translation_text(field), "Where are the others?\nWon't it open?"
+                )
+
 
 class AnswersTest(unittest.TestCase):
     def test_answers_by_number_in_hiragana(self):

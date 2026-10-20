@@ -37,6 +37,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
+from ..html_stripping import blocks_as_breaks
 from ..kana_conv import to_hiragana
 from .audio_furigana import Furigana, Reading
 from .captions import KANJI_RE, spoken_lines
@@ -110,8 +111,10 @@ class Answer:
 
 
 def translation_text(field: str) -> str:
-    """A translation field as the prompt shows it: its lines a row each, no other HTML."""
-    return html.unescape(TAG_RE.sub("", BR_RE.sub("\n", field))).strip()
+    """A translation field as the prompt shows it: its lines a row each, no other HTML. A line
+    is one of a <br> or of a <div> block, which Anki's editor writes; a field of <br> lines
+    only comes out as it always did, so the eval's cached answers stay its own."""
+    return html.unescape(TAG_RE.sub("", BR_RE.sub("\n", blocks_as_breaks(field)))).strip()
 
 
 def review_inputs(

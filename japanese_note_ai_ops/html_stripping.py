@@ -3,6 +3,18 @@ from html.parser import HTMLParser
 from html import unescape
 
 CONTEXT_SENTENCE_RE = re.compile(r"<i>.*?</i>", re.DOTALL)
+# The edge of a <div> or <p> block, with the breaks and white space around it: Anki's editor
+# writes a field's lines as <div> blocks, often with a <br> inside, and one edge is one break
+BLOCK_EDGE_RE = re.compile(r"(?:\s|<br\s*/?>)*</?(?:div|p)(?:\s[^>]*)?>(?:\s|<br\s*/?>)*", re.I)
+
+
+def blocks_as_breaks(field: str) -> str:
+    """`field` with each edge of its <div> and <p> blocks a <br>, none before the first line or
+    after the last: `<div>a</div><div>b</div>` is `a<br>b`. A field without blocks comes back
+    as it was."""
+    if not BLOCK_EDGE_RE.search(field):
+        return field
+    return "<br>".join(piece for piece in BLOCK_EDGE_RE.split(field) if piece.strip())
 
 
 def strip_context_sentences(sentence: str) -> str:
