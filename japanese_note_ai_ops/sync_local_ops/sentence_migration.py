@@ -14,11 +14,14 @@ name: by the time the migration runs the vocab block names no sentence fields, a
 the vocab notes' old ones by the sentence block's names. Free of anki and aqt, so all of it is
 tested on hand-written arrays.
 
-Terms, as in the plan of this work: a *source* is a vocab note without `new_matched_jp_word`
-(every unique sentence is in one); a *dependent* is a tagged one, a copy the match op made of
-its source's sentence, which only gets an example. A *sentence key* is a sentence's plain text
-(`match_flags.plain_text` after `strip_context_sentences`); an array's is the plain text of its
-top-level raw texts, which is the key of the field it was generated from.
+Terms, as in the plan of this work: a *source* is a vocab note without `new_matched_jp_word`,
+one the user added, and the sentences that move are the sources'. A note with the tag is one the
+match op made, holding a copy of the sentence it was found in, and the migration leaves it
+alone: it gets no example and loses no tag, and a sentence only such notes hold gets no sentence
+note. Its link ID is still read, since the sources' arrays link it by that. A *sentence key* is
+a sentence's plain text (`match_flags.plain_text` after `strip_context_sentences`); an array's
+is the plain text of its top-level raw texts, which is the key of the field it was generated
+from.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ from ..word_array.match_flags import MatchState
 
 # The tags this concerns. The first three are the addon's own, spelled as the ops that set them
 # spell them (each hardcodes its own)
-DEPENDENT_TAG = "new_matched_jp_word"
+MATCH_OP_TAG = "new_matched_jp_word"
 INVALID_ARRAY_TAG = "invalid_word_list_json"
 KANJIFY_MISMATCH_TAG = "kanjify_sentence_mismatch"
 NEEDS_EXTRACT_TAG = "sentence-needs-extract"
@@ -160,12 +163,6 @@ CASES: dict[str, str] = {
     "not_vocab": "Selected, but not among the vocab notes read",
     "example_id_unknown": "Example id names no existing sentence note (migrated anyway)",
     "no_sentence_text": "Skipped: no sentence text (extraction and furigana fields empty)",
-    "dependent_no_example": "Dependent with no example: no sentence links it or has its text",
-    "dependent_several": "Dependent linked from several sentences, none with its text: the oldest"
-    " is its example",
-    "dependent_other_sentence": "Dependent whose example (the sentence linking it) is not its own"
-    " sentence text",
-    "dependent_array": "Dependent holding a word array of its own (not used)",
     "existing_no_text": "Existing sentence note with no sentence text (ignored)",
     "existing_duplicate": "Existing sentence note with the same sentence as an older one (only the"
     " older is joined)",
@@ -412,7 +409,6 @@ class _Vocab:
     record: VocabRecord
     # What an array links it by (link_ids.link_id)
     link_id: int
-    dependent: bool
     extraction_key: str
     # Its sentence's key from its fields: the extraction field's, else the furigana field's
     text_key: str
@@ -451,20 +447,23 @@ class _Vocab:
 
 def _read_vocab(
     records: Iterable[VocabRecord], placeholders: Mapping[str, list[int]]
-) -> dict[int, _Vocab]:
+) -> tuple[dict[int, _Vocab], set[int]]:
+    """The sources by note id, and the ids of the notes the match op made, which the plan
+    leaves alone: nothing of theirs is read, their sentence fields and any array included."""
     out: dict[int, _Vocab] = {}
+    made_by_match_op: set[int] = set()
     for record in sorted(records, key=lambda r: r.note_id):
-        if record.note_id in out:
+        if record.note_id in out or record.note_id in made_by_match_op:
             raise ValueError(f"Vocab note {record.note_id} is given twice")
+        if _has_tag(record.tags, MATCH_OP_TAG):
+            made_by_match_op.add(record.note_id)
+            continue
         extraction_key = field_key(record.fields.get(_EXTRACTION_KEY, ""))
         text_key = extraction_key or field_key(record.fields.get(_FURIGANA_KEY, ""))
-        dependent = _has_tag(record.tags, DEPENDENT_TAG)
-        # A dependent's array is never used, so never read
-        arr, problem = (None, None) if dependent else _read_array(record.word_list)
+        arr, problem = _read_array(record.word_list)
         out[record.note_id] = _Vocab(
             record=record,
             link_id=link_id(record.link_id_value, record.note_id),
-            dependent=dependent,
             extraction_key=extraction_key,
             text_key=text_key,
             array=arr,
@@ -476,7 +475,7 @@ def _read_vocab(
             ),
             reading=to_hiragana(_norm(record.reading)),
         )
-    return out
+    return out, made_by_match_op
 
 
 def _resolve_placeholders(arr: list, holders: Mapping[str, list[int]]) -> list[tuple[str, str]]:
@@ -566,8 +565,10 @@ def plan_migration(
 
     `vocab_notes` is every vocab note of the type, not only the selected: an unselected note's
     array may link a selected one, and a group's sentence note is made from its origin whether
-    or not the origin is selected. `sentence_notes` is every note of the sentence type.
-    `count_seen`: the sentence block names `sentence_seen_count_field`.
+    or not the origin is selected. The notes the match op made are among them for their link
+    IDs alone, which the arrays link them by and a legacy placeholder resolves to: the plan
+    leaves those notes alone, selected or not. `sentence_notes` is every note of the sentence
+    type. `count_seen`: the sentence block names `sentence_seen_count_field`.
 
     `move_tags`, `copy_tags`: the sentence block's `migration_move_tags` and
     `migration_copy_tags`, the user's tags that go to the sentence note (`_UserTags.carry`).
@@ -593,14 +594,14 @@ def plan_migration(
     sentence_index = LinkIndex.from_rows((r.note_id, r.link_id_value) for r in sentence_records)
     placeholders = placeholder_holders(vocab_index)
     targets, by_key, existing_ids = _existing_targets(sentence_records, placeholders, report)
-    vocab = _read_vocab(vocab_records, placeholders)
+    vocab, made_by_match_op = _read_vocab(vocab_records, placeholders)
     migrated = {
         nid for nid, v in vocab.items() if _example_note_id(v.record.example_id) in existing_ids
     }
     selected_ids = sorted(set(selected))
-    report.count("vocab notes read", len(vocab))
-    report.count("sources", sum(1 for v in vocab.values() if not v.dependent))
-    report.count("dependents", sum(1 for v in vocab.values() if v.dependent))
+    report.count("vocab notes read", len(vocab) + len(made_by_match_op))
+    report.count("sources", len(vocab))
+    report.count(f"made by the match op (tagged {MATCH_OP_TAG}), left alone", len(made_by_match_op))
     report.count("selected", len(selected_ids))
 
     # Sources by sentence key. A source already given a sentence note is done: its array went
@@ -608,7 +609,7 @@ def plan_migration(
     # there since
     groups: dict[str, list[_Vocab]] = {}
     for v in vocab.values():
-        if not v.dependent and v.id not in migrated and v.text_key:
+        if v.id not in migrated and v.text_key:
             groups.setdefault(v.key, []).append(v)
     for key, sources in groups.items():
         target = by_key.get(key)
@@ -619,7 +620,7 @@ def plan_migration(
         target.sources = sources
         _combine_sources(target)
 
-    _assign(vocab, vocab_index, selected_ids, migrated, targets, by_key, report)
+    _assign(vocab, made_by_match_op, selected_ids, migrated, by_key, report)
     for target in targets:
         for vocab_id in target.vocab_ids:
             _link_check(target, vocab[vocab_id], report)
@@ -811,23 +812,27 @@ def _combine_match_data(base: list, other: list, events: list[tuple[str, str]]) 
 
 def _assign(
     vocab: dict[int, _Vocab],
-    vocab_index: LinkIndex,
+    made_by_match_op: set[int],
     selected: list[int],
     migrated: set[int],
-    targets: list[_Target],
     by_key: dict[str, _Target],
     report: Report,
 ) -> None:
-    """Give each selected vocab note its example. A target is made or changed only because a
-    selected note is assigned to it, so a selection of sources alone makes every sentence note
-    and leaves the dependents for a later run."""
-    linking = _linking_targets(
-        targets, {nid for nid in selected if nid in vocab and vocab[nid].dependent}, vocab_index
-    )
+    """Give each selected source the sentence note of its own sentence as its example. A
+    target is made or changed only because a selected note is assigned to it.
+
+    A selected note the match op made is skipped. Its sentence fields hold a copy of the
+    sentence its word was found in, not always a whole one (a new-meaning copy keeps the copied
+    note's extraction field), and a sentence only such copies hold is not one to keep: nothing
+    of the note is read, and the arrays linking it stay as they are."""
     for nid in selected:
         v = vocab.get(nid)
         if v is None:
-            report.add("not_vocab", nid)
+            if nid in made_by_match_op:
+                # Counted, not listed: a selection of the whole type holds thousands
+                report.count("skipped: made by the match op")
+            else:
+                report.add("not_vocab", nid)
             continue
         if nid in migrated:
             # Counted, not listed: on a rerun that is nearly every note selected
@@ -838,58 +843,7 @@ def _assign(
         if not v.text_key:
             report.add("no_sentence_text", nid)
             continue
-        target: Optional[_Target] = by_key[v.key] if not v.dependent else None
-        if v.dependent:
-            arr, problem = match_flags.read_word_array(v.record.word_list)
-            if arr or problem is not None:
-                report.add("dependent_array", nid)
-            target = _dependent_target(v, linking.get(nid, []), by_key, report)
-        if target is not None:
-            target.vocab_ids.append(nid)
-
-
-def _linking_targets(
-    targets: list[_Target], dependents: set[int], vocab_index: LinkIndex
-) -> dict[int, list[_Target]]:
-    """Per dependent, the sentences whose array (as combined) links it, by its link ID."""
-    linking: dict[int, list[_Target]] = {}
-    for target in targets:
-        if target.array is None:
-            continue
-        for _, elem in match_flags.iter_words(target.array):
-            held = match_flags.matched_note_id(elem)
-            nid = None if held is None else vocab_index.note_id(held)
-            if nid is not None and nid in dependents:
-                found = linking.setdefault(nid, [])
-                if target not in found:
-                    found.append(target)
-    return linking
-
-
-def _dependent_target(
-    v: _Vocab, linking: list[_Target], by_key: dict[str, _Target], report: Report
-) -> Optional[_Target]:
-    """The sentence linking the dependent; of several, the one with its text, else the oldest;
-    of none, the one with its text."""
-    if len(linking) > 1:
-        same_text = [t for t in linking if t.key == v.text_key]
-        if same_text:
-            # The usual case: the match op links a word's note from every sentence it meets
-            # the word in after, and the note's own text says which one it was made from
-            report.count("dependents linked from several sentences, chosen by their text")
-            return same_text[0]
-        oldest = min(linking, key=lambda t: t.age_id)
-        others = ", ".join(t.label for t in linking)
-        report.add("dependent_several", v.id, f"linked from {others}; {oldest.label} taken")
-        return oldest
-    if linking:
-        if linking[0].key != v.text_key:
-            report.add("dependent_other_sentence", v.id, linking[0].label)
-        return linking[0]
-    by_text = by_key.get(v.text_key)
-    if by_text is None:
-        report.add("dependent_no_example", v.id)
-    return by_text
+        by_key[v.key].vocab_ids.append(nid)
 
 
 def _entries(arr: list) -> list[_Entry]:
@@ -962,10 +916,9 @@ def _pick_element(
     entries: list[_Entry], span: tuple[int, int], v: _Vocab
 ) -> tuple[Optional[list], str, str]:
     """(the element, how it was found, ""), or (None, the report case, what else its line
-    says). In order: an element at the <b> that is V's word; for a dependent, whose <b> may
-    still mark its source's word (the match op copied the sentence as it was), the one element
-    anywhere that is V's word; for a source, whose <b> marks its own word, the element at
-    exactly the <b>, else the smallest around it, when it has V's form or reading."""
+    says). In order: an element at the <b> that is V's word; else, since a source's <b> marks
+    its own word, the element at exactly the <b>, else the smallest around it, when it has V's
+    form or reading."""
     words = [e for e in entries if v.is_word(e.elem)]
     at_bold = [e for e in words if e.span is not None and _overlaps(e.span, span)]
     # A word whose place is unknown may be at the <b> too
@@ -974,10 +927,6 @@ def _pick_element(
         if len(at_bold) == 1 and not unplaced:
             return at_bold[0].elem, "at its <b>", ""
         return None, "link_several", ""
-    if v.dependent:
-        if len(words) == 1:
-            return words[0].elem, "the one element of its word", ""
-        return None, "link_several" if words else "link_no_element", ""
     # By place alone: only where every element's place is known
     if any(e.span is None for e in entries):
         return None, "link_no_element", ""
@@ -1022,26 +971,24 @@ class _UserTags:
         self.moved_from = dict.fromkeys(self.move, 0)
         self.copied_from = dict.fromkeys(self.copy, 0)
 
-    def carry(
-        self, target: _Target, vocab: Mapping[int, _Vocab]
-    ) -> tuple[list[str], dict[int, list[str]]]:
+    def carry(self, target: _Target) -> tuple[list[str], dict[int, list[str]]]:
         """The tags the target's sentence note gets, as the oldest note carrying one spells it,
         and per vocab note the tags it loses.
 
-        A tag moves from each selected note assigned to the target, sources and dependents
-        alike: a dependent's was put there by hand, about the sentence its card showed. It is
-        copied from the target's sources, selected or not, since the sentence is theirs, and
-        never from a dependent, whose copy is about its own word. A source not selected loses
-        nothing and gives no tag to move: the run changes no vocab note the user left out, and
-        the run that selects it joins it to this sentence note and moves its tags then."""
+        A tag moves from each selected note assigned to the target, and is copied from each of
+        the target's sources, selected or not, since the sentence is theirs; every note assigned
+        is one of them. A source not selected loses nothing and gives no tag to move: the run
+        changes no vocab note the user left out, and the run that selects it joins it to this
+        sentence note and moves its tags then. A note the match op made is never one of them,
+        and gives and loses nothing."""
         selected = set(target.vocab_ids)
-        sources = {s.id for s in target.sources}
         added: list[str] = []
         removed: dict[int, list[str]] = {}
-        for nid in sorted(selected | sources):
+        for source in sorted(target.sources, key=lambda s: s.id):
+            nid = source.id
             moved_under: set[str] = set()
             copied_under: set[str] = set()
-            for tag in vocab[nid].record.tags:
+            for tag in source.record.tags:
                 under = [listed for listed in self.move if _falls_under(tag, listed)]
                 if under:
                     if nid in selected:
@@ -1050,7 +997,7 @@ class _UserTags:
                         moved_under.update(under)
                     continue
                 under = [listed for listed in self.copy if _falls_under(tag, listed)]
-                if under and nid in sources:
+                if under:
                     _add_tags(added, [tag])
                     copied_under.update(under)
             for listed in moved_under:
@@ -1105,7 +1052,7 @@ def _plan(
             tags.append(CONFLICT_TAG)
         if moved:
             tags_to_remove.setdefault(origin.id, []).extend(moved)
-        carried, lost = user_tags.carry(target, vocab)
+        carried, lost = user_tags.carry(target)
         _add_tags(tags, carried)
         for vocab_id, vocab_tags in lost.items():
             _add_tags(tags_to_remove.setdefault(vocab_id, []), vocab_tags)
@@ -1133,7 +1080,7 @@ def _plan(
             word_list = match_flags.format_word_array(target.array)
         tags_to_add: list[str] = []
         _add_tags(tags_to_add, [CONFLICT_TAG] if target.conflict else [], existing.tags)
-        carried, lost = user_tags.carry(target, vocab)
+        carried, lost = user_tags.carry(target)
         _add_tags(tags_to_add, carried, existing.tags)
         for vocab_id, vocab_tags in lost.items():
             _add_tags(tags_to_remove.setdefault(vocab_id, []), vocab_tags)

@@ -396,8 +396,8 @@ class SentenceMigration:
         plan = self._plan
         example = plan.examples.get(note.id)
         if example is None:
-            # Given no example (already migrated, no sentence text, none found): the report
-            # says which and why
+            # Given no example (made by the match op, already migrated, no sentence text): the
+            # report counts or lists it
             return False
         if example.new_index is not None:
             if example.new_index not in self._registered:

@@ -54,7 +54,8 @@ def source(nid, extraction, arr=None, vocab_word=("魚", "さかな"), word_list
     )
 
 
-def dependent(nid, extraction, vocab_word, tags=(), **kw):
+def match_op_note(nid, extraction, vocab_word, tags=(), **kw):
+    """A note the match op made: tagged, with a copy of the sentence its word was found in."""
     return source(nid, extraction, vocab_word=vocab_word, tags=("new_matched_jp_word", *tags), **kw)
 
 
@@ -70,6 +71,8 @@ def array_of(new_sentence):
 
 # 猫が魚を食べた。 The source's <b> marks its own word, 魚
 CAT_FISH = " 猫[ねこ]が<b> 魚[さかな]</b>を 食[た]べた。"
+# The same sentence with the <b> on 食べた, for a source of 食べる
+CAT_FISH_ON_EAT = " 猫[ねこ]が 魚[さかな]を<b> 食[た]べた</b>。"
 
 
 def cat_fish_array(cat=None, fish=None, eat=None):
@@ -199,18 +202,18 @@ class ElementSpanTests(unittest.TestCase):
 
 
 class NewSentenceTests(unittest.TestCase):
-    def test_a_source_and_a_dependent_it_links_get_one_new_sentence_note(self):
+    def test_a_source_gets_a_new_sentence_note_and_a_note_the_match_op_made_nothing(self):
         arr = cat_fish_array(fish=[1], eat=[2])
-        result = plan([source(1, CAT_FISH, arr), dependent(2, CAT_FISH, ("食べる", "たべる"))])
+        result = plan([source(1, CAT_FISH, arr), match_op_note(2, CAT_FISH, ("食べる", "たべる"))])
 
         (new,) = result.new_sentences
         self.assertEqual(new.origin_id, 1)
         self.assertEqual(new.source_ids, [1])
-        self.assertEqual(new.vocab_ids, [1, 2])
+        self.assertEqual(new.vocab_ids, [1])
         self.assertEqual(new.fields[WORD_LIST], match_flags.format_word_array(arr))
         self.assertEqual(new.fields[EXTRACTION], " 猫[ねこ]が 魚[さかな]を 食[た]べた。")
         self.assertEqual(new.tags, [])
-        self.assertEqual(result.examples, {1: sm.Example(new_index=0), 2: sm.Example(new_index=0)})
+        self.assertEqual(result.examples, {1: sm.Example(new_index=0)})
         self.assertEqual(result.updates, [])
         self.assertEqual(result.tags_to_remove, {})
         self.assertEqual(result.report.cases, {})
@@ -321,7 +324,7 @@ class NewSentenceTests(unittest.TestCase):
         vocab = [
             source(1, CAT_FISH, cat_fish_array(cat=[101], fish=["match"])),
             source(2, CAT_FISH, cat_fish_array(cat=[102], eat=[2, 3])),
-            dependent(3, CAT_FISH, ("食べる", "たべる")),
+            match_op_note(3, CAT_FISH, ("食べる", "たべる")),
         ]
         first, second = plan(vocab), plan(vocab)
         self.assertEqual(first, second)
@@ -392,93 +395,49 @@ class CombineTests(unittest.TestCase):
         self.assertEqual(report.note_ids("unknown_match_data"), [11])
 
 
-class DependentTests(unittest.TestCase):
-    def test_a_dependent_found_by_text_has_its_word_linked_though_its_b_marks_another(self):
-        # The match op copied the source's sentence, <b> on the source's word, into the note
-        vocab = [
-            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=["match"])),
-            dependent(2, CAT_FISH, ("食べる", "たべる")),
-        ]
-        result = plan(vocab)
-        self.assertEqual(array_of(result.new_sentences[0]), cat_fish_array(fish=[1], eat=[2]))
-        self.assertEqual(result.examples[2], sm.Example(new_index=0))
-        self.assertEqual(result.report.note_ids("linked"), [2])
+class MatchOpNoteTests(unittest.TestCase):
+    """A note the match op made (tagged new_matched_jp_word) is left alone, selected or not:
+    nothing of it is read but its link ID, which the sources' arrays link it by."""
 
-    def test_a_dependent_whose_word_is_in_the_sentence_twice_is_reported(self):
-        sentence = " 本[ほん]と<b> 猫[ねこ]</b>と 本[ほん]。"
-        arr = [
-            word(" 本[ほん]", "本", "ほん"),
-            particle("と"),
-            word(" 猫[ねこ]", "猫", "ねこ", [1]),
-            particle("と"),
-            word(" 本[ほん]", "本", "ほん"),
-            ["。"],
-        ]
-        result = plan([source(1, sentence, arr, ("猫", "ねこ")), dependent(2, sentence, ("本", "ほん"))])
-        self.assertEqual(array_of(result.new_sentences[0]), arr)
-        self.assertEqual(result.report.note_ids("link_several"), [2])
-        self.assertEqual(result.examples[2], sm.Example(new_index=0))
-
-    def test_of_several_sentences_linking_it_the_one_with_its_text(self):
-        other = " 犬[いぬ]が<b> 魚[さかな]</b>を 食[た]べた。"
-        other_arr = cat_fish_array(fish=[3], eat=[5])
-        other_arr[0] = word(" 犬[いぬ]", "犬", "いぬ")
-        vocab = [
-            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[5])),
-            source(3, other, other_arr),
-            dependent(5, other, ("食べる", "たべる")),
-        ]
-        result = plan(vocab)
-        self.assertEqual(result.examples[5], sm.Example(new_index=1))
-        self.assertEqual(result.new_sentences[1].origin_id, 3)
-        self.assertEqual(
-            result.report.counts["dependents linked from several sentences, chosen by their text"],
-            1,
-        )
-        self.assertEqual(result.report.note_ids("dependent_several"), [])
-
-    def test_of_several_sentences_none_with_its_text_the_oldest_and_reported(self):
-        other = " 犬[いぬ]が<b> 魚[さかな]</b>を 食[た]べた。"
-        other_arr = cat_fish_array(fish=[3], eat=[5])
-        other_arr[0] = word(" 犬[いぬ]", "犬", "いぬ")
-        vocab = [
-            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[5])),
-            source(3, other, other_arr),
-            dependent(5, " 鳥[とり]が 食[た]べた。", ("食べる", "たべる")),
-        ]
-        result = plan(vocab)
-        self.assertEqual(result.examples[5], sm.Example(new_index=0))
-        self.assertEqual(result.report.note_ids("dependent_several"), [5])
-
-    def test_the_one_sentence_linking_it_even_with_other_text_reported(self):
-        vocab = [
-            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[5])),
-            dependent(5, " 鳥[とり]が 食[た]べた。", ("食べる", "たべる")),
-        ]
-        result = plan(vocab)
-        self.assertEqual(result.examples[5], sm.Example(new_index=0))
-        self.assertEqual(result.report.note_ids("dependent_other_sentence"), [5])
-
-    def test_no_sentence_linking_it_and_none_with_its_text_no_example(self):
-        vocab = [
-            source(1, CAT_FISH, cat_fish_array(fish=[1])),
-            dependent(5, " 鳥[とり]が 食[た]べた。", ("食べる", "たべる")),
-        ]
-        result = plan(vocab)
-        self.assertNotIn(5, result.examples)
-        self.assertEqual(result.report.note_ids("dependent_no_example"), [5])
-        self.assertEqual(result.new_sentences[0].vocab_ids, [1])
-
-    def test_a_dependents_own_array_is_reported_and_not_used(self):
+    def test_it_gets_no_example_no_link_and_loses_no_tag(self):
+        # Its source's sentence as the match op copied it, <b> still on the source's word, its
+        # word unlinked in the source's array, an array of its own, a tag the move list names
+        # and an ID field holding no ID
         own = json.dumps(cat_fish_array(cat=[999], eat=[5]), ensure_ascii=False)
         vocab = [
-            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[5])),
-            dependent(5, CAT_FISH, ("食べる", "たべる"), word_list=own),
+            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=["match"])),
+            match_op_note(5, CAT_FISH, ("食べる", "たべる"), tags=("redo-audio",), word_list=own),
+        ]
+        result = plan(vocab, move_tags=MOVE)
+        (new,) = result.new_sentences
+        self.assertEqual(new.vocab_ids, [1])
+        self.assertEqual(array_of(new), cat_fish_array(fish=[1], eat=["match"]))
+        self.assertEqual(new.tags, [])
+        self.assertEqual(result.examples, {1: sm.Example(new_index=0)})
+        self.assertEqual(result.tags_to_remove, {})
+        self.assertEqual(result.link_id_fills, {1: "1"})
+        self.assertEqual(result.report.cases, {})
+        counts = result.report.counts
+        self.assertEqual(counts["vocab notes read"], 2)
+        self.assertEqual(counts["sources"], 1)
+        self.assertEqual(counts["made by the match op (tagged new_matched_jp_word), left alone"], 1)
+        self.assertEqual(counts["skipped: made by the match op"], 1)
+        self.assertEqual(counts['tag "redo-audio" moved from vocab notes'], 0)
+
+    def test_a_sentence_only_notes_the_match_op_made_hold_gets_no_sentence_note(self):
+        # Their source deleted or edited since: their copy of its sentence goes nowhere, and
+        # neither they nor one with no sentence at all is reported
+        vocab = [
+            source(1, CAT_FISH, cat_fish_array(fish=[1])),
+            match_op_note(5, " 鳥[とり]が 食[た]べた。", ("食べる", "たべる")),
+            match_op_note(6, " 鳥[とり]が 食[た]べた。", ("鳥", "とり")),
+            match_op_note(7, "", ("打つ", "うつ"), fields={}),
         ]
         result = plan(vocab)
-        self.assertEqual(array_of(result.new_sentences[0]), cat_fish_array(fish=[1], eat=[5]))
-        self.assertEqual(result.report.note_ids("dependent_array"), [5])
-        self.assertEqual(result.report.cases.get("conflict"), None)
+        self.assertEqual([new.origin_id for new in result.new_sentences], [1])
+        self.assertEqual(result.examples, {1: sm.Example(new_index=0)})
+        self.assertEqual(result.report.cases, {})
+        self.assertEqual(result.report.counts["skipped: made by the match op"], 3)
 
 
 class LinkCheckTests(unittest.TestCase):
@@ -585,11 +544,11 @@ class SelectionTests(unittest.TestCase):
         other_arr[0] = word(" 犬[いぬ]", "犬", "いぬ")
         return [
             source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[2])),
-            dependent(2, CAT_FISH, ("食べる", "たべる")),
+            match_op_note(2, CAT_FISH, ("食べる", "たべる")),
             source(3, other, other_arr),
         ]
 
-    def test_only_the_untagged_selected_makes_every_sentence_and_leaves_the_dependents(self):
+    def test_the_selected_sources_make_every_sentence(self):
         result = plan(self.vocab(), selected=[1, 3])
         self.assertEqual([s.vocab_ids for s in result.new_sentences], [[1], [3]])
         self.assertEqual(set(result.examples), {1, 3})
@@ -600,10 +559,12 @@ class SelectionTests(unittest.TestCase):
         result = plan(self.vocab(), selected=[3])
         self.assertEqual([s.origin_id for s in result.new_sentences], [3])
 
-    def test_a_selected_dependent_makes_its_sources_sentence(self):
+    def test_a_selected_note_the_match_op_made_makes_nothing(self):
+        # Not even the sentence of the source whose array links it
         result = plan(self.vocab(), selected=[2])
-        (new,) = result.new_sentences
-        self.assertEqual((new.origin_id, new.source_ids, new.vocab_ids), (1, [1], [2]))
+        self.assertEqual((result.new_sentences, result.examples), ([], {}))
+        self.assertEqual(result.report.counts["skipped: made by the match op"], 1)
+        self.assertEqual(result.report.cases, {})
 
     def test_a_selected_note_that_is_not_a_vocab_note(self):
         self.assertEqual(plan(self.vocab(), selected=[999]).report.note_ids("not_vocab"), [999])
@@ -618,45 +579,28 @@ class RerunTests(unittest.TestCase):
             word_list=match_flags.format_word_array(arr),
         )
 
-    def test_a_rerun_creates_nothing_and_joins_the_dependents(self):
+    def test_a_rerun_over_migrated_sources_and_notes_the_match_op_made_changes_nothing(self):
         vocab = [
             source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), example_id="500"),
-            dependent(2, CAT_FISH, ("食べる", "たべる")),
+            match_op_note(2, CAT_FISH, ("食べる", "たべる")),
         ]
         result = plan(vocab, [self.existing()])
-        self.assertEqual(result.new_sentences, [])
-        self.assertEqual(
-            result.updates,
-            [
-                sm.SentenceUpdate(
-                    note_id=500,
-                    link_id=500,
-                    word_list=None,
-                    tags_to_add=[],
-                    source_ids=[],
-                    vocab_ids=[2],
-                )
-            ],
-        )
-        self.assertEqual(result.examples, {2: sm.Example(note_id=500)})
+        self.assertEqual((result.new_sentences, result.updates, result.examples), ([], [], {}))
         self.assertEqual(result.report.counts["skipped: already migrated"], 1)
+        self.assertEqual(result.report.counts["skipped: made by the match op"], 1)
 
     def test_a_migrated_sources_old_array_does_not_undo_an_edit_of_its_sentence_note(self):
         # Since the first run the user judged 猫 not worth a note on the sentence note; the
-        # vocab note still holds its old array, link and all
+        # vocab note still holds its old array, link and all. 2, a source the first run left
+        # out, joins the note now
         vocab = [
             source(1, CAT_FISH, cat_fish_array(cat=[101], fish=[1], eat=[2]), example_id="500"),
-            dependent(2, CAT_FISH, ("食べる", "たべる")),
+            source(2, CAT_FISH_ON_EAT, vocab_word=("食べる", "たべる")),
         ]
         edited = self.existing(arr=cat_fish_array(cat=["dontmatch"], fish=[1], eat=[2]))
         (update,) = plan(vocab, [edited]).updates
         self.assertIsNone(update.word_list)
-
-    def test_a_dependent_found_by_text_in_an_existing_note_is_linked(self):
-        vocab = [dependent(2, CAT_FISH, ("食べる", "たべる"))]
-        result = plan(vocab, [self.existing(arr=cat_fish_array(fish=[1], eat=["match"]))])
-        (update,) = result.updates
-        self.assertEqual(json.loads(update.word_list), cat_fish_array(fish=[1], eat=[2]))
+        self.assertEqual(update.vocab_ids, [2])
 
     def test_a_source_not_migrated_yet_joins_and_merges_its_links(self):
         # A cancelled run added the sentence note but never changed the vocab note
@@ -707,20 +651,21 @@ class UserTagTests(unittest.TestCase):
     def tag_counts(self, result):
         return {name: n for name, n in result.report.counts.items() if name.startswith("tag ")}
 
-    def test_a_moved_tag_goes_from_a_source_and_a_dependent_and_leaves_both(self):
+    def test_a_moved_tag_goes_from_each_source_and_a_note_the_match_op_made_keeps_its_own(self):
         vocab = [
             source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), tags=("redo-audio", "mine")),
-            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("Made_Up_Show",)),
+            source(2, CAT_FISH_ON_CAT, vocab_word=("猫", "ねこ"), tags=("Made_Up_Show::ep01",)),
+            match_op_note(3, CAT_FISH, ("食べる", "たべる"), tags=("Made_Up_Show",)),
         ]
         result = plan(vocab, move_tags=MOVE)
         (new,) = result.new_sentences
-        self.assertEqual(new.tags, ["redo-audio", "Made_Up_Show"])
-        self.assertEqual(result.tags_to_remove, {1: ["redo-audio"], 2: ["Made_Up_Show"]})
+        self.assertEqual(new.tags, ["redo-audio", "Made_Up_Show::ep01"])
+        self.assertEqual(result.tags_to_remove, {1: ["redo-audio"], 2: ["Made_Up_Show::ep01"]})
 
-    def test_a_copied_tag_goes_from_a_source_stays_on_it_and_is_not_taken_from_a_dependent(self):
+    def test_a_copied_tag_goes_from_a_source_and_none_from_a_note_the_match_op_made(self):
         vocab = [
             source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), tags=("freq-band-a",)),
-            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("freq-band-b",)),
+            match_op_note(2, CAT_FISH, ("食べる", "たべる"), tags=("freq-band-b",)),
         ]
         result = plan(vocab, copy_tags=["freq-band-a", "freq-band-b"])
         self.assertEqual(result.new_sentences[0].tags, ["freq-band-a"])
@@ -785,34 +730,36 @@ class UserTagTests(unittest.TestCase):
                 example_id="500",
                 tags=("Made_Up_Show::ep01", "freq-band-c"),
             ),
-            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("redo-audio", "Made_Up_Show::ep02")),
+            # Made by the match op: none of its tags go anywhere either
+            match_op_note(
+                2, CAT_FISH, ("食べる", "たべる"), tags=("Made_Up_Show::ep03", "freq-band-d")
+            ),
             # A source a cancelled run left unmigrated
             source(
                 3,
                 CAT_FISH_ON_CAT,
                 cat_fish_array(fish=[1], eat=[2]),
                 ("猫", "ねこ"),
-                tags=("freq-band-a", "freq-band-b"),
+                tags=("redo-audio", "Made_Up_Show::ep02", "freq-band-a", "freq-band-b"),
             ),
         ]
-        copy_tags = ["freq-band-a", "freq-band-b", "freq-band-c"]
+        copy_tags = ["freq-band-a", "freq-band-b", "freq-band-c", "freq-band-d"]
         result = plan(vocab, [existing], move_tags=MOVE, copy_tags=copy_tags)
         self.assertEqual(result.new_sentences, [])
         (update,) = result.updates
         self.assertEqual(update.tags_to_add, ["Made_Up_Show::ep02", "freq-band-b"])
         # It already has redo-audio, which the vocab note loses all the same
-        self.assertEqual(result.tags_to_remove, {2: ["redo-audio", "Made_Up_Show::ep02"]})
-        self.assertEqual(result.examples, {2: sm.Example(note_id=500), 3: sm.Example(note_id=500)})
+        self.assertEqual(result.tags_to_remove, {3: ["redo-audio", "Made_Up_Show::ep02"]})
+        self.assertEqual(result.examples, {3: sm.Example(note_id=500)})
 
     def test_an_unselected_source_gives_its_copied_tags_and_keeps_its_moved_ones(self):
         vocab = [
-            source(
-                1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), tags=("redo-audio", "freq-band-a")
-            ),
-            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("Made_Up_Show",)),
+            source(1, CAT_FISH, cat_fish_array(fish=[1]), tags=("redo-audio", "freq-band-a")),
+            source(2, CAT_FISH_ON_CAT, vocab_word=("猫", "ねこ"), tags=("Made_Up_Show",)),
         ]
         first = plan(vocab, selected=[2], move_tags=MOVE, copy_tags=COPY)
         (new,) = first.new_sentences
+        self.assertEqual(new.origin_id, 1)
         self.assertEqual(new.tags, ["freq-band-a", "Made_Up_Show"])
         self.assertEqual(first.tags_to_remove, {2: ["Made_Up_Show"]})
 
@@ -820,7 +767,7 @@ class UserTagTests(unittest.TestCase):
         made = sm.SentenceRecord(
             note_id=500, tags=tuple(new.tags), fields=new.fields, word_list=new.fields[WORD_LIST]
         )
-        vocab[1] = dependent(2, CAT_FISH, ("食べる", "たべる"), example_id="500")
+        vocab[1] = source(2, CAT_FISH_ON_CAT, vocab_word=("猫", "ねこ"), example_id="500")
         second = plan(vocab, [made], selected=[1, 2], move_tags=MOVE, copy_tags=COPY)
         (update,) = second.updates
         self.assertEqual(update.tags_to_add, ["redo-audio"])
@@ -834,7 +781,7 @@ class UserTagTests(unittest.TestCase):
                 cat_fish_array(fish=[1], eat=[2]),
                 tags=("kanjify_sentence_mismatch", "redo-audio", "freq-band-a"),
             ),
-            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("redo-audio",)),
+            source(2, CAT_FISH_ON_CAT, vocab_word=("猫", "ねこ"), tags=("redo-audio",)),
         ]
         result = plan(vocab)
         self.assertEqual(result.new_sentences[0].tags, ["kanjify_sentence_mismatch"])
@@ -867,8 +814,8 @@ class UserTagTests(unittest.TestCase):
 
     def test_the_report_counts_every_listed_tag_once(self):
         vocab = [
-            source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[2]), tags=("redo-audio",)),
-            dependent(2, CAT_FISH, ("食べる", "たべる"), tags=("Redo-Audio",)),
+            source(1, CAT_FISH, cat_fish_array(fish=[1]), tags=("redo-audio",)),
+            source(2, CAT_FISH_ON_CAT, vocab_word=("猫", "ねこ"), tags=("Redo-Audio",)),
         ]
         result = plan(vocab, move_tags=["redo-audio", "REDO-AUDIO", " ", "never-used"])
         self.assertEqual(
@@ -899,10 +846,10 @@ class ReportTests(unittest.TestCase):
 
 class ChangedWithNewTests(unittest.TestCase):
     def test_an_unselected_origin_losing_the_addons_tags_waits_for_its_sentence_note(self):
-        # 1, unselected, is the origin of the sentence the dependent 2 is linked from
+        # 1, unselected, is the origin of the sentence 2 is another source of
         vocab = [
             source(1, CAT_FISH, cat_fish_array(cat=[2]), tags=("kanjify_sentence_mismatch",)),
-            dependent(2, CAT_FISH_ON_CAT, ("猫", "ねこ"), tags=("redo-audio",)),
+            source(2, CAT_FISH_ON_CAT, vocab_word=("猫", "ねこ"), tags=("redo-audio",)),
             source(3, KOEDA, koeda_array(koeda=[3]), vocab_word=("小枝", "こえだ")),
         ]
         result = plan(vocab, selected=[2, 3], move_tags=["redo-audio"])
@@ -913,7 +860,7 @@ class ChangedWithNewTests(unittest.TestCase):
         }
         self.assertEqual(changed[1], [2, 1])
         self.assertEqual(changed[3], [3])
-        # The dependent's own tags go with its example: it is not listed a second time
+        # 2's own tags go with its example: it is not listed a second time
         self.assertEqual(sorted(result.tags_to_remove), [1, 2])
         self.assertEqual(by_origin[1].vocab_ids, [2])
 
@@ -953,12 +900,12 @@ class LinkIdTests(unittest.TestCase):
     """Every link is read as a link ID: what a note's ID field holds, else its note id."""
 
     def test_arrays_link_a_note_by_the_id_it_holds_and_one_holding_none_by_its_note_id(self):
-        # 魚's note and the dependent 食べる's hold IDs; the dependent 猫's holds none
+        # The sources 魚 and 食べる hold IDs; 猫 holds none
         arr = cat_fish_array(cat=[2], fish=[FISH_ID], eat=[EAT_ID])
         vocab = [
             source(1, CAT_FISH, arr, link_id_value=str(FISH_ID)),
-            dependent(2, CAT_FISH, ("猫", "ねこ")),
-            dependent(3, CAT_FISH, ("食べる", "たべる"), link_id_value=str(EAT_ID)),
+            source(2, CAT_FISH_ON_CAT, vocab_word=("猫", "ねこ")),
+            source(3, CAT_FISH_ON_EAT, vocab_word=("食べる", "たべる"), link_id_value=str(EAT_ID)),
         ]
         result = plan(vocab)
         (new,) = result.new_sentences
@@ -983,7 +930,7 @@ class LinkIdTests(unittest.TestCase):
         # example, its note id is no example
         vocab = [
             source(1, CAT_FISH, cat_fish_array(fish=[1]), example_id=str(SENTENCE_ID)),
-            dependent(2, CAT_FISH, ("食べる", "たべる"), example_id="500"),
+            source(2, CAT_FISH_ON_EAT, vocab_word=("食べる", "たべる"), example_id="500"),
         ]
         result = plan(vocab, [existing_cat_fish(str(SENTENCE_ID), fish=[1], eat=["match"])])
         self.assertEqual(result.report.counts["skipped: already migrated"], 1)
@@ -1001,7 +948,6 @@ class LinkIdTests(unittest.TestCase):
         vocab = [
             source(1, CAT_FISH, cat_fish_array(fish=[1]), link_id_value=str(FISH_ID)),
             source(3, KOEDA, koeda_array(koeda=[3]), ("小枝", "こえだ")),
-            dependent(4, KOEDA, ("柊", "ひいらぎ")),
         ]
         result = plan(vocab)
         first, second = result.new_sentences
@@ -1010,10 +956,7 @@ class LinkIdTests(unittest.TestCase):
         self.assertNotEqual(first.link_id, second.link_id)
         self.assertEqual([len(str(new.link_id)) for new in result.new_sentences], [16, 16])
         # The vocab notes name their example by it (the op writes new.link_id for new_index)
-        self.assertEqual(
-            result.examples,
-            {1: sm.Example(new_index=0), 3: sm.Example(new_index=1), 4: sm.Example(new_index=1)},
-        )
+        self.assertEqual(result.examples, {1: sm.Example(new_index=0), 3: sm.Example(new_index=1)})
         self.assertEqual(
             [new.link_id for new in plan(vocab).new_sentences], [first.link_id, second.link_id]
         )
@@ -1030,15 +973,16 @@ class LinkIdTests(unittest.TestCase):
 
     def test_each_vocab_note_the_plan_changes_gets_its_note_id_in_a_field_holding_no_id(self):
         vocab = [
-            # Not selected: the origin of the dependents' sentence, losing the addon's tag
+            # Not selected: the origin of the sentence of the sources 2 to 6, losing the addon's
+            # tag
             source(
                 1, CAT_FISH, cat_fish_array(fish=[1]), tags=("kanjify_sentence_mismatch",)
             ),
-            dependent(2, CAT_FISH, ("x", "x")),
-            dependent(3, CAT_FISH, ("x", "x"), link_id_value="0"),
-            dependent(4, CAT_FISH, ("x", "x"), link_id_value="-1234"),
-            dependent(5, CAT_FISH, ("x", "x"), link_id_value="an id"),
-            dependent(6, CAT_FISH, ("x", "x"), link_id_value=str(EAT_ID)),
+            source(2, CAT_FISH, vocab_word=("x", "x")),
+            source(3, CAT_FISH, vocab_word=("x", "x"), link_id_value="0"),
+            source(4, CAT_FISH, vocab_word=("x", "x"), link_id_value="-1234"),
+            source(5, CAT_FISH, vocab_word=("x", "x"), link_id_value="an id"),
+            source(6, CAT_FISH, vocab_word=("x", "x"), link_id_value=str(EAT_ID)),
             # Changed by nothing: neither selected nor the origin of a sentence made
             source(7, KOEDA, koeda_array(koeda=[7]), ("小枝", "こえだ")),
         ]
@@ -1049,7 +993,7 @@ class LinkIdTests(unittest.TestCase):
         self.assertEqual(result.report.counts["vocab notes whose ID field gets their note id"], 5)
 
     def test_a_joined_sentence_notes_field_holding_no_id_is_filled_when_it_is_written(self):
-        eater = dependent(2, CAT_FISH, ("食べる", "たべる"))
+        eater = source(2, CAT_FISH_ON_EAT, vocab_word=("食べる", "たべる"))
         # (its field, its 食べる: ["match"] is linked by the check, which writes the note)
         for value, eat, filled in [
             ("", ["match"], True),
@@ -1096,8 +1040,9 @@ class LegacyPlaceholderTests(unittest.TestCase):
     def test_a_placeholder_several_notes_hold_is_left_and_reported(self):
         vocab = [
             source(1, CAT_FISH, cat_fish_array(cat=[-333], fish=[1])),
-            dependent(5, KOEDA, ("猫", "ねこ"), link_id_value="-333"),
-            dependent(6, KOEDA, ("猫", "ねこ"), link_id_value="-333"),
+            # Notes the match op made: left alone, but what their ID fields hold is read
+            match_op_note(5, KOEDA, ("猫", "ねこ"), link_id_value="-333"),
+            match_op_note(6, KOEDA, ("猫", "ねこ"), link_id_value="-333"),
         ]
         result = plan(vocab, selected=[1])
         self.assertEqual(array_of(result.new_sentences[0])[0][4], [-333])
@@ -1106,17 +1051,21 @@ class LegacyPlaceholderTests(unittest.TestCase):
             [(1, "猫: -333, held by 5, 6 (the sentence of 1)")],
         )
 
-    def test_a_dependent_linked_by_its_placeholder_gets_its_example(self):
-        # Its add was never resolved: the array and its own field hold the placeholder
+    def test_a_note_the_match_op_made_is_linked_by_its_placeholder_and_left_alone(self):
+        # Its add was never resolved: the array and its own field hold the placeholder, so its
+        # link ID is its note id. The array is resolved; the note itself is not written
         vocab = [
             source(1, CAT_FISH, cat_fish_array(fish=[1], eat=[-555])),
-            dependent(2, KOEDA, ("食べる", "たべる"), link_id_value="-555"),
+            match_op_note(2, KOEDA, ("食べる", "たべる"), link_id_value="-555"),
         ]
         result = plan(vocab)
-        self.assertEqual(result.examples[2], sm.Example(new_index=0))
         self.assertEqual(array_of(result.new_sentences[0])[4][4], [2])
-        self.assertEqual(result.report.note_ids("dependent_other_sentence"), [2])
-        self.assertEqual(result.link_id_fills, {1: "1", 2: "2"})
+        self.assertEqual(
+            result.report.cases["placeholder_linked"],
+            [(1, "食べる: -555 -> 2 (the sentence of 1)")],
+        )
+        self.assertEqual(result.examples, {1: sm.Example(new_index=0)})
+        self.assertEqual(result.link_id_fills, {1: "1"})
 
     def test_an_unused_array_reports_none(self):
         # 7's sentence is made for no selected note, so its array is copied nowhere
