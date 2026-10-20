@@ -59,7 +59,9 @@ class Card:
         self.row = row
         self.furigana = furigana
         self.inputs = inputs
-        self.prompt = arbiter.review_prompt(**inputs)
+        # A card none of whose words in review was heard is asked nothing, as the op asks
+        # nothing for its note (furigana_arbiter.asked)
+        self.prompt = arbiter.review_prompt(**inputs) if inputs["words"] else ""
 
 
 def read_cards() -> list[Card]:
@@ -153,27 +155,33 @@ def evaluate(
     listed: list[str] = []
     for card in cards:
         review = card.furigana.review
+        # The words asked about, numbered as the op numbers them; the rest are never written
+        asked = arbiter.asked(card.furigana)
+        number = {id(r): n for n, r in enumerate(asked, 1)}
         answers = []
         for model in models:
-            row = cached.get(capture_store.research_cache_key(model, card.prompt))
-            c["unanswered cards"] += row is None
+            key = capture_store.research_cache_key(model, card.prompt)
+            row = cached.get(key) if card.prompt else None
+            c["unanswered cards"] += bool(card.prompt) and row is None
             answers.append(
-                arbiter.answers_from_response(row["response"], len(review)) if row else {}
+                arbiter.answers_from_response(row["response"], len(asked)) if row else {}
             )
         left = False
-        for n, r in enumerate(review, 1):
+        for r in review:
             label = fa.label_for(labels, (card.row["id"], r.line, r.start), r.surface)
             said = label["reading"] if label and label["verdict"] == "heard" else None
             kind = "mismatch" if r.why == "mismatch" else "unsettled"
             c[f"{kind}: words"] += 1
-            written = arbiter.agreed_reading(r, [by_model.get(n) for by_model in answers])
+            n = number.get(id(r))
+            given_answers = [by_model.get(n) for by_model in answers] if n else []
+            written = arbiter.agreed_reading(r, given_answers) if n else None
             if written is None:
                 left = True
                 if listing and said is not None:
                     given = ", ".join(
                         f"{a.reading}{'' if a.sure else '?'}" if a else "-"
-                        for a in (by_model.get(n) for by_model in answers)
-                    )
+                        for a in given_answers
+                    ) or "(not asked)"
                     listed.append(
                         f"  left  {r.surface} {kind}: draft {r.draft}, said {said}, answers"
                         f" {given}, heard {'/'.join(r.heard) or '-'}  [{card.row['id']}]"
@@ -230,13 +238,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cached = read_results()
     if not args.score_only:
         get_response = load_get_response(args.workers)
+        asking = [card for card in cards if card.prompt]
         for model in models:
             todo = [
                 card
-                for card in cards
+                for card in asking
                 if capture_store.research_cache_key(model, card.prompt) not in cached
             ]
-            print(f"{model}: {len(todo)} to ask, {len(cards) - len(todo)} cached", file=sys.stderr)
+            print(
+                f"{model}: {len(todo)} to ask, {len(asking) - len(todo)} cached", file=sys.stderr
+            )
             if todo:
                 fetch(get_response, model, todo, args.workers, cached)
     labels = fa.read_labels()

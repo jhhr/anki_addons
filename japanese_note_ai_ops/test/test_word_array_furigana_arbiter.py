@@ -86,6 +86,17 @@ class InputsTest(unittest.TestCase):
                     arbiter.translation_text(field), "Where are the others?\nWon't it open?"
                 )
 
+    def test_a_word_no_transcript_heard_anything_at_is_not_asked(self):
+        # The clip stops before 開か: it can never be written, so no model is asked about it
+        result = furigana()
+        result.readings[2].heard = ["", ""]
+        self.assertEqual([r.surface for r in arbiter.asked(result)], ["他"])
+        inputs = arbiter.review_inputs(CAPTION, "", TRANSCRIPTS, result)
+        self.assertEqual([w["context"] for w in inputs["words"]], ["［他］の人は"])
+        result.readings[0].heard = []
+        self.assertEqual(arbiter.asked(result), [])
+        self.assertEqual(arbiter.review_inputs(CAPTION, "", TRANSCRIPTS, result)["words"], [])
+
 
 class AnswersTest(unittest.TestCase):
     def test_answers_by_number_in_hiragana(self):
@@ -173,6 +184,14 @@ class SettleTest(unittest.TestCase):
         self.assertEqual(written, [("開か", "あか", "arbiter")])
         self.assertEqual([r.surface for r in result.review], ["他"])
         self.assertEqual(result.text, "他[ほか？]の 人[ひと]は<br>開[あ]かないの？")
+
+    def test_the_answers_are_numbered_over_the_words_asked_about(self):
+        # 他 was heard nothing at, so 開か is word 1 of the prompt and of its answers
+        result = furigana()
+        result.readings[0].heard = ["", ""]
+        settled = arbiter.settle(result, [{1: answer("あか")}])
+        self.assertEqual([(r.surface, r.written) for r in settled], [("開か", "あか")])
+        self.assertEqual([r.surface for r in result.review], ["他"])
 
 
 if __name__ == "__main__":

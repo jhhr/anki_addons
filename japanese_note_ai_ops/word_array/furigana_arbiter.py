@@ -25,9 +25,11 @@ Sonnet 5.5 3 of 74 (妓女 as げじょ twice, which both transcripts misheard, 
 got none of their 66 wrong, settling 165 of the 360 words in review, as did Sonnet and Opus. A
 mistake two models share gets through: Haiku and Opus kept their 好き.
 
-One call a note and model, for all its words in review: the line's other words are context
-for each. The prompt is built from `review_inputs`' values alone, which the call records as
-its inputs.
+One call a note and model, for all its words in review that a transcript heard something at
+(`asked`): the line's other words are context for each. A word no transcript heard anything
+at can never be written (`heard_at`), so it is not asked about, and a note with only such
+words makes no call. The prompt is built from `review_inputs`' values alone, which the call
+records as its inputs.
 """
 
 from __future__ import annotations
@@ -117,15 +119,27 @@ def translation_text(field: str) -> str:
     return html.unescape(TAG_RE.sub("", BR_RE.sub("\n", blocks_as_breaks(field)))).strip()
 
 
+def heard_something(r: Reading) -> bool:
+    """Whether a transcript heard a mora at the word: `heard_at` needs one, so a word every
+    transcript passed over (a clip that stops early) can never be written."""
+    return any(morae(stretch) for stretch in r.heard)
+
+
+def asked(furigana: Furigana) -> list[Reading]:
+    """The words in review the models are asked about, in the order `review_inputs` and
+    `settle` number them: those a transcript heard something at."""
+    return [r for r in furigana.review if heard_something(r)]
+
+
 def review_inputs(
     caption: str, translation: str, transcripts: Sequence[tuple[str, str]], furigana: Furigana
 ) -> dict:
     """What the prompt for `furigana`'s words in review is built from: the caption's spoken
-    lines, the translation, each transcript by its transcriber's name, and for each word its
-    line with the word marked, its draft, its known readings and what each transcript heard
-    there."""
+    lines, the translation, each transcript by its transcriber's name, and for each word
+    asked about (`asked`) its line with the word marked, its draft, its known readings and
+    what each transcript heard there."""
     words = []
-    for r in furigana.review:
+    for r in asked(furigana):
         text = furigana.texts[r.line]
         words.append(
             {
@@ -239,10 +253,10 @@ def agreed_reading(r: Reading, answers: Sequence[Optional[Answer]]) -> Optional[
 
 
 def settle(furigana: Furigana, answers: Sequence[Mapping[int, Answer]]) -> list[Reading]:
-    """Writes the words in review, numbered as `review_inputs` numbers them, that every
-    model's answers agree on (`agreed_reading`); the words it wrote."""
+    """Writes the words asked about, numbered as `review_inputs` numbers them (`asked`), that
+    every model's answers agree on (`agreed_reading`); the words it wrote."""
     settled = []
-    for n, r in enumerate(furigana.review, 1):
+    for n, r in enumerate(asked(furigana), 1):
         written = agreed_reading(r, [by_model.get(n) for by_model in answers])
         if written is not None:
             r.written, r.why = written, "arbiter"

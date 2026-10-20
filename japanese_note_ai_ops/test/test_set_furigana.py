@@ -286,6 +286,13 @@ class ArbiterTest(OpHarness):
         said = heard("ほかのひとわどこにいるの", "ほかのひとわどこにいるの")
         self.assertEqual(self.ask(Note({"Sentence": LINE, "Heard": said}), {}), [])
 
+    def test_a_word_nothing_was_heard_at_asks_nothing(self):
+        # Both transcripts pass over 他: no answer could be written, so no model is asked
+        skipped = heard("のひとわどこにいるの", "のひとわどこにいるの")
+        note = Note({"Sentence": LINE, "Heard": skipped})
+        self.assertEqual(self.ask(note, {m: answer("ほか") for m in self.MODELS}), [])
+        self.assertEqual(note.tags, [op.REVIEW_TAG])
+
     def test_the_models_of_the_config(self):
         self.assertEqual(op.arbiter_models({"furigana_models": [" a ", "", 3, "b"]}), ["a", "b"])
         self.assertEqual(op.arbiter_models({"furigana_models": "a"}), ["a"])

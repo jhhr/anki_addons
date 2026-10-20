@@ -197,9 +197,10 @@ def settle_by_arbiter(
     translation: str,
     transcripts: Sequence[tuple[str, str]],
 ) -> list[Reading]:
-    """Asks each of `models` about the words `result` leaves in review and writes those they
-    all settle alike (`furigana_arbiter.settle`); the words it wrote. A failed call settles
-    none, since every model has to agree, and the provider has reported it."""
+    """Asks each of `models` about the words `result` leaves in review that a transcript heard
+    something at (`furigana_arbiter.asked`) and writes those they all settle alike
+    (`furigana_arbiter.settle`); the words it wrote. A failed call settles none, since every
+    model has to agree, and the provider has reported it."""
     inputs = furigana_arbiter.review_inputs(caption, translation, transcripts, result)
     prompt = furigana_arbiter.review_prompt(**inputs)
     answers = []
@@ -213,7 +214,9 @@ def settle_by_arbiter(
         )
         if response is None:
             return []
-        answers.append(furigana_arbiter.answers_from_response(response, len(result.review)))
+        answers.append(
+            furigana_arbiter.answers_from_response(response, len(inputs["words"]))
+        )
     return furigana_arbiter.settle(result, answers)
 
 
@@ -312,7 +315,9 @@ def set_furigana_in_note(
         show_words=show.words,
         quorum=QUORUM,
     )
-    if result.review and arbiters:
+    # A word nothing was heard at is never written, so a note with only such words asks
+    # nothing (furigana_arbiter.asked)
+    if arbiters and furigana_arbiter.asked(result):
         # The translation is context only: a note type without one is asked all the same
         translation_field = config.get(note_type["name"], {}).get("translated_sentence_field")
         translation = note[translation_field] if translation_field in note else ""
