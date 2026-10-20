@@ -40,7 +40,7 @@ from typing import Any, Mapping, Optional, Sequence
 from ..html_stripping import blocks_as_breaks
 from ..kana_conv import to_hiragana
 from .audio_furigana import Furigana, Reading
-from .captions import KANJI_RE, spoken_lines
+from .captions import KANJI_RE, kanji_numerals, spoken_lines
 from .reading_check import AGREE, fit, morae, same_reading
 
 WORDS = "words"
@@ -205,11 +205,17 @@ def heard_at(reading: str, heard: Sequence[str]) -> bool:
 
 def keeps_kana(surface: str, reading: str) -> bool:
     """Whether `reading` holds the kana `surface` is written with, where they are: an answer
-    for 困っ that drops its っ still fits a transcript's コマッ a mora short."""
+    for 困っ that drops its っ still fits a transcript's コマッ a mora short. A number in
+    digits is matched as spelt in kanji numerals (`captions.kanji_numerals`, 10日 as 十日),
+    as the rule reads it, and its 〇 is read like any numeral kanji: a digit is no kana a
+    reading could hold, and 7時 said しちじ was otherwise never settled."""
     pattern = re.sub(
         r"(?:\.\+)+",
         ".+",
-        "".join(".+" if KANJI_RE.match(c) else re.escape(to_hiragana(c)) for c in surface),
+        "".join(
+            ".+" if KANJI_RE.match(c) or c == "〇" else re.escape(to_hiragana(c))
+            for c in kanji_numerals(surface)
+        ),
     )
     return re.fullmatch(pattern, to_hiragana(reading)) is not None
 

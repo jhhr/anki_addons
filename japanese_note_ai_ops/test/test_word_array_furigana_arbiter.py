@@ -133,6 +133,14 @@ class ChecksTest(unittest.TestCase):
         self.assertFalse(arbiter.keeps_kana("お茶", "ちゃ"))
         self.assertTrue(arbiter.keeps_kana("泣き明かし", "なきあかし"))
 
+    def test_a_number_in_digits_is_read_as_its_kanji_numerals(self):
+        # A digit is no kana a reading could hold: 7時 said しちじ was never settled
+        self.assertTrue(arbiter.keeps_kana("7時", "しちじ"))
+        self.assertTrue(arbiter.keeps_kana("１０日", "とおか"))
+        self.assertTrue(arbiter.keeps_kana("0時", "れいじ"))
+        self.assertTrue(arbiter.keeps_kana("2つ", "ふたつ"))
+        self.assertFalse(arbiter.keeps_kana("2つ", "ふた"))
+
 
 class AgreedTest(unittest.TestCase):
     word = review(1, 3, "開か", "ひらか", ["アカ", "アカ"])
