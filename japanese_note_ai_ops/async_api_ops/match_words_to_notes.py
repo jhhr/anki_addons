@@ -218,8 +218,11 @@ class _ArrayLinks(NamedTuple):
     # configured type is of that type, and the arrays linking it are of the processed note's
     type_term: str
     word_list_field: str
-    # The vocab type is its own sentence type: its notes hold the arrays themselves
-    one_type: bool
+
+    @property
+    def one_type(self) -> bool:
+        """The vocab type is its own sentence type: its notes hold the arrays themselves."""
+        return not self.type_term
 
     def holds_array(self, note: Note, new_note_id_field: str) -> bool:
         """Whether a note a search found is one the match op writes arrays into. Every note
@@ -236,8 +239,8 @@ def _array_links(config: dict, vocab_type_name: str) -> _ArrayLinks:
     sentence_type = sentence_type_of(config, vocab_type_name)
     word_list_field = get_field_config(config, "word_list_field", {"name": sentence_type})
     if sentence_type == vocab_type_name:
-        return _ArrayLinks("", word_list_field, True)
-    return _ArrayLinks(note_type_search(sentence_type) + " ", word_list_field, False)
+        return _ArrayLinks("", word_list_field)
+    return _ArrayLinks(note_type_search(sentence_type) + " ", word_list_field)
 
 
 # How many link IDs one collection search looks for. Each is a term of an OR, and SQLite
@@ -795,6 +798,9 @@ class MatchFields(TypedDict):
     meaning_audio_field: str
     part_of_speech_field: str
     english_meaning_field: str
+    # The vocab type's link ID field (note_roles.link_id_field): where a new note's link ID goes
+    # and what a listed or matched note is linked by. sentence_id_field would take its place,
+    # but layout_error refuses it on a vocab block, and on the one-type layout's
     new_note_id_field: str
 
 
@@ -894,14 +900,6 @@ def _two_type_vocab_type(match_op_args: MatchOpArgs) -> Optional[str]:
     return vocab_type
 
 
-def _vocab_link_field(config: dict, match_op_args: MatchOpArgs) -> Optional[str]:
-    """The link ID field (note_roles.link_id_field) of the vocab type the word's notes are of:
-    what a listed or matched note is linked by, and where a new note's link ID goes. The vocab
-    block's new_note_id_field (SPEC D14), which get_match_fields requires."""
-    vocab_type = _two_type_vocab_type(match_op_args) or match_op_args["note_type"]["name"]
-    return link_id_field(config, vocab_type)
-
-
 def _sentence_link_id(config: dict, match_op_args: MatchOpArgs) -> int:
     """The link ID of the note being processed, which a new note's link ID is keyed by and, in
     the two-type layout, the new vocab note names its example by (note_roles.copy_example).
@@ -926,7 +924,7 @@ def _sentence_link_id(config: dict, match_op_args: MatchOpArgs) -> int:
     return held
 
 
-def _new_link_id(config: dict, match_op_args: MatchOpArgs, sentence_link_id: int) -> int:
+def _new_link_id(match_op_args: MatchOpArgs, sentence_link_id: int) -> int:
     """The link ID of the vocab note made for the target, generated (link_ids.py) before it is
     added, so that the array links it while it is prepared and nothing is rewritten after the
     add (SPEC D18). Keyed `vocab|<sentence link ID>|<word path>|<word>|<reading>` (D16): the
@@ -1388,8 +1386,8 @@ def create_new_note_without_matching(
     new_note[part_of_speech_field] = match_op_args["part_of_speech"]
     new_note[english_meaning_field] = ""
     # Its link ID from now on: the array links it by this, and it keeps it once added
-    new_note_id = _new_link_id(config, match_op_args, sentence_link_id)
-    new_note[_vocab_link_field(config, match_op_args) or new_note_id_field] = str(new_note_id)
+    new_note_id = _new_link_id(match_op_args, sentence_link_id)
+    new_note[new_note_id_field] = str(new_note_id)
     create_meaning_result = clean_meaning_in_note(
         config=config,
         note=new_note,
@@ -1462,14 +1460,12 @@ def upsert_meaning_marker(sort_field_value: str, meaning_number: int, fallback_w
     return f"{base_word} {''.join(rebuilt_tokens)}".strip() if rebuilt_tokens else base_word
 
 
-def link_word_to_note(
-    match_op_args: MatchOpArgs, note: Note, link_field: Optional[str]
-) -> ProcessedWordTuple:
+def link_word_to_note(match_op_args: MatchOpArgs, note: Note) -> ProcessedWordTuple:
     """Link the target word to `note`, as a MATCH does: its word tuple names the note's sort
-    field and its link ID (link_ids.note_link_id, `link_field` being the vocab type's link ID
-    field): an added note's, or the one a note not added yet was made with, which it keeps once
-    added. None, and the word left as it was, for a note not added that holds none, which
-    nothing can link."""
+    field and its link ID (link_ids.note_link_id, in the vocab type's new_note_id_field): an
+    added note's, or the one a note not added yet was made with, which it keeps once added.
+    None, and the word left as it was, for a note not added that holds none, which nothing can
+    link."""
     word = match_op_args["word"]
     reading = match_op_args["reading"]
     multi_meaning_index = match_op_args.get("multi_meaning_index")
@@ -1477,7 +1473,7 @@ def link_word_to_note(
     word_sort_field = match_op_args["word_sort_field"]
     if note.id > 0 and note.id in notes_to_update_dict:
         note = notes_to_update_dict[note.id]
-    note_id = note_link_id(note, link_field)
+    note_id = note_link_id(note, match_op_args["new_note_id_field"])
     if note_id is None:
         logger.error(
             f"Note {note[word_sort_field]!r} is not added and holds no link ID: the word"
@@ -1577,8 +1573,8 @@ def create_new_note_from_matched_note(
     new_note[english_meaning_field] = en_meaning.strip() if en_meaning else ""
     # Its link ID from now on, in place of the copied note's: the array links it by this, and
     # it keeps it once added
-    new_note_id = _new_link_id(config, match_op_args, sentence_link_id)
-    new_note[_vocab_link_field(config, match_op_args) or new_note_id_field] = str(new_note_id)
+    new_note_id = _new_link_id(match_op_args, sentence_link_id)
+    new_note[new_note_id_field] = str(new_note_id)
     # Process the meaning again with clean_meaning_in_note to get the best possible
     # meaning
     # Provide other_meaning_notes to override fetching from DB again as the meanings
@@ -1606,9 +1602,7 @@ def create_new_note_from_matched_note(
         # repeat another note's meaning, the older one studied in half of them, and nothing
         # compared the two. The quality rated the new meaning, not that note's, so the word is
         # left to be rated
-        word_tuple = link_word_to_note(
-            match_op_args, cleaned.same_sense_as, _vocab_link_field(config, match_op_args)
-        )
+        word_tuple = link_word_to_note(match_op_args, cleaned.same_sense_as)
         match_qualities = match_op_args.get("match_qualities")
         if match_qualities is not None:
             match_qualities.pop(word_index, None)
@@ -1839,6 +1833,9 @@ async def match_single_word_in_word_tuple(
     furigana_sentence_field = match_op_args["furigana_sentence_field"]
     english_meaning_field = match_op_args["english_meaning_field"]
     word_list_field = match_op_args["word_list_field"]
+    # The vocab type's link ID field: what an example's array links a listed note by, to mark
+    # its word there, and what the word is linked by when it matches the note
+    new_note_id_field = match_op_args["new_note_id_field"]
     prompt_sentence = match_op_args.get("prompt_sentence") or sentence
     match_qualities = match_op_args.get("match_qualities")
 
@@ -1971,10 +1968,6 @@ async def match_single_word_in_word_tuple(
                 match_op_args["note_cache"],
                 log_prefix,
             )
-        # What an example's array links a listed note by, to mark its word there, and what the
-        # word is linked by when it matches the note: the note's link ID (a pending note holding
-        # none has none)
-        listed_link_field = _vocab_link_field(config, match_op_args)
 
         # Get all the meanings from the notes to check against the sentence
         meanings: list[tuple[str, int, Optional[NoteId], str, str, str]] = []
@@ -2004,7 +1997,7 @@ async def match_single_word_in_word_tuple(
                         note[word_list_field] if word_list_field in note else "",
                         match_word,
                         note[word_reading_field] if word_reading_field in note else "",
-                        note_link_id(note, listed_link_field),
+                        note_link_id(note, new_note_id_field),
                     )
                 else:
                     example_id = _example_sentence_id(note, id_field)
@@ -2015,7 +2008,7 @@ async def match_single_word_in_word_tuple(
                         match_op_args,
                         match_word,
                         note[word_reading_field] if word_reading_field in note else "",
-                        note_link_id(note, listed_link_field),
+                        note_link_id(note, new_note_id_field),
                     )
                 if meaning:
                     sort_field = note[word_sort_field]
@@ -2043,7 +2036,7 @@ async def match_single_word_in_word_tuple(
                     )
                     meanings.append(meaning_entry)
                     meaning_sources[id(meaning_entry)] = {
-                        "note_id": note_link_id(note, listed_link_field),
+                        "note_id": note_link_id(note, new_note_id_field),
                         "m_number": matched_meaning_number,
                         "gen_index": None,
                     }
@@ -2109,7 +2102,7 @@ async def match_single_word_in_word_tuple(
             "word_path": match_op_args.get("word_path"),
             "meanings": [meaning_sources.get(id(entry)) for entry in meanings],
             "copy_note_id": (
-                note_link_id(note_to_copy, listed_link_field) if note_to_copy else None
+                note_link_id(note_to_copy, new_note_id_field) if note_to_copy else None
             ),
         }
         meanings_str = match_targets.meanings_listing(listed_meanings)
@@ -2447,7 +2440,7 @@ None of the meanings fit, so you create a new one.
                 return False
             # Add the matched note to processed_word_tuples, by its link ID: an added note's,
             # or the one a note this run made was made with
-            new_word_tuple = link_word_to_note(match_op_args, matched_note, listed_link_field)
+            new_word_tuple = link_word_to_note(match_op_args, matched_note)
             logger.debug(
                 f"{log_prefix}Setting processed word tuple at index {word_index}, with tuple"
                 f" {new_word_tuple}"
