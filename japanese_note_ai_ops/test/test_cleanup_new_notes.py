@@ -829,11 +829,11 @@ class CancelledAddingTests(unittest.TestCase):
         notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
         col = SearchableCollection(FakeSearch(), self.updater, failing=(notes[0],))
         col.press_cancel_during = notes[1]
-        resolving, unlinking = Recorder(), Recorder()
+        new_notes_op, unlinking = Recorder(), Recorder()
 
-        result = self.add(col, notes, new_notes_op=resolving, unadded_notes_op=unlinking)
+        result = self.add(col, notes, new_notes_op=new_notes_op, unadded_notes_op=unlinking)
 
-        self.assertEqual(resolving.handed, [[notes[1]]])
+        self.assertEqual(new_notes_op.handed, [[notes[1]]])
         self.assertEqual(unlinking.handed, [[notes[0], notes[2]]])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 1, 1))
         self.assertEqual(self.updater.adding[-1], (1, 3, 1))
@@ -842,12 +842,12 @@ class CancelledAddingTests(unittest.TestCase):
         notes = [new_note(NEW_1), new_note(NEW_2)]
         col = FakeCollection()
         self.updater.cancel_pressed = True
-        resolving, unlinking = Recorder(), Recorder()
+        new_notes_op, unlinking = Recorder(), Recorder()
 
-        result = self.add(col, notes, new_notes_op=resolving, unadded_notes_op=unlinking)
+        result = self.add(col, notes, new_notes_op=new_notes_op, unadded_notes_op=unlinking)
 
         self.assertEqual(col.added, [])
-        self.assertEqual(resolving.handed, [])
+        self.assertEqual(new_notes_op.handed, [])
         self.assertEqual(unlinking.handed, [notes])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 0, 2))
         self.assertTrue(self.updater.cancel_ended)
@@ -855,11 +855,11 @@ class CancelledAddingTests(unittest.TestCase):
     def test_without_a_cancel_only_the_failed_adds_are_unlinked(self):
         notes = [new_note(NEW_1), new_note(NEW_2)]
         col = FakeCollection(failing=(notes[1],))
-        resolving, unlinking = Recorder(), Recorder()
+        new_notes_op, unlinking = Recorder(), Recorder()
 
-        result = self.add(col, notes, new_notes_op=resolving, unadded_notes_op=unlinking)
+        result = self.add(col, notes, new_notes_op=new_notes_op, unadded_notes_op=unlinking)
 
-        self.assertEqual(resolving.handed, [[notes[0]]])
+        self.assertEqual(new_notes_op.handed, [[notes[0]]])
         self.assertEqual(unlinking.handed, [[notes[1]]])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(1, 1, 0))
         # Nothing is left for the Cancel to stop once the adding is over
@@ -904,18 +904,18 @@ class CancelledAddingTests(unittest.TestCase):
             self.updater.cancel_pressed = True
             return [kept, other], {2: remapped, 3: removed}
 
-        resolving = Recorder()
+        new_notes_op = Recorder()
         result = self.add(
             col,
             [kept, duplicate, other],
-            new_notes_op=resolving,
+            new_notes_op=new_notes_op,
             filter_new_notes_op=dedupe,
             unadded_notes_op=unlinking,
             notes_to_remove={3},
         )
 
         self.assertEqual(col.added, [])
-        self.assertEqual(resolving.handed, [])
+        self.assertEqual(new_notes_op.handed, [])
         self.assertEqual(unlinking.handed, [[kept, duplicate, other]])
         self.assertEqual(result.counts, base_ops.NewNotesCounts(0, 0, 3))
         # What the dedupe remapped is saved before the unlinking searches the collection;
@@ -1099,7 +1099,7 @@ class AddHookWritesIdFieldTests(unittest.TestCase):
 class CleanupTailTests(unittest.TestCase):
     """What the adding leaves for after it happens whatever raised before (review finding C5).
 
-    The adding's cancel is ended however the adding stops, and a resolving that raises does
+    The adding's cancel is ended however the adding stops, and a new_notes_op that raises does
     not cost the unlinking: that is what puts back the words of notes that will never exist.
     """
 
@@ -1109,7 +1109,7 @@ class CleanupTailTests(unittest.TestCase):
         self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
         self.updater = FakeUpdater()
 
-    def test_a_resolving_that_raises_after_a_partial_cancel_still_unlinks_then_fails(self):
+    def test_a_new_notes_op_that_raises_after_a_partial_cancel_still_unlinks_then_fails(self):
         notes = [new_note(NEW_1), new_note(NEW_2)]
         col = SearchableCollection(FakeSearch(), self.updater)
         col.press_cancel_during = notes[0]
@@ -1129,10 +1129,10 @@ class CleanupTailTests(unittest.TestCase):
         self.assertEqual(col.updated, [unlinked])
         # The add, then the unlinking's save, both in the run's undo entry
         self.assertEqual(col.merged, [POS, POS])
-        self.assertIn("Error resolving the new notes' ids", "\n".join(logs.output))
+        self.assertIn("Error in new_notes_op, after the adding", "\n".join(logs.output))
         self.assertTrue(self.updater.cancel_ended)
 
-    def test_a_resolving_that_raises_with_nothing_to_unlink_still_fails(self):
+    def test_a_new_notes_op_that_raises_with_nothing_to_unlink_still_fails(self):
         with self.assertRaisesRegex(Exception, "has not been configured"), self.assertLogs(
             base_ops.logger, "ERROR"
         ):
@@ -1235,19 +1235,19 @@ class AddingRaisesTests(unittest.TestCase):
         notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
         col = UndoCountingCollection(refuse_merge_after=1)
         vocab = FakeNote({"word_list_field": "[]"}, note_id=2)
-        resolving, unlinking = Recorder(returns={2: vocab}), Recorder()
+        new_notes_op, unlinking = Recorder(returns={2: vocab}), Recorder()
 
         with (
             self.assertRaisesRegex(RuntimeError, "target undo op not found"),
             self.assertLogs(base_ops.logger, "ERROR") as logs,
         ):
             base_ops.add_new_notes(
-                col, notes, CONFIG, POS, self.updater, resolving, unadded_notes_op=unlinking
+                col, notes, CONFIG, POS, self.updater, new_notes_op, unadded_notes_op=unlinking
             )
 
         # The second note was added before its merge was refused, the third never tried
         self.assertEqual([note.id for note in notes], [501, 502, 0])
-        self.assertEqual(resolving.handed, [notes[:2]])
+        self.assertEqual(new_notes_op.handed, [notes[:2]])
         self.assertEqual(col.updated, [vocab])
         self.assertEqual(unlinking.handed, [notes[2:]])
         self.assertEqual(col.merged, [POS])

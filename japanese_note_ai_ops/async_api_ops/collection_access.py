@@ -68,7 +68,7 @@ COLLECTION_CONCURRENCY = 1
 
 # Refusing on cancellation is right for the ops and wrong for the cleanup phase, which runs
 # after a cancel precisely so the work already done gets saved. Some ops still have collection
-# work to do there - resolving the ids of notes they added, for one - so the thread running
+# work to do there - unlinking the notes they did not add, for one - so the thread running
 # cleanup is exempt. Read on the submitting thread and carried on the job, because the thread
 # that ends up running it is the shared worker, which is nobody's cleanup thread.
 _exempt = threading.local()

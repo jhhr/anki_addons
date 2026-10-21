@@ -1555,9 +1555,10 @@ class AsyncTaskProgressUpdater:
     def end_cleanup_cancel(self) -> None:
         """Grey the buttons again, once nothing is left in the cleanup that a cancel stops.
 
-        Resolving the added notes' ids and unlinking the ones not added always run to the
-        end, as they are what leaves the word arrays consistent; a live Cancel during them
-        would look like it could stop them.
+        `new_notes_op` (the migration's, which makes the added sentence notes their vocab
+        notes' examples) and unlinking the notes not added always run to the end, as they are
+        what leaves the links consistent; a live Cancel during them would look like it could
+        stop them.
         """
         with self._arm_lock:
             # A re-arm still queued on the main thread must not arm the cancel again
@@ -1566,14 +1567,15 @@ class AsyncTaskProgressUpdater:
         counts, self._adding_counts = self._adding_counts, None
         if counts is not None:
             # Its last label said Cancel stops the adding, and stays up until a later stage
-            # draws, which a run with nothing to resolve or unlink may not have
+            # draws, which a run with no new_notes_op and nothing to unlink may not have
             with self._ui_lock:
                 self._update_pending = False
             self._push(self._note_adding_label(*counts), counts[0], counts[1], force=True)
         mw.taskman.run_on_main(disable_run_controls)
 
     def begin_cleanup_stage(self) -> None:
-        """Restart the clock for one stage of the cleanup (deduping, adding, resolving ids).
+        """Restart the clock for one stage of the cleanup (deduping, adding, new_notes_op,
+        unlinking, tidying the markers).
 
         The cleanup's labels measure their time and ETA from `start_time`, which until this
         was last set when the API phase began: after an hour of requests, adding ten notes
@@ -3244,7 +3246,7 @@ def add_new_notes(
 
     # The added notes are counted as added; updated_nids holds the notes edited for them
     added_nids = {note.id for note in added_notes}
-    resolving_error: Optional[Exception] = None
+    new_notes_op_error: Optional[Exception] = None
     if new_notes_op and added_notes:
         progress_updater.begin_cleanup_stage()
         additional_updates_notes_dict: dict[NoteId, Note] = {}
@@ -3254,12 +3256,13 @@ def add_new_notes(
                 list(added_notes), config, progress_updater
             )
         except Exception as e:
-            # Raised again once the unlinking has run: the words of notes that will never
+            # Raised again once the unlinking has run, unless the adding's error is raised
+            # in its place (then this is only logged): the words of notes that will never
             # exist must not be left linked to them. Nothing the op rewrote in memory is
             # saved. Still a failed op, as it always was: the user has to see it.
-            logger.error(f"Error resolving the new notes' ids: {e}")
+            logger.error(f"Error in new_notes_op, after the adding: {e}")
             print_error_traceback(e, logger)
-            resolving_error = e
+            new_notes_op_error = e
         started = log_phase("cleanup: new_notes_op", started)
 
         # Every note the op is given has an id, and so has every note it rewrites; a note not
@@ -3311,8 +3314,8 @@ def add_new_notes(
         log_phase("cleanup: unadded_notes_op", started, unlinked=len(unlinked_notes))
     if adding_error is not None:
         raise adding_error
-    if resolving_error is not None:
-        raise resolving_error
+    if new_notes_op_error is not None:
+        raise new_notes_op_error
     return NewNotesAdded(
         counts, op_changes, updated_nids, filtered_nids, list(added_notes), saved_notes
     )
