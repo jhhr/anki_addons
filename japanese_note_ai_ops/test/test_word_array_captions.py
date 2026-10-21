@@ -43,6 +43,11 @@ class CleaningTest(unittest.TestCase):
             ],
         )
 
+    def test_a_second_reading_right_after_the_first_is_taken_out_unread(self):
+        text, readings = captions.split_readings("猫猫(マオマオ)(ねこ)が")
+        self.assertEqual(text, "猫猫が")
+        self.assertEqual(readings, [captions.InlineReading("猫猫", "まおまお", True, 0, 2)])
+
     def test_a_reading_after_other_kanji_takes_the_tail_base_gives(self):
         text, readings = captions.split_readings("白鈴姐(ねえ)ちゃん", base=lambda run, reading: 1)
         self.assertEqual(text, "白鈴姐ちゃん")

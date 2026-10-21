@@ -39,8 +39,9 @@ from ..kana_conv import to_hiragana
 
 KANJI = "一-鿿㐀-䶿々〆ヶ"
 KANJI_RE = re.compile(f"[{KANJI}]")
-# A reading the captions give in half-width parentheses right after the kanji it reads
-INLINE_READING_RE = re.compile(f"([{KANJI}]+)\\(([ぁ-ゖァ-ヺー・]+)\\)")
+# A reading the captions give in half-width parentheses right after the kanji it reads; any
+# more right after it, 猫猫(マオマオ)(ねこ), are taken out with it and not read
+INLINE_READING_RE = re.compile(f"([{KANJI}]+)\\(([ぁ-ゖァ-ヺー・]+)\\)(?:\\([ぁ-ゖァ-ヺー・]+\\))*")
 # Labels and sound descriptions; the half-width parentheses of a reading inside a label are no
 # delimiter here, so （羅門(ルォメン)） is one segment
 UNSPOKEN_RE = re.compile(r"（[^（）]*）")
