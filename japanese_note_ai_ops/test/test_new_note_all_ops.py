@@ -116,12 +116,14 @@ class BulkOpRolesTests(unittest.TestCase):
 
     def run_bulk(self, config, notes):
         given_roles: dict[int, tuple] = {}
+        self.undo_label = None
 
         def in_note(config, note, *args):
             given_roles[note.id] = args[-1]
             return False
 
         async def bulk_notes_op(message, config, op, col, notes, *args, **kwargs):
+            self.undo_label = kwargs.get("undo_label")
             for note in notes:
                 op(config, note, {}, {})
             return [note.id for note in notes]
@@ -161,6 +163,8 @@ class BulkOpRolesTests(unittest.TestCase):
         self.assertEqual(report.call_count, 2)
         for call in report.call_args_list:
             self.assertIn("must name each other", call.args[0])
+        # The run's undo entry counts the selection, as the audio phases do when they come first
+        self.assertEqual(self.undo_label, "Running new note all ops for 4 notes.")
 
 
 FURIGANA_TYPE = {
@@ -195,8 +199,25 @@ class AudioFuriganaPhaseTests(unittest.TestCase):
             ],
         )
 
+    def test_the_capture_runs_row_names_each_audio_phase_by_its_op(self):
+        base_ops = load_ops_module("base_ops")
+        self.assertEqual(
+            base_ops._op_names(ops.new_note_phases(FURIGANA_TYPE)),
+            [
+                "bulk_transcribe_notes_op",
+                "bulk_set_furigana_op",
+                "bulk_new_note_all_ops",
+                "bulk_judge_sentence_notes_op",
+            ],
+        )
+
     def test_without_transcripts_the_run_is_as_before(self):
         self.assertEqual(self.names(TWO_TYPE), ["New note ops", "Judging words matchability"])
+        # A transcription field named by a list in a hand-edited config is none: it used to
+        # fail the run before its first note
+        listed = {**FURIGANA_TYPE[SENTENCE], "sentence_transcription_field": ["Heard"]}
+        config = {**FURIGANA_TYPE, SENTENCE: listed}
+        self.assertEqual(self.names(config), ["New note ops", "Judging words matchability"])
         # Transcripts kept on a vocab type are no sentence type's
         config = {**TWO_TYPE, VOCAB: {**TWO_TYPE[VOCAB], "sentence_transcription_field": "x"}}
         self.assertEqual(self.names(config), ["New note ops", "Judging words matchability"])
@@ -223,6 +244,33 @@ class AudioFuriganaPhaseTests(unittest.TestCase):
         undo_label = "Running new note all ops for 5 notes."
         self.assertEqual(given, {"notes": [1], "undo_label": undo_label, "edited_nids": []})
         report.assert_not_called()
+
+
+    def test_the_furigana_phase_leaves_out_quietly_a_note_still_untranscribed(self):
+        # The transcription phase could not hear the second note's clip (the server down) and
+        # said so once: told to "run Transcribe sentence audio first", it would hear it again
+        given: dict = {}
+
+        def recorder(name):
+            async def bulk_op(col, notes, undo_label=None, **kwargs):
+                given[name] = [note.id for note in notes]
+                return "ran"
+
+            return bulk_op
+
+        heard = sentence(1)
+        heard.fields["Heard"] = "kana-anime-whisper: たのひとわ<br>ruby-mora: たのひとわ"
+        notes = [heard, sentence(2)]
+        with mock.patch.multiple(
+            ops,
+            mw=mock.DEFAULT,
+            bulk_transcribe_notes_op=recorder("transcribe"),
+            bulk_set_furigana_op=recorder("furigana"),
+        ) as patched:
+            patched["mw"].addonManager.getConfig.return_value = FURIGANA_TYPE
+            for phase in ops.new_note_phases(FURIGANA_TYPE)[:2]:
+                asyncio.run(phase.bulk_op(None, notes=notes, edited_nids=[]))
+        self.assertEqual(given, {"transcribe": [1, 2], "furigana": [1]})
 
 
 class JudgePhaseTests(unittest.TestCase):

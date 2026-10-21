@@ -7,11 +7,11 @@ sentence, so each case says exactly what a note holds. No SudachiPy, JMdict or c
 import json
 import unittest
 
-from addon_modules import load_addon_module, load_ops_module
+from addon_modules import load_ops_module
 
 sm = load_ops_module("sentence_migration", subdir="sync_local_ops")
 match_flags = load_ops_module("match_flags", subdir="word_array")
-link_ids = load_addon_module("link_ids", subdir="")
+link_ids = load_ops_module("link_ids", subdir="")
 
 EXTRACTION = "word_extraction_sentence_field"
 FURIGANA = "furigana_sentence_field"

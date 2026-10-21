@@ -69,6 +69,24 @@ def _name(block: Mapping[str, Any], key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def configured_field(config: Mapping[str, Any], note_type_name: str, key: str) -> str:
+    """The field a note type's block names for `key`, "" when the type has no block or the
+    block gives nothing usable (`_name`). A value that names no field, such as a list in a
+    hand-edited config, leaves the key unconfigured: as a field name it raised TypeError in a
+    note's `in`, which in a check made before a run's notes failed the whole run."""
+    block = _block(config, note_type_name)
+    return _name(block, key) if block is not None else ""
+
+
+def configured_value(
+    config: Mapping[str, Any], note_type_name: str, note: NoteFields, key: str
+) -> str:
+    """The note's value of the field its type's block names for `key`: "" when the key is not
+    configured (`configured_field`) or the note has no such field."""
+    field = configured_field(config, note_type_name, key)
+    return note[field] if field and field in note else ""
+
+
 def _other(block: Mapping[str, Any], key: str, note_type_name: str) -> str:
     # A block naming itself describes the one-type layout, the same as naming nothing
     named = _name(block, key)
@@ -430,18 +448,29 @@ def copy_example(
         vocab_note[id_field] = str(sentence_id)
 
 
-# The characters Anki's search syntax gives a meaning inside a quoted `note:` search
-_NOTE_SEARCH_SPECIAL = re.compile(r'[\\"*_]')
+# What Anki's search syntax reads as syntax in a name inside a quoted term: `_` and `*` are
+# wildcards (`note:a_b` also finds "axb"), a lone backslash makes the search invalid, `"` ends
+# the term, and a `:` at the start of a tag's name makes the rest a search mode's (`tag:re:x`
+# is a regex, `tag:nc:x` ignores accents). Anki reads each escaped with a backslash as the
+# character itself (checked against Anki 26.09)
+_SEARCH_SPECIAL = re.compile(r'[\\"*_:]')
+
+
+def search_escape(name: str) -> str:
+    """`name` as a quoted search term is to hold it to find it as it is written: each character
+    of `_SEARCH_SPECIAL` escaped with a backslash. The one escaping of the names the addon's
+    searches hold: a note type's (`note_type_search`), a field's (`link_ids.field_search`) and
+    a show's (`async_api_ops/set_furigana.show_search`)."""
+    return _SEARCH_SPECIAL.sub(r"\\\g<0>", name)
 
 
 def note_type_search(note_type_name: str) -> str:
     """`"note:<name>"`: a search term for exactly this note type's notes, to join with others.
 
-    Quoted because names have spaces; for a name without `\\`, `"`, `*` or `_` (such as
-    "Japanese vocab note") it is the `f'"note:{name}"'` the ops have always built. Anki reads
-    `_` and `*` in a note: search as wildcards (`note:a_b` also finds "axb"), and a lone
-    backslash makes the search invalid, so each of those is escaped with a backslash, as Anki's
-    own `build_search_string(SearchNode(note=...))` does (checked against Anki 26.09). So is
-    `"`, though Anki removes double quotes from a note type's name when it saves one.
+    Quoted because names have spaces; for a name without `\\`, `"`, `*`, `_` or `:` (such as
+    "Japanese vocab note") it is the `f'"note:{name}"'` the ops have always built. The name is
+    escaped (`search_escape`) as Anki's own `build_search_string(SearchNode(note=...))` escapes
+    it, but for `:`, which that leaves as it is in a note type's name and Anki reads escaped as
+    a colon all the same; Anki removes double quotes from a note type's name when it saves one.
     """
-    return '"note:' + _NOTE_SEARCH_SPECIAL.sub(r"\\\g<0>", note_type_name) + '"'
+    return '"note:' + search_escape(note_type_name) + '"'

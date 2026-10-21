@@ -12,23 +12,27 @@ translation, the transcripts and what each heard at the word, answers a reading 
 reading is written where every model is sure of it and a transcript heard it there. A word
 still unsettled is written with the readings to choose between,
 方[ほう？かた] (`audio_furigana.doubt_furigana`), and the note is tagged `furigana-review`:
-kanjify and word extraction leave it alone until a person has fixed each such word and taken
-the tag off. Speaker labels and sound descriptions are not said, so the furigana leaves them
-out.
+kanjify, word extraction and the match op leave it alone, and the kanjify export leaves it out,
+until a person has fixed each such word and taken the tag off (`furigana_review`). Speaker
+labels and sound descriptions are not said, so the furigana leaves them out.
 
 Only a note whose furigana field is empty is written, so furigana a person typed or fixed is
-never replaced: empty the field to have it set again. A note needs a transcript from each of
-the config's `transcribe_models`, and one of them hearing a reading is enough to write it: the
-furigana audio eval measured that rule on the default pair, which sent half as many words to
-review as asking both, for no more wrong readings.
+never replaced: empty the field to have it set again. So a note whose arbiter call got no answer
+(the provider failed, or the run was cancelled while it waited) is left as it was, for the next
+run to ask again: written with its words in review, it would stay so for good. A note needs a
+transcript from each of the config's `transcribe_models`, and one of them hearing a reading is
+enough to write it: the furigana audio eval measured that rule on the default pair, which sent
+half as many words to review as asking both, for no more wrong readings.
 
-The show: subs2srs tags a card as its export says, and tagged `<show>::<episode>`, the first
-level of a note's first hierarchical tag names its show. The captions read a name in katakana
-at its first mention in an episode (猫猫(マオマオ)) and seldom after, so a show's names are
-every surface its captions read in katakana somewhere, each with the reading they give it
-most; one they read in hiragana somewhere is a word, not a name. Names the captions never read
-go in `user_files/show_names.json`, by show (`{"<show>": {"響迂": "きょうう"}}`), and win over
-the captions. A note without such a tag is read with its own caption alone.
+The show: subs2srs tags a card as its export's tag template says, and a note's tag
+`ep::<show>::<episode>` names its show (`configuration.EPISODE_TAG_PREFIX`, hardcoded: the
+template `ep::${deck_name}::${0:episode_num}`). The captions read a name in katakana at its
+first mention in an episode (猫猫(マオマオ)) and seldom after, so a show's names are every
+surface its captions read in katakana somewhere, each with the reading they give it most; one
+they read in hiragana somewhere is a word, not a name. Names the captions never read go in
+`user_files/show_names.json`, by show (`{"<show>": {"響迂": "きょうう"}}`), and win over the
+captions. A note without such a tag, or with tags of two shows, is read with its own caption
+alone, and the run names such notes once (`no_show_report`).
 """
 
 from __future__ import annotations
@@ -36,7 +40,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -48,20 +51,22 @@ from anki.notes import Note, NoteId
 from aqt import mw
 from aqt.browser import Browser
 
-from ..configuration import (
-    ADDON_USER_FILES_DIR,
-    FURIGANA_DOUBT_LEFT,
-    FURIGANA_REVIEW_LEFT,
-    FURIGANA_REVIEW_TAG,
-)
+from ..configuration import ADDON_USER_FILES_DIR, EPISODE_TAG_PREFIX, FURIGANA_REVIEW_TAG
 from ..generator_resources import with_generator_resources
 from ..kana_conv import to_hiragana
-from ..note_roles import SENTENCE_ROLE, note_type_search
+from ..note_roles import (
+    SENTENCE_ROLE,
+    configured_field,
+    configured_value,
+    note_type_search,
+    search_escape,
+)
 from ..utils import get_field_config
 from ..word_array import furigana_arbiter, jmdict_index
-from ..word_array.audio_furigana import Furigana, Reading, audio_furigana, has_doubt
+from ..word_array.audio_furigana import Furigana, Reading, audio_furigana
 from ..word_array.captions import BaseFinder, ReadingBase, show_readings
 from . import collection_access
+from .api_client import run_cancelled
 from .base_ops import (
     AsyncTaskProgressUpdater,
     NotesRunSpec,
@@ -72,17 +77,23 @@ from .base_ops import (
 from .chain_types import ChainStep
 from .role_gate import notes_of_role
 from .run_errors import report_error
-from .transcribe_audio import audio_file, label, parse_transcripts, transcribe_models
+from .transcribe_audio import audio_file, label, lacking, parse_transcripts, transcribe_models
 
 logger = logging.getLogger(__name__)
 
-REVIEW_TAG = FURIGANA_REVIEW_TAG
 NAMES_FILE = os.path.join(ADDON_USER_FILES_DIR, "show_names.json")
 # Of the transcripts, how many must hear a reading for it to be written
 QUORUM = 1
 ARBITER_KIND = "furigana_arbiter.note"
-# The characters Anki's search syntax gives a meaning inside a quoted `tag:` search
-_TAG_SEARCH_SPECIAL = re.compile(r'[\\"*_]')
+# Said of each note whose arbiter call got no answer; one text, so that the run's errors count
+# them as one
+ARBITER_FAILED = (
+    "Furigana not set: a model of furigana_models gave no answer, so the note is left for the"
+    " next run to ask again"
+)
+# How many of the notes of no show the run's report names in its search, as link_ids'
+# refusals do: a run over a whole deck tagged otherwise has thousands
+NO_SHOW_SEARCHED = 200
 
 # A spelling's readings: JMdict's in the op, a table in the tests
 Dictionary = Callable[[str], set[str]]
@@ -96,24 +107,54 @@ def sudachi_morphemes(text: str) -> list:
 
 
 def show_of(note: Note) -> Optional[str]:
-    """The show a note is of: the first level of its first hierarchical tag, `<show>::01`."""
+    """The show a note is of: `<show>` of its tag `ep::<show>::<episode>`. None without one,
+    and when its tags name two shows, either of whose names would be a guess. Not its first
+    `::` tag, as it was: Anki keeps a note's tags sorted, so that was as likely JLPT::N3 or the
+    add-on's own sentence::regenerate."""
+    shows: dict[str, str] = {}
     for tag in note.tags:
-        if "::" in tag:
-            return tag.split("::", 1)[0]
-    return None
+        if tag[: len(EPISODE_TAG_PREFIX)].lower() != EPISODE_TAG_PREFIX:
+            continue
+        show, separator, episode = tag[len(EPISODE_TAG_PREFIX) :].partition("::")
+        if show and separator and episode:
+            # Anki's tags ignore case, and so does the show's search
+            shows.setdefault(show.lower(), show)
+    return next(iter(shows.values())) if len(shows) == 1 else None
 
 
 def show_search(show: str) -> str:
-    """`"tag:<show>::*"`: the notes tagged with an episode of the show, the characters Anki's
-    search reads as wildcards escaped as `note_roles.note_type_search` escapes them."""
-    return '"tag:' + _TAG_SEARCH_SPECIAL.sub(r"\\\g<0>", show) + '::*"'
+    """`"tag:ep::<show>::*"`: the notes tagged with an episode of the show, its name escaped as
+    every search's names are (`note_roles.search_escape`). As the tag starts with `ep::`, no
+    show's name is read as a search mode, as one starting the tag was: a show "nc" found none
+    of its notes, "re:zero" another show's too (checked against Anki 26.09)."""
+    return f'"tag:{EPISODE_TAG_PREFIX}{search_escape(show)}::*"'
+
+
+def no_show_report(note_ids: Sequence[int]) -> Optional[str]:
+    """What a run says once of the notes it read with no show (`show_of` None): how many, and a
+    search finding them; None for none. Once, not a note at a time: a deck tagged otherwise
+    would fill the run's errors with one line each."""
+    ids = sorted(set(note_ids))
+    if not ids:
+        return None
+    search = "nid:" + ",".join(str(note_id) for note_id in ids[:NO_SHOW_SEARCHED])
+    if len(ids) > NO_SHOW_SEARCHED:
+        search += f" (the first {NO_SHOW_SEARCHED} of {len(ids)} notes)"
+    notes = "1 note has" if len(ids) == 1 else f"{len(ids)} notes have"
+    return (
+        f"{notes} no tag {EPISODE_TAG_PREFIX}<show>::<episode> naming one show, so the names"
+        " their show's other captions read, and its names in show_names.json, were not used"
+        f" for their furigana. To find them, search: {search}"
+    )
 
 
 def read_names_file(path: str) -> dict[str, dict[str, str]]:
     """The names file's names by show, each surface's reading in hiragana: {} when there is no
-    file. One that is not such JSON is reported and read as none."""
+    file. One that is not such JSON is reported and read as none. Read past a byte-order mark,
+    which Notepad's "UTF-8 with BOM" and PowerShell 5's Out-File write, and which plain utf-8
+    reads as no JSON, every name of the file ignored."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except FileNotFoundError:
         return {}
@@ -158,18 +199,34 @@ class Shows:
         self.captions_of = captions_of
         self.dictionary = dictionary
         self.user_names = user_names
-        self._read: dict[tuple[str, str, str], Show] = {}
+        # None for a show whose search found none of its notes
+        self._read: dict[tuple[str, str, str], Optional[Show]] = {}
         self._lock = threading.Lock()
+        # The notes read with no show, for the run's report (no_show_report)
+        self.showless: list[NoteId] = []
+
+    def of(self, note: Note, note_type_name: str, field: str, caption: str) -> Show:
+        """The note's show (`show_of`), a note of none counted in `showless`."""
+        show = show_of(note)
+        if show is None:
+            with self._lock:
+                self.showless.append(note.id)
+        return self.get(show, note_type_name, field, caption)
 
     def get(self, show: Optional[str], note_type_name: str, field: str, caption: str) -> Show:
         if show is None:
             return self._make([caption], {})
         key = (show, note_type_name, field)
+        names = self.user_names.get(show, {})
         with self._lock:
             if key not in self._read:
-                texts = self.captions_of(show, note_type_name, field) or [caption]
-                self._read[key] = self._make(texts, self.user_names.get(show, {}))
-            return self._read[key]
+                texts = self.captions_of(show, note_type_name, field)
+                self._read[key] = self._make(texts, names) if texts else None
+            read = self._read[key]
+        # A search that found nothing, not even this note: each of the show's notes is read by
+        # its own caption, as a note of no show is, with the names file's names for the show.
+        # Kept as the show's, the first note's caption read every later one, by thread order
+        return read if read is not None else self._make([caption], names)
 
     def _make(self, texts: Iterable[str], user_names: Mapping[str, str]) -> Show:
         texts = list(texts)
@@ -196,11 +253,12 @@ def settle_by_arbiter(
     caption: str,
     translation: str,
     transcripts: Sequence[tuple[str, str]],
-) -> list[Reading]:
+) -> Optional[list[Reading]]:
     """Asks each of `models` about the words `result` leaves in review that a transcript heard
     something at (`furigana_arbiter.asked`) and writes those they all settle alike
-    (`furigana_arbiter.settle`); the words it wrote. A failed call settles none, since every
-    model has to agree, and the provider has reported it."""
+    (`furigana_arbiter.settle`); the words it wrote. None when a call got no answer, which
+    settles nothing, since every model has to agree: the provider has reported why, and a call
+    a cancel ended answers so too. The models after it are not asked, and not paid."""
     inputs = furigana_arbiter.review_inputs(caption, translation, transcripts, result)
     prompt = furigana_arbiter.review_prompt(**inputs)
     answers = []
@@ -210,10 +268,14 @@ def settle_by_arbiter(
             prompt,
             response_schema=furigana_arbiter.RESPONSE_SCHEMA,
             kind=ARBITER_KIND,
-            inputs=inputs,
+            # The model too, which the prompt does not show, as a transcription's inputs name
+            # theirs: every model is asked the same, so without it a note's calls shared one
+            # request key, and a replay's cassette, which answers a key's calls in the order
+            # they came, could hand one model's answer to another
+            inputs={**inputs, "model": model},
         )
         if response is None:
-            return []
+            return None
         answers.append(
             furigana_arbiter.answers_from_response(response, len(inputs["words"]))
         )
@@ -226,34 +288,20 @@ def wants_audio_furigana(config: dict, note: Note) -> bool:
     asks, so that a note whose furigana was typed or set before, or one with no clip (added
     by hand), is neither transcribed nor set."""
     note_type = note.note_type()
-    block = config.get(note_type["name"]) if note_type else None
-    if not isinstance(block, dict) or not block.get("sentence_transcription_field"):
+    if not note_type:
         return False
-    furigana = block.get("furigana_sentence_field")
-    sentence = block.get("sentence_field")
-    audio = block.get("sentence_audio_field")
-    if not (isinstance(furigana, str) and isinstance(sentence, str) and isinstance(audio, str)):
+    name = note_type["name"]
+    if not configured_field(config, name, "sentence_transcription_field"):
         return False
-    if not all(field in note for field in (furigana, sentence, audio)):
+    keys = ("furigana_sentence_field", "sentence_field", "sentence_audio_field")
+    furigana, sentence, audio = (configured_field(config, name, key) for key in keys)
+    if not all(field and field in note for field in (furigana, sentence, audio)):
         return False
     return (
         not note[furigana].strip()
         and bool(note[sentence].strip())
         and audio_file(note[audio]) is not None
     )
-
-
-def unchecked_furigana(config: dict, note: Note) -> Optional[str]:
-    """Why a sentence note's furigana is not to be read yet, as kanjify and word extraction say
-    it when they leave the note alone: its review tag, or a word still marked for review."""
-    if note.has_tag(REVIEW_TAG):
-        return FURIGANA_REVIEW_LEFT
-    note_type = note.note_type()
-    block = config.get(note_type["name"]) if note_type else None
-    field = block.get("furigana_sentence_field") if isinstance(block, dict) else None
-    if field and field in note and has_doubt(note[field]):
-        return FURIGANA_DOUBT_LEFT
-    return None
 
 
 def set_furigana_in_note(
@@ -297,13 +345,13 @@ def set_furigana_in_note(
         return False
     models = transcribe_models(config)
     heard = parse_transcripts(note[transcript_field])
-    lacking = [label(m) for m in models if label(m) not in heard]
-    if lacking:
+    missing = [label(model) for model in lacking(models, heard)]
+    if missing:
         report_error(
-            f'No transcript from {", ".join(lacking)} yet: run "Transcribe sentence audio" first'
+            f'No transcript from {", ".join(missing)} yet: run "Transcribe sentence audio" first'
         )
         return False
-    show = shows.get(show_of(note), note_type["name"], sentence_field, caption)
+    show = shows.of(note, note_type["name"], sentence_field, caption)
     transcripts = [(label(m), heard[label(m)]) for m in models]
     result = audio_furigana(
         caption,
@@ -319,8 +367,7 @@ def set_furigana_in_note(
     # nothing (furigana_arbiter.asked)
     if arbiters and furigana_arbiter.asked(result):
         # The translation is context only: a note type without one is asked all the same
-        translation_field = config.get(note_type["name"], {}).get("translated_sentence_field")
-        translation = note[translation_field] if translation_field in note else ""
+        translation = configured_value(config, note_type["name"], note, "translated_sentence_field")
         settled = settle_by_arbiter(
             arbiters,
             result,
@@ -328,6 +375,12 @@ def set_furigana_in_note(
             furigana_arbiter.translation_text(translation),
             transcripts,
         )
+        if settled is None:
+            # No answer is not the models' doubt: written, the note would be in review for good,
+            # since a run only writes an empty field. Left as it is, the next run asks again
+            if not run_cancelled():
+                report_error(ARBITER_FAILED)
+            return False
         if settled:
             logger.info(
                 "Note %s: settled by the arbiter: %s",
@@ -336,14 +389,14 @@ def set_furigana_in_note(
             )
     note[furigana_field] = result.text
     if result.review:
-        note.add_tag(REVIEW_TAG)
+        note.add_tag(FURIGANA_REVIEW_TAG)
         logger.info(
             "Note %s: furigana to review: %s",
             note.id,
             ", ".join(f"{r.surface} ({r.why})" for r in result.review),
         )
     else:
-        note.remove_tag(REVIEW_TAG)
+        note.remove_tag(FURIGANA_REVIEW_TAG)
     notes_to_update_dict[note.id] = note
     return True
 
@@ -364,6 +417,13 @@ async def bulk_set_furigana_op(
         return None
     dictionary = jmdict_index.spelling_readings
     shows = Shows(show_captions, dictionary, read_names_file(NAMES_FILE))
+
+    def on_end() -> None:
+        report = no_show_report(shows.showless)
+        if report:
+            logger.warning(report)
+            report_error(report, "Notes of no show")
+
     op = partial(
         set_furigana_in_note,
         shows=shows,
@@ -383,6 +443,7 @@ async def bulk_set_furigana_op(
         progress_updater,
         notes_to_add_dict,
         notes_to_update_dict,
+        on_end=on_end,
         undo_label=undo_label,
     )
 

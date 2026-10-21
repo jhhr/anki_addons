@@ -84,7 +84,8 @@ class Note:
     def __init__(self, fields: dict[str, str], tags=(), note_id: int = 7) -> None:
         self.id = note_id
         self.fields = {"Sentence": "", "Furigana": "", "Heard": "", **fields}
-        self.tags = list(tags)
+        # Sorted, as Anki keeps a note's tags
+        self.tags = sorted(tags, key=str.lower)
 
     def note_type(self):
         return {"name": SENTENCE}
@@ -168,11 +169,11 @@ class OpTest(OpHarness):
         note = Note({"Sentence": LINE, "Heard": heard("ほかのひとわどこにいるの", "たのひとわどこにいるの")})
         self.assertEqual(self.run_op(note)[0], [True])
         self.assertEqual(note["Furigana"], "他[ほか？た]の 人[ひと]はどこにいるの")
-        self.assertEqual(note.tags, [op.REVIEW_TAG])
+        self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
 
     def test_a_review_tag_goes_when_the_furigana_is_set_again_and_settled(self):
         said = "ほかのひとわどこにいるの"
-        note = Note({"Sentence": LINE, "Heard": heard(said, said)}, tags=[op.REVIEW_TAG])
+        note = Note({"Sentence": LINE, "Heard": heard(said, said)}, tags=[op.FURIGANA_REVIEW_TAG])
         self.run_op(note)
         self.assertEqual(note.tags, [])
 
@@ -209,28 +210,81 @@ class OpTest(OpHarness):
     def test_a_name_the_shows_captions_read_elsewhere(self):
         # The episode's first mention gave 猫猫 its reading; this one has none
         self.captions["show"] = ["猫猫(マオマオ)", NAME_LINE]
-        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"])
+        # Whatever other tags it has, one of them sorted first
+        tags = ["JLPT::N3", "anime::seinen", "ep::show::01", "sentence::regenerate"]
+        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=tags)
+        self.assertEqual(note.tags[0], "anime::seinen")
         self.run_op(note)
         self.assertEqual(note["Furigana"], "猫猫[まおまお]がいたのはどこなのかしら")
-        self.assertEqual(note.tags, ["show::01"])
+        self.assertEqual(note.tags, sorted(tags, key=str.lower))
         self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
 
     def test_a_name_in_the_names_file_wins_over_the_captions(self):
         self.captions["show"] = ["猫猫(ネコネコ)"]
         self.user_names = {"show": {"猫猫": "まおまお"}}
-        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"])
+        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["ep::show::01"])
         self.run_op(note)
         self.assertEqual(note["Furigana"], "猫猫[まおまお]がいたのはどこなのかしら")
 
     def test_a_show_is_read_once_a_run_and_a_note_of_none_by_its_own_caption(self):
         notes = [
-            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"]),
-            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::02"]),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["ep::show::01"]),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["ep::show::02"]),
             Note({"Sentence": "猫猫(マオマオ)", "Heard": heard("まおまお", "まおまお")}),
         ]
         self.run_op(*notes)
         self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
         self.assertEqual(notes[2]["Furigana"], "猫猫[まおまお]")
+
+    def test_the_notes_read_with_no_show_are_kept_for_the_runs_one_report(self):
+        shows = self.shows()
+        notes = [
+            # As subs2srs' default export tags a card
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, ["JP_sentences_33"], note_id=1),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, ["ep::a::01", "ep::b::01"], 2),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, ["ep::show::01"], note_id=3),
+            # Not read at all: its furigana is there already
+            Note({"Sentence": NAME_LINE, "Furigana": "猫猫[ねこねこ]", "Heard": NAME_HEARD}, (), 4),
+        ]
+        self.run_op(*notes, shows=shows)
+        self.assertEqual(sorted(shows.showless), [1, 2])
+        self.assertEqual(self.reports, [])
+        report = op.no_show_report(shows.showless)
+        self.assertTrue(report.startswith("2 notes have no tag ep::<show>::<episode>"))
+        self.assertTrue(report.endswith("search: nid:1,2"))
+
+
+class ShowSearchFindingNothingTest(OpHarness):
+    """A show whose search finds none of its notes (self.captions has no "show")."""
+
+    # A name read in katakana once and said again unread, in one caption
+    LATER_LINE = "猫猫(マオマオ)！　猫猫がいたのはどこなのかしら"
+    LATER_HEARD = heard(*["まおまおまおまおがいたのわどこなのかしら"] * 2)
+
+    def notes(self):
+        first = Note({"Sentence": LINE, "Heard": heard(*["ほかのひとわどこにいるの"] * 2)}, ["ep::show::01"])
+        later = Note({"Sentence": self.LATER_LINE, "Heard": self.LATER_HEARD}, ["ep::show::02"])
+        return first, later
+
+    def test_each_note_is_read_by_its_own_caption_not_the_first_notes(self):
+        first, later = self.notes()
+        self.run_op(first, later)
+        alone = Note({"Sentence": self.LATER_LINE, "Heard": self.LATER_HEARD})
+        self.run_op(alone)
+        self.assertEqual(alone["Furigana"], "猫猫[まおまお]！　 猫猫[まおまお]がいたのはどこなのかしら")
+        self.assertEqual(later["Furigana"], alone["Furigana"])
+        self.assertEqual(later.tags, ["ep::show::02"])
+
+    def test_the_search_is_made_once_all_the_same(self):
+        self.run_op(*self.notes())
+        self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
+
+    def test_the_names_file_still_names_the_shows_names(self):
+        self.user_names = {"show": {"猫猫": "まおまお"}}
+        first, _ = self.notes()
+        named = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["ep::show::02"])
+        self.run_op(first, named)
+        self.assertEqual(named["Furigana"], "猫猫[まおまお]がいたのはどこなのかしら")
 
 
 def answer(reading, sure=True):
@@ -257,15 +311,18 @@ class ArbiterTest(OpHarness):
     def test_a_reading_every_model_gives_is_written(self):
         config = {SENTENCE: {**CONFIG[SENTENCE], "translated_sentence_field": "English"}}
         fields = {"Sentence": LINE, "Heard": self.TWO_WAYS, "English": "Where are the<br>others?"}
-        note = Note(fields, tags=[op.REVIEW_TAG])
+        note = Note(fields, tags=[op.FURIGANA_REVIEW_TAG])
         calls = self.ask(note, {m: answer("タ") for m in self.MODELS}, config)
         self.assertEqual(note["Furigana"], "他[た]の 人[ひと]はどこにいるの")
         self.assertEqual(note.tags, [])
         self.assertEqual([model for model, _, _ in calls], self.MODELS)
-        for _, prompt, kwargs in calls:
+        for model, prompt, kwargs in calls:
             self.assertEqual(kwargs["kind"], "furigana_arbiter.note")
             self.assertEqual(kwargs["response_schema"], arbiter.RESPONSE_SCHEMA)
-            self.assertEqual(arbiter.review_prompt(**kwargs["inputs"]), prompt)
+            # The model is recorded with the inputs, and is no part of the prompt
+            inputs = dict(kwargs["inputs"])
+            self.assertEqual(inputs.pop("model"), model)
+            self.assertEqual(arbiter.review_prompt(**inputs), prompt)
         inputs = calls[0][2]["inputs"]
         self.assertEqual(inputs["translation"], "Where are the\nothers?")
         self.assertEqual([w["context"] for w in inputs["words"]], ["［他］の人はどこにいるの"])
@@ -274,13 +331,24 @@ class ArbiterTest(OpHarness):
         note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
         self.ask(note, {"first-model": answer("た"), "second-model": answer("ほか")})
         self.assertEqual(note["Furigana"], "他[ほか？た]の 人[ひと]はどこにいるの")
-        self.assertEqual(note.tags, [op.REVIEW_TAG])
+        self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
 
-    def test_a_failed_call_settles_nothing_and_asks_no_further(self):
+    def test_a_failed_call_leaves_the_note_for_the_next_run_and_asks_no_further(self):
+        # Written, the note would be in review for good: a run only writes an empty field
         note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
         calls = self.ask(note, {"second-model": answer("た")})
         self.assertEqual([model for model, _, _ in calls], ["first-model"])
-        self.assertEqual(note.tags, [op.REVIEW_TAG])
+        self.assertEqual((note["Furigana"], note.tags), ("", []))
+        self.assertEqual(self.reports, [op.ARBITER_FAILED])
+        # The next run, every model answering, asks again and writes it
+        self.ask(note, {m: answer("た") for m in self.MODELS})
+        self.assertEqual(note["Furigana"], "他[た]の 人[ひと]はどこにいるの")
+
+    def test_a_call_a_cancel_ended_leaves_the_note_and_is_no_error(self):
+        note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
+        with mock.patch.object(op, "run_cancelled", return_value=True):
+            self.ask(note, {})
+        self.assertEqual((note["Furigana"], note.tags, self.reports), ("", [], []))
 
     def test_no_word_in_review_asks_nothing(self):
         said = heard("ほかのひとわどこにいるの", "ほかのひとわどこにいるの")
@@ -291,7 +359,7 @@ class ArbiterTest(OpHarness):
         skipped = heard("のひとわどこにいるの", "のひとわどこにいるの")
         note = Note({"Sentence": LINE, "Heard": skipped})
         self.assertEqual(self.ask(note, {m: answer("ほか") for m in self.MODELS}), [])
-        self.assertEqual(note.tags, [op.REVIEW_TAG])
+        self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
 
     def test_the_models_of_the_config(self):
         self.assertEqual(op.arbiter_models({"furigana_models": [" a ", "", 3, "b"]}), ["a", "b"])
@@ -321,27 +389,48 @@ class NewNotesTest(unittest.TestCase):
         note = Note({"Sentence": LINE, "Audio": "[sound:clip.opus]"})
         self.assertFalse(op.wants_audio_furigana(no_transcripts, note))
 
-    def test_furigana_awaiting_a_check_by_tag_or_by_a_word_still_marked(self):
-        checked = Note({"Furigana": "他[ほか]の 人[ひと]は？"})
-        tagged = Note({"Furigana": "他[ほか]の"}, tags=[op.REVIEW_TAG])
-        marked = Note({"Furigana": "他[ほか？た]の"})
-        self.assertIsNone(op.unchecked_furigana(CONFIG, checked))
-        self.assertIn("furigana-review", op.unchecked_furigana(CONFIG, tagged))
-        self.assertIn('"？"', op.unchecked_furigana(CONFIG, marked))
+    def test_a_key_that_names_no_field_is_not_configured(self):
+        # A list in a hand-edited config raised TypeError in the note's `in`
+        note = Note({"Sentence": LINE, "Audio": "[sound:clip.opus]", "Furigana": " 他[ほか？た]の"})
+        for key in ("sentence_transcription_field", "furigana_sentence_field"):
+            config = {SENTENCE: {**self.config[SENTENCE], key: ["Heard"]}}
+            with self.subTest(key):
+                self.assertFalse(op.wants_audio_furigana(config, note))
 
 
 class ShowTest(unittest.TestCase):
     class Tagged:
         def __init__(self, *tags):
-            self.tags = list(tags)
+            # Sorted, as Anki keeps a note's tags
+            self.tags = sorted(tags, key=str.lower)
 
-    def test_the_first_level_of_the_first_hierarchical_tag(self):
-        self.assertEqual(op.show_of(self.Tagged("new", "kusuri::05", "a::b")), "kusuri")
-        self.assertIsNone(op.show_of(self.Tagged("new", "furigana-review")))
+    def test_the_show_of_the_episode_tag_whatever_sorts_before_it(self):
+        tags = ("new", "ep::kusuri::05", "JLPT::N3", "freq::high", "sentence::regenerate")
+        self.assertEqual(op.show_of(self.Tagged(*tags)), "kusuri")
+        self.assertEqual(op.show_of(self.Tagged("ep::kusuri::s2::05")), "kusuri")
 
-    def test_the_shows_search_escapes_what_anki_reads_as_wildcards(self):
-        self.assertEqual(op.show_search("show"), '"tag:show::*"')
-        self.assertEqual(op.show_search('a_b*"c'), '"tag:a\\_b\\*\\"c::*"')
+    def test_no_show_without_an_episode_tag(self):
+        for tags in [(), ("JP_sentences_33",), ("kusuri::05",), ("ep::kusuri",), ("epi::a::01",)]:
+            with self.subTest(tags):
+                self.assertIsNone(op.show_of(self.Tagged(*tags)))
+
+    def test_no_show_when_the_tags_name_two(self):
+        self.assertIsNone(op.show_of(self.Tagged("ep::a::01", "ep::b::01")))
+        # One show in two cases is one show to Anki, whose tags ignore case
+        self.assertEqual(op.show_of(self.Tagged("EP::Kusuri::01", "ep::kusuri::02")), "Kusuri")
+
+    def test_the_shows_search_escapes_what_anki_reads_as_syntax(self):
+        self.assertEqual(op.show_search("show"), '"tag:ep::show::*"')
+        self.assertEqual(op.show_search('a_b*"c'), '"tag:ep::a\\_b\\*\\"c::*"')
+        # A colon as every search's names have it (note_roles.search_escape)
+        self.assertEqual(op.show_search("re:zero"), '"tag:ep::re\\:zero::*"')
+
+    def test_the_report_of_the_notes_of_no_show_names_them_in_one_search(self):
+        self.assertIsNone(op.no_show_report([]))
+        self.assertIn("1 note has no tag", op.no_show_report([5]))
+        report = op.no_show_report(range(1, 302))
+        self.assertIn("301 notes have", report)
+        self.assertTrue(report.endswith(",200 (the first 200 of 301 notes)"))
 
 
 class NamesFileTest(unittest.TestCase):
@@ -361,6 +450,13 @@ class NamesFileTest(unittest.TestCase):
             op.read_names_file(str(self.path)),
             {"show": {"響迂": "きょうう", "高順": "がおしゅん"}},
         )
+
+    def test_a_file_saved_with_a_byte_order_mark_is_read(self):
+        names = {"show": {"響迂": "きょうう"}}
+        self.path.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8-sig")
+        self.assertTrue(self.path.read_bytes().startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(op.read_names_file(str(self.path)), names)
+        self.assertEqual(self.reports, [])
 
     def test_no_file_is_no_names(self):
         self.assertEqual(op.read_names_file(str(self.path)), {})

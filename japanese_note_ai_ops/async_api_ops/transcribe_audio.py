@@ -27,13 +27,15 @@ from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
+import requests  # type: ignore
 from anki.collection import Collection
 from anki.notes import Note, NoteId
 from aqt import mw
 from aqt.browser import Browser
 
-from ..note_roles import SENTENCE_ROLE
+from ..note_roles import SENTENCE_ROLE, configured_field
 from ..utils import get_field_config
 from .api_client import get_session
 from .base_ops import (
@@ -42,18 +44,28 @@ from .base_ops import (
     DialogCancelState,
     bulk_notes_op,
     get_transcript,
+    responder_active,
     selected_notes_op,
     transcribe_url,
 )
 from .chain_types import ChainStep
-from .role_gate import notes_of_role
+from .role_gate import notes_of_role, notes_passing
 from .run_errors import report_error
 
 logger = logging.getLogger(__name__)
 
 TRANSCRIBE_KIND = "transcribe.audio"
+# Where the server is: the released add-on leaves dev/ out (build.json)
+SERVER_SOURCE = (
+    "japanese_note_ai_ops/dev/transcribe_server.py of https://github.com/jhhr/anki_addons"
+)
 DEFAULT_MODELS = ("local-kana-anime-whisper", "local-ruby-mora")
 SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
+# What Anki's editor escapes in a [sound:] tag's name, which is field HTML (html.escape, quote
+# off), and its web view writes for a space: Anki's player reads the name with them decoded.
+# &amp; last, so that &amp;lt; is the &lt; written. Not html.unescape: a raw name such as
+# a&copy.opus is the file's own, and Anki plays it as it is
+SOUND_NAME_ESCAPES = (("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " "), ("&amp;", "&"))
 LINE_RE = re.compile(r"^\s*([^:]+?)\s*:\s*(.*?)\s*$")
 
 
@@ -72,9 +84,15 @@ def label(model: str) -> str:
 
 
 def audio_file(field: str) -> Optional[str]:
-    """The clip a field names, [sound:clip.opus] -> clip.opus; the first, if it names more."""
+    """The clip a field names, [sound:clip.opus] -> clip.opus; the first, if it names more.
+    Read as Anki plays it: [sound:A &amp; B.opus], as Anki's editor writes it, is A & B.opus."""
     m = SOUND_RE.search(field)
-    return m.group(1) if m else None
+    if m is None:
+        return None
+    name = m.group(1)
+    for escaped, char in SOUND_NAME_ESCAPES:
+        name = name.replace(escaped, char)
+    return name
 
 
 def parse_transcripts(field: str) -> dict[str, str]:
@@ -86,6 +104,12 @@ def parse_transcripts(field: str) -> dict[str, str]:
         if m:
             out[m.group(1)] = m.group(2)
     return out
+
+
+def lacking(models: Sequence[str], heard: dict[str, str]) -> list[str]:
+    """The transcribers of `models` whose line the field's lines `heard` (`parse_transcripts`)
+    do not hold: those a run asks, and whose lines "Set furigana from audio" waits for."""
+    return [model for model in models if label(model) not in heard]
 
 
 def format_transcripts(transcripts: dict[str, str], models: Sequence[str]) -> str:
@@ -120,7 +144,7 @@ def transcribe_note(
         return False
     models = transcribe_models(config)
     heard = parse_transcripts(note[transcript_field])
-    todo = [m for m in models if label(m) not in heard]
+    todo = lacking(models, heard)
     if not todo:
         return False
     name = audio_file(note[audio_field])
@@ -154,16 +178,35 @@ def transcribe_note(
 
 
 def lacks_transcript(config: dict, note: Note) -> bool:
-    """Whether a note's transcript field lacks the line of one of the config's transcribers,
-    so that a run asks for one. A note whose field cannot be read counts: `transcribe_note`
+    """Whether a run asks a transcriber about the note, as `transcribe_note` decides it: its
+    transcript field lacks the line of one of the config's transcribers, and its audio field
+    names a clip. A note added by hand names none, so it never gets a line and never lacks one
+    a run could get: counted, it made a run over a selection holding one need the server,
+    though nothing was sent. A note whose fields cannot be read counts: `transcribe_note`
     reports why."""
     note_type = note.note_type()
-    block = config.get(note_type["name"]) if note_type else None
-    field = block.get("sentence_transcription_field") if isinstance(block, dict) else None
+    name = note_type["name"] if note_type else ""
+    field = configured_field(config, name, "sentence_transcription_field")
     if not field or field not in note:
         return True
-    heard = parse_transcripts(note[field])
-    return any(label(m) not in heard for m in transcribe_models(config))
+    if not lacking(transcribe_models(config), parse_transcripts(note[field])):
+        return False
+    audio = configured_field(config, name, "sentence_audio_field")
+    return not audio or audio not in note or audio_file(note[audio]) is not None
+
+
+def same_field_error(config: dict, note_type_name: str) -> Optional[str]:
+    """Why a note type's notes cannot be transcribed, if its transcript field is its audio field:
+    the transcripts would be written over the clip's [sound:] tag, and the clip would no longer
+    play. As `set_furigana` refuses a furigana field that is the sentence's."""
+    transcript = configured_field(config, note_type_name, "sentence_transcription_field")
+    audio = configured_field(config, note_type_name, "sentence_audio_field")
+    if transcript and transcript == audio:
+        return (
+            f'"{note_type_name}": sentence_transcription_field is the sentence_audio_field,'
+            " whose [sound:] tag the transcripts would be written over: name another field."
+        )
+    return None
 
 
 def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
@@ -174,14 +217,30 @@ def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
     if not local:
         return None
     url = transcribe_url(config)
+
+    def no_answer(error: Exception) -> str:
+        return (
+            f"The transcription server at {url} does not answer ({type(error).__name__}): start"
+            f" it as {SERVER_SOURCE} says (the released add-on leaves it out), or set"
+            " transcribe_url to where it runs."
+        )
+
     try:
         response = get_session("local").get(f"{url}/health", timeout=10)
-        loaded = json.loads(response.text)["models"]
+    except requests.exceptions.ProxyError as e:
+        logger.warning("The server's health check went to a proxy: %s", e)
+        return proxy_problem(url, proxy_for(url), "could not pass the request on")
     except Exception as e:
-        return (
-            f"The transcription server at {url} does not answer ({type(e).__name__}): start"
-            " it as dev/transcribe_server.py says, or set transcribe_url to where it runs."
-        )
+        return no_answer(e)
+    try:
+        loaded = json.loads(response.text)["models"]
+    except (ValueError, KeyError, TypeError) as e:
+        # Not the server's JSON: a proxy's error page, when one carries the request
+        proxy = proxy_for(url)
+        if proxy is None:
+            return no_answer(e)
+        what = f"answered HTTP {response.status_code} instead of the server"
+        return proxy_problem(url, proxy, what)
     missing = [name for name in local if name not in loaded]
     if missing:
         return (
@@ -189,6 +248,31 @@ def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
             f" with --models {' '.join(local)}."
         )
     return None
+
+
+def proxy_for(url: str) -> Optional[str]:
+    """The proxy the local session sends a request for `url` through, None for none: the one
+    HTTP_PROXY or ALL_PROXY names unless NO_PROXY lists the host, or on Windows with neither
+    set the system's, unless its exceptions do. requests reads them so for every session that
+    trusts the environment, as `api_client.get_session`'s do; browsers leave 127.0.0.1 out of
+    any proxy by themselves, so nothing else shows it."""
+    try:
+        return requests.utils.select_proxy(url, requests.utils.get_environ_proxies(url))
+    except Exception:
+        return None
+
+
+def proxy_problem(url: str, proxy: Optional[str], what: str) -> str:
+    """What to change when a proxy stands between Anki and the server, which it cannot reach."""
+    host = urlparse(url).hostname or url
+    through = f"the proxy {proxy}" if proxy else "a proxy"
+    # Windows' "<local>" exception covers the names without a dot only
+    local = f', where "<local>" covers localhost but not {host}' if "." in host else ""
+    return (
+        f"The transcription server at {url} was asked through {through}, which {what}: a proxy"
+        f" seems to be in the way. Add {host} to the NO_PROXY environment variable (then"
+        f" restart Anki), or on Windows to the exceptions of the system's proxy settings{local}."
+    )
 
 
 async def bulk_transcribe_notes_op(
@@ -206,9 +290,13 @@ async def bulk_transcribe_notes_op(
         report_error("Missing addon configuration")
         return None
     notes = notes_of_role(config, notes, SENTENCE_ROLE)
+    # Said once a note type, before the server is asked about or any note is touched
+    notes = notes_passing(notes, lambda name: same_field_error(config, name))
     # Only a run that has a clip to send needs the server: one over notes transcribed already
-    # (a rerun, or "Run all ops for new notes" again) must not fail for want of it
-    if any(lacks_transcript(config, note) for note in notes):
+    # (a rerun, or "Run all ops for new notes" again) must not fail for want of it, nor a
+    # replay's or a test's, whose responder hears the clips in its place (get_transcript):
+    # the check goes to the server itself, past the responder
+    if not responder_active() and any(lacks_transcript(config, note) for note in notes):
         problem = server_problem(config, transcribe_models(config))
         if problem:
             report_error(problem)

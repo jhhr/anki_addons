@@ -96,9 +96,11 @@ from .collection_access import (
     get_notes as col_get_notes,
     run_on_collection,
 )
+from .furigana_review import unchecked_furigana
 from .link_lookup import LinkIndexCache
 from .note_cache import NoteCache
 from .role_gate import note_type_name, notes_of_role
+from .run_errors import report_error
 from .sentence_cache import SentenceCache
 from .sort_field_markers import WordNote, parse_sort_field, tidy_word_markers, word_key
 from .word_index import WordFields, WordIndex, WordIndexCache, sort_base_note_ids
@@ -2867,6 +2869,16 @@ def match_words_to_notes_for_note(
     note_type = note.note_type()
     if not note_type:
         logger.error(f"Error: Note {note.id} is missing note type")
+        return None
+
+    # A sentence whose furigana awaits a person's check is not matched until it has one, as it
+    # is not kanjified or extracted: a new note would copy the furigana as it is, 方[ほう？かた],
+    # with no tag to say so (the one-type layout, or a vocab type keeping a copy of it), and a
+    # word may be linked under a reading the check then rejects
+    unchecked = unchecked_furigana(config, note)
+    if unchecked is not None:
+        report_error(unchecked)
+        progress_updater.increment_counts(notes_done=1)
         return None
 
     furigana_sentence_field = get_field_config(config, "furigana_sentence_field", note_type)

@@ -193,19 +193,26 @@ that field to the sentence note type first. "Set furigana from audio" then check
 sentence's readings against those lines. A model hears the clip alone, never the sentence: an
 audio model shown text writes the text back, and what it hears by itself is the point.
 
-The models run in a program of their own on your PC, `dev/transcribe_server.py` in this
-add-on's folder, since Anki cannot load them. Set it up once and start it before a run, as the
-top of that file says: a Python environment with PyTorch (the CUDA 12.6 build for a GTX 970
-and other Maxwell cards), then `python dev/transcribe_server.py --device cuda`. Its first start
+The models run in a program of their own on your PC, since Anki cannot load them: the file
+`japanese_note_ai_ops/dev/transcribe_server.py` of https://github.com/jhhr/anki_addons, with
+`transcribe_server_requirements.txt` beside it. `dev/` is left out of the released add-on, so
+take both from there. Set it up once and start it before a run, as the top of that file says:
+a Python environment with PyTorch (the CUDA 12.6 build for a GTX 970 and other Maxwell cards),
+made outside the add-on's folder, which an update of the add-on replaces, then, from
+`japanese_note_ai_ops/`, `python dev/transcribe_server.py --device cuda`. Its first start
 downloads the two models, about 5.5 GB, and for a moment takes about 7 GB of memory while it
-loads Ruby-ASR. A run that cannot reach the server stops at once and says so.
+loads Ruby-ASR. A run of "Transcribe sentence audio" that cannot reach the server stops at
+once and says so.
 
 - `transcribe_models`: Default `["local-kana-anime-whisper", "local-ruby-mora"]`. The models a
   clip is sent to, each `local-<model>` for one the server has loaded. The default pair is the
   one the furigana audio eval picked: on 400 clips checked by ear, the furigana check wrote one
   wrong reading among 846. A note is only asked for the models its field has no line for, so
   a model added here later is asked for its own line alone.
-- `transcribe_url`: Default `"http://127.0.0.1:8792"`. Where the server listens.
+- `transcribe_url`: Default `"http://127.0.0.1:8792"`. Where the server listens. Anki sends
+  to it as to the online services, through the proxy `HTTP_PROXY` or Windows' proxy settings
+  name, unless `NO_PROXY` or the proxy's exceptions list 127.0.0.1 (Windows' `<local>` covers
+  localhost only); a run that meets a proxy in the way says so.
 
 Notes are transcribed one after another, since the server hears one clip at a time: about
 seven seconds a clip on the CPU alone in the eval, less with the GPU (not measured yet).
@@ -234,10 +241,10 @@ written so, and is not asked about; a note with only such words asks nothing. A 
 unsettled is written with the readings to choose between in its brackets, joined by `？`:
 Sudachi's reading, then what the lines heard there, ` 方[ほう？かた]`.
 A word with nothing else heard has its one reading and a `？`, ` 薬[くすり？]`, and one Sudachi
-cannot read has the `？` alone. The note is tagged `furigana-review`. Kanjify and word
-extraction leave such a note alone: listen to the clip, leave each marked word with the reading
-said (` 方[かた]`), and take the tag off. A sentence whose furigana still holds a `？` is left
-alone too, tag or no tag.
+cannot read has the `？` alone. The note is tagged `furigana-review`. Kanjify, word extraction
+and "Match extracted words" leave such a note alone, and the kanjify export leaves it out:
+listen to the clip, leave each marked word with the reading said (` 方[かた]`), and take the tag
+off. A sentence whose furigana still holds a `？` is left alone too, tag or no tag.
 
 - `furigana_models`: Default `[]` (none). The models that settle the words the audio leaves in
   review; a reading is written only where all of them give it. On the eval's 400 cards the
@@ -248,20 +255,26 @@ alone too, tag or no tag.
   than these were not measured.
 
 Only a note whose furigana field is empty is written, so furigana you typed or fixed is never
-replaced. Empty the field to have it set again.
+replaced. Empty the field to have it set again. A note whose call to a `furigana_models` model
+got no answer (an error the run lists, or a run cancelled while it waited) is left as it was,
+so that the next run asks again.
 
 "Run all ops for new notes" does both first, before kanjify and word extraction, which read the
 furigana, wherever a sentence note type has `sentence_transcription_field`: its notes with a
 clip and an empty furigana field are transcribed, which needs the server only when one of them
-still lacks a model's line, and their furigana is set. A note left for review gets no kanjify
-or word extraction in that run, and the run says so once per note.
+still lacks a model's line, and their furigana is set. When the server cannot be reached, the
+run says so once and goes on: the notes it could not transcribe get no furigana from it, and
+nothing more is said of them. A note left for review gets no kanjify or word extraction in that
+run, and the run says so once per note.
 
 The show's names: a show's captions give a name its reading at the first mention in an episode
 (`猫猫(マオマオ)`) and seldom after. The op reads the reading the show's captions give a name
-most, wherever it is written, and takes the show to be the first level of a note's first
-hierarchical tag: name the tag `${deck_name}::${0:episode_num}` in subs2srs' export, for
-example. A name the captions never read goes in `user_files/show_names.json`, by show, and
-wins over the captions:
+most, wherever it is written, and takes a note's show from its tag `ep::<show>::<episode>`:
+name the tag `ep::${deck_name}::${0:episode_num}` in subs2srs' export, for example. The `ep::`
+is hardcoded, and no other tag should start with it. A note with no such tag, or with tags of
+two shows, is read with its own caption alone, and the run says once how many there were and
+how to find them. A name the captions never read goes in `user_files/show_names.json`, by show
+(the `<show>` of the tag), and wins over the captions:
 
 ```json
 {"my_show": {"響迂": "きょうう"}}

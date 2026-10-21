@@ -14,6 +14,7 @@ from ..note_roles import (
     ROLES,
     SENTENCE_ROLE,
     VOCAB_ROLE,
+    configured_field,
     is_sentence_type,
     role_error,
     roles_of,
@@ -37,8 +38,9 @@ from .make_all_meanings import (
 )
 from .role_gate import note_type_name, notes_of_role, notes_passing
 from .run_errors import report_error
-from .set_furigana import bulk_set_furigana_op, unchecked_furigana, wants_audio_furigana
-from .transcribe_audio import bulk_transcribe_notes_op
+from .furigana_review import unchecked_furigana
+from .set_furigana import bulk_set_furigana_op, wants_audio_furigana
+from .transcribe_audio import bulk_transcribe_notes_op, lacks_transcript
 from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
 logger = logging.getLogger(__name__)
@@ -59,7 +61,7 @@ def new_note_all_ops_in_note(
     """The steps of `roles` (note_roles.roles_of the note's type): meanings and their
     cleaning for a vocab note, kanjify and extract for a sentence note. Outside the two-type
     layout a type has both roles, and its notes get all four, as before roles existed. A
-    sentence note whose furigana awaits a person's check (`set_furigana.unchecked_furigana`)
+    sentence note whose furigana awaits a person's check (`furigana_review.unchecked_furigana`)
     gets neither kanjify nor extract: each would leave it alone and say so, and it is said
     once."""
     changed = False
@@ -120,6 +122,8 @@ async def bulk_new_note_all_ops(
         return
 
     message = MESSAGE
+    # Counted before the notes of no role are left out, as the audio phases count it
+    undo_label = run_undo_label(notes)
     processed_words_set: set[str] = set()
     all_generated_meanings_dict = load_meanings_dict_from_file()
     extract_words = extract_words_op()
@@ -173,7 +177,16 @@ async def bulk_new_note_all_ops(
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
         on_end=on_end,
+        undo_label=undo_label,
     )
+
+
+def run_undo_label(notes: Sequence[Note]) -> str:
+    """The name of the run's undo entry, by the notes selected. The first phase's entry is the
+    one the Undo menu shows for all of the run (base_ops.run_op_phases), and which phase comes
+    first depends on the config, so every phase that can be first names it so: the run over
+    one selection was "for 2 notes" or "for 1 notes", as the config kept transcripts or not."""
+    return f"{MESSAGE} for {len(notes)} notes."
 
 
 def judge_sentence_notes_op():
@@ -194,17 +207,21 @@ def audio_furigana_configured(config: dict) -> bool:
     """Whether a sentence type of the config keeps transcripts (`sentence_transcription_field`),
     from which "Set furigana from audio" sets its notes' furigana."""
     return any(
-        isinstance(block, dict)
-        and bool(block.get("sentence_transcription_field"))
+        configured_field(config, name, "sentence_transcription_field")
         and is_sentence_type(config, name)
-        for name, block in config.items()
+        for name in config
     )
 
 
-def audio_furigana_phase(name: str, bulk_op: Callable[..., Any]) -> OpPhase:
+def audio_furigana_phase(
+    name: str, bulk_op: Callable[..., Any], transcribed: bool = False
+) -> OpPhase:
     """`bulk_op` as a phase over the run's sentence notes whose furigana is to be set from their
     audio (`set_furigana.wants_audio_furigana`), its undo entry named for the run's: the first
-    phase's is the one the Undo menu shows for all of it."""
+    phase's is the one the Undo menu shows for all of it. With `transcribed`, only the notes
+    the phase before left with every transcript (`transcribe_audio.lacks_transcript`): one it
+    could not finish, the server down or a clip missing, was reported there, and "Set furigana
+    from audio" would tell each to "run Transcribe sentence audio first", the step just run."""
 
     async def phase(col: Collection, notes: Sequence[Note], **kwargs):
         config = mw.addonManager.getConfig(__name__) or {}
@@ -212,10 +229,13 @@ def audio_furigana_phase(name: str, bulk_op: Callable[..., Any]) -> OpPhase:
             note
             for note in notes_of_role(config, notes, SENTENCE_ROLE, report=False)
             if wants_audio_furigana(config, note)
+            and not (transcribed and lacks_transcript(config, note))
         ]
-        label = f"{MESSAGE} for {len(notes)} notes."
-        return await bulk_op(col, wanted, undo_label=label, **kwargs)
+        return await bulk_op(col, wanted, undo_label=run_undo_label(notes), **kwargs)
 
+    # The capture store's run row names a phase by its function (base_ops._op_names): the op's,
+    # or both audio phases were "phase" there, and a query by op name missed these runs
+    phase.__name__ = getattr(bulk_op, "__name__", phase.__name__)
     return OpPhase(name, phase)
 
 
@@ -229,7 +249,7 @@ def new_note_phases(config: dict) -> list[OpPhase]:
     if audio_furigana_configured(config):
         phases += [
             audio_furigana_phase("Transcribing sentence audio", bulk_transcribe_notes_op),
-            audio_furigana_phase("Setting furigana from audio", bulk_set_furigana_op),
+            audio_furigana_phase("Setting furigana from audio", bulk_set_furigana_op, True),
         ]
     return phases + [
         OpPhase("New note ops", bulk_new_note_all_ops),

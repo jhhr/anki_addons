@@ -567,6 +567,55 @@ class LinkIdFieldTests(unittest.TestCase):
         self.assertEqual(roles.link_id_field(config, VOCAB), "Note id")
 
 
+class AnkiLikeNote(dict):
+    """Fields as anki.notes.Note holds them: its `in` looks a key up in a dict, so a key that
+    is no string, a list say, raises TypeError."""
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key)
+
+
+class ConfiguredFieldTests(unittest.TestCase):
+    CONFIG = {
+        "log_level": "ERROR",
+        "Not a block": "Sentence",
+        SENTENCE: {
+            "furigana_sentence_field": "Furigana",
+            "sentence_transcription_field": ["Heard"],
+            "translated_sentence_field": None,
+            "sentence_audio_field": 5,
+        },
+    }
+    NOTE = AnkiLikeNote({"Furigana": " 他[ほか]の", "Heard": "x"})
+
+    def test_the_field_a_block_names(self):
+        key = "furigana_sentence_field"
+        self.assertEqual(roles.configured_field(self.CONFIG, SENTENCE, key), "Furigana")
+        self.assertEqual(roles.configured_value(self.CONFIG, SENTENCE, self.NOTE, key), " 他[ほか]の")
+
+    def test_a_value_naming_no_field_is_no_field(self):
+        # A list in a hand-edited config raised TypeError in the note's `in`, failing a run
+        with self.assertRaises(TypeError):
+            ["Heard"] in self.NOTE  # noqa: B015 - what the hand-written lookups did
+        for key in (
+            "sentence_transcription_field",
+            "translated_sentence_field",
+            "sentence_audio_field",
+            "word_list_field",
+        ):
+            with self.subTest(key):
+                self.assertEqual(roles.configured_field(self.CONFIG, SENTENCE, key), "")
+                self.assertEqual(roles.configured_value(self.CONFIG, SENTENCE, self.NOTE, key), "")
+
+    def test_a_type_with_no_block_or_a_field_the_note_lacks(self):
+        for name in ("Kanji draw", "Not a block", "log_level"):
+            with self.subTest(name):
+                self.assertEqual(roles.configured_field(self.CONFIG, name, "sentence_field"), "")
+        config = {SENTENCE: {"furigana_sentence_field": "Gone"}}
+        key = "furigana_sentence_field"
+        self.assertEqual(roles.configured_value(config, SENTENCE, self.NOTE, key), "")
+
+
 class NoteTypeSearchTests(unittest.TestCase):
     def test_a_plain_name_is_the_term_the_ops_have_always_built(self):
         self.assertEqual(roles.note_type_search(VOCAB), '"note:Japanese vocab note"')
@@ -585,9 +634,23 @@ class NoteTypeSearchTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(roles.note_type_search(name), term)
 
-    def test_colons_parentheses_and_hyphens_are_left_alone(self):
-        # Inside the quotes Anki takes them as they are
-        self.assertEqual(roles.note_type_search("colon:name (x) -y"), '"note:colon:name (x) -y"')
+    def test_a_colon_is_escaped_and_parentheses_and_hyphens_left_alone(self):
+        # Anki reads an escaped colon as a colon (test_replay/test_link_lookup.py), and takes
+        # parentheses and hyphens inside the quotes as they are
+        self.assertEqual(roles.note_type_search("colon:name (x) -y"), '"note:colon\\:name (x) -y"')
+
+
+class SearchEscapeTests(unittest.TestCase):
+    """The one escaping of the names the addon's searches hold: a note type's, a field's
+    (test_link_ids) and a show's (test_set_furigana)."""
+
+    def test_each_character_anki_reads_as_syntax_gets_a_backslash(self):
+        self.assertEqual(roles.search_escape('a_b*c\\d"e:f'), 'a\\_b\\*c\\\\d\\"e\\:f')
+
+    def test_a_name_without_them_is_as_it_is(self):
+        for name in ("Japanese vocab note", "-id (x) 番号", "薬屋のひとりごと", "No.6 + K-On!"):
+            with self.subTest(name):
+                self.assertEqual(roles.search_escape(name), name)
 
 
 if __name__ == "__main__":

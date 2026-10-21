@@ -5,11 +5,13 @@
 
 One row per call, newest last: `key`, `model` and `response` as the research scripts' caches
 hold them (`key` is capture_store.research_cache_key, sha1 of model and prompt, so a row seeds
-`judge_eval`'s cache and its siblings as is), and beside them what an eval set is made from:
-the call's `kind`, `request_key` (the same case across prompt rewordings), `inputs` (the values
-the prompt was built from, to render a new prompt version from), `prompt`, `outcome`, and where
-it came from (`run_id`, `call_id`, `note_id`). Editing the responses into gold answers, and
-keeping them, is done in the file: the store prunes old runs, a JSONL file is diffed and kept.
+`judge_eval`'s cache and its siblings as is; null for a call without a prompt, a
+`transcribe.audio` one, whose clip is in `inputs` and `request_key`), and beside them what an
+eval set is made from: the call's `kind`, `request_key` (the same case across prompt
+rewordings), `inputs` (the values the prompt was built from, to render a new prompt version
+from), `prompt`, `outcome`, and where it came from (`run_id`, `call_id`, `note_id`). Editing
+the responses into gold answers, and keeping them, is done in the file: the store prunes old
+runs, a JSONL file is diffed and kept.
 
 Writes to stdout unless `--out` is given. Reads the store only; needs neither anki nor Anki.
 """
@@ -67,7 +69,9 @@ def rows(
         for row in connection.execute(query, params):
             call_id, run_id, note_id, kind, request_key, row_model, prompt, inputs, response, out = row
             yield {
-                "key": research_cache_key(row_model, prompt),
+                # A call that sends no prompt, a transcription, would have the one key of its
+                # model for every clip: a cache seeded with it answers each clip alike
+                "key": research_cache_key(row_model, prompt) if prompt else None,
                 "model": row_model,
                 "response": json.loads(response) if response else None,
                 "kind": kind,
