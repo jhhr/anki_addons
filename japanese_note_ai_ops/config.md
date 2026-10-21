@@ -253,10 +253,12 @@ or word extraction in that run, and the run says so once per note.
 
 The show's names: a show's captions give a name its reading at the first mention in an episode
 (`猫猫(マオマオ)`) and seldom after. The op reads the reading the show's captions give a name
-most, wherever it is written, and takes the show to be the first level of a note's first
-hierarchical tag: name the tag `${deck_name}::${0:episode_num}` in subs2srs' export, for
-example. A name the captions never read goes in `user_files/show_names.json`, by show, and
-wins over the captions:
+most, wherever it is written, and takes a note's show from its tag `ep::<show>::<episode>`:
+name the tag `ep::${deck_name}::${0:episode_num}` in subs2srs' export, for example. The `ep::`
+is hardcoded, and no other tag should start with it. A note with no such tag, or with tags of
+two shows, is read with its own caption alone, and the run says once how many there were and
+how to find them. A name the captions never read goes in `user_files/show_names.json`, by show
+(the `<show>` of the tag), and wins over the captions:
 
 ```json
 {"my_show": {"響迂": "きょうう"}}

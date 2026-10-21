@@ -84,7 +84,8 @@ class Note:
     def __init__(self, fields: dict[str, str], tags=(), note_id: int = 7) -> None:
         self.id = note_id
         self.fields = {"Sentence": "", "Furigana": "", "Heard": "", **fields}
-        self.tags = list(tags)
+        # Sorted, as Anki keeps a note's tags
+        self.tags = sorted(tags, key=str.lower)
 
     def note_type(self):
         return {"name": SENTENCE}
@@ -209,28 +210,48 @@ class OpTest(OpHarness):
     def test_a_name_the_shows_captions_read_elsewhere(self):
         # The episode's first mention gave 猫猫 its reading; this one has none
         self.captions["show"] = ["猫猫(マオマオ)", NAME_LINE]
-        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"])
+        # Whatever other tags it has, one of them sorted first
+        tags = ["JLPT::N3", "anime::seinen", "ep::show::01", "sentence::regenerate"]
+        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=tags)
+        self.assertEqual(note.tags[0], "anime::seinen")
         self.run_op(note)
         self.assertEqual(note["Furigana"], "猫猫[まおまお]がいたのはどこなのかしら")
-        self.assertEqual(note.tags, ["show::01"])
+        self.assertEqual(note.tags, sorted(tags, key=str.lower))
         self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
 
     def test_a_name_in_the_names_file_wins_over_the_captions(self):
         self.captions["show"] = ["猫猫(ネコネコ)"]
         self.user_names = {"show": {"猫猫": "まおまお"}}
-        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"])
+        note = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["ep::show::01"])
         self.run_op(note)
         self.assertEqual(note["Furigana"], "猫猫[まおまお]がいたのはどこなのかしら")
 
     def test_a_show_is_read_once_a_run_and_a_note_of_none_by_its_own_caption(self):
         notes = [
-            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::01"]),
-            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["show::02"]),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["ep::show::01"]),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["ep::show::02"]),
             Note({"Sentence": "猫猫(マオマオ)", "Heard": heard("まおまお", "まおまお")}),
         ]
         self.run_op(*notes)
         self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
         self.assertEqual(notes[2]["Furigana"], "猫猫[まおまお]")
+
+    def test_the_notes_read_with_no_show_are_kept_for_the_runs_one_report(self):
+        shows = self.shows()
+        notes = [
+            # As subs2srs' default export tags a card
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, ["JP_sentences_33"], note_id=1),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, ["ep::a::01", "ep::b::01"], 2),
+            Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, ["ep::show::01"], note_id=3),
+            # Not read at all: its furigana is there already
+            Note({"Sentence": NAME_LINE, "Furigana": "猫猫[ねこねこ]", "Heard": NAME_HEARD}, (), 4),
+        ]
+        self.run_op(*notes, shows=shows)
+        self.assertEqual(sorted(shows.showless), [1, 2])
+        self.assertEqual(self.reports, [])
+        report = op.no_show_report(shows.showless)
+        self.assertTrue(report.startswith("2 notes have no tag ep::<show>::<episode>"))
+        self.assertTrue(report.endswith("search: nid:1,2"))
 
 
 def answer(reading, sure=True):
@@ -333,15 +354,34 @@ class NewNotesTest(unittest.TestCase):
 class ShowTest(unittest.TestCase):
     class Tagged:
         def __init__(self, *tags):
-            self.tags = list(tags)
+            # Sorted, as Anki keeps a note's tags
+            self.tags = sorted(tags, key=str.lower)
 
-    def test_the_first_level_of_the_first_hierarchical_tag(self):
-        self.assertEqual(op.show_of(self.Tagged("new", "kusuri::05", "a::b")), "kusuri")
-        self.assertIsNone(op.show_of(self.Tagged("new", "furigana-review")))
+    def test_the_show_of_the_episode_tag_whatever_sorts_before_it(self):
+        tags = ("new", "ep::kusuri::05", "JLPT::N3", "freq::high", "sentence::regenerate")
+        self.assertEqual(op.show_of(self.Tagged(*tags)), "kusuri")
+        self.assertEqual(op.show_of(self.Tagged("ep::kusuri::s2::05")), "kusuri")
+
+    def test_no_show_without_an_episode_tag(self):
+        for tags in [(), ("JP_sentences_33",), ("kusuri::05",), ("ep::kusuri",), ("epi::a::01",)]:
+            with self.subTest(tags):
+                self.assertIsNone(op.show_of(self.Tagged(*tags)))
+
+    def test_no_show_when_the_tags_name_two(self):
+        self.assertIsNone(op.show_of(self.Tagged("ep::a::01", "ep::b::01")))
+        # One show in two cases is one show to Anki, whose tags ignore case
+        self.assertEqual(op.show_of(self.Tagged("EP::Kusuri::01", "ep::kusuri::02")), "Kusuri")
 
     def test_the_shows_search_escapes_what_anki_reads_as_wildcards(self):
-        self.assertEqual(op.show_search("show"), '"tag:show::*"')
-        self.assertEqual(op.show_search('a_b*"c'), '"tag:a\\_b\\*\\"c::*"')
+        self.assertEqual(op.show_search("show"), '"tag:ep::show::*"')
+        self.assertEqual(op.show_search('a_b*"c'), '"tag:ep::a\\_b\\*\\"c::*"')
+
+    def test_the_report_of_the_notes_of_no_show_names_them_in_one_search(self):
+        self.assertIsNone(op.no_show_report([]))
+        self.assertIn("1 note has no tag", op.no_show_report([5]))
+        report = op.no_show_report(range(1, 302))
+        self.assertIn("301 notes have", report)
+        self.assertTrue(report.endswith(",200 (the first 200 of 301 notes)"))
 
 
 class NamesFileTest(unittest.TestCase):

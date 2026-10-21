@@ -22,13 +22,15 @@ the config's `transcribe_models`, and one of them hearing a reading is enough to
 furigana audio eval measured that rule on the default pair, which sent half as many words to
 review as asking both, for no more wrong readings.
 
-The show: subs2srs tags a card as its export says, and tagged `<show>::<episode>`, the first
-level of a note's first hierarchical tag names its show. The captions read a name in katakana
-at its first mention in an episode (猫猫(マオマオ)) and seldom after, so a show's names are
-every surface its captions read in katakana somewhere, each with the reading they give it
-most; one they read in hiragana somewhere is a word, not a name. Names the captions never read
-go in `user_files/show_names.json`, by show (`{"<show>": {"響迂": "きょうう"}}`), and win over
-the captions. A note without such a tag is read with its own caption alone.
+The show: subs2srs tags a card as its export's tag template says, and a note's tag
+`ep::<show>::<episode>` names its show (`configuration.EPISODE_TAG_PREFIX`, hardcoded: the
+template `ep::${deck_name}::${0:episode_num}`). The captions read a name in katakana at its
+first mention in an episode (猫猫(マオマオ)) and seldom after, so a show's names are every
+surface its captions read in katakana somewhere, each with the reading they give it most; one
+they read in hiragana somewhere is a word, not a name. Names the captions never read go in
+`user_files/show_names.json`, by show (`{"<show>": {"響迂": "きょうう"}}`), and win over the
+captions. A note without such a tag, or with tags of two shows, is read with its own caption
+alone, and the run names such notes once (`no_show_report`).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from aqt.browser import Browser
 
 from ..configuration import (
     ADDON_USER_FILES_DIR,
+    EPISODE_TAG_PREFIX,
     FURIGANA_DOUBT_LEFT,
     FURIGANA_REVIEW_LEFT,
     FURIGANA_REVIEW_TAG,
@@ -83,6 +86,9 @@ QUORUM = 1
 ARBITER_KIND = "furigana_arbiter.note"
 # The characters Anki's search syntax gives a meaning inside a quoted `tag:` search
 _TAG_SEARCH_SPECIAL = re.compile(r'[\\"*_]')
+# How many of the notes of no show the run's report names in its search, as link_ids'
+# refusals do: a run over a whole deck tagged otherwise has thousands
+NO_SHOW_SEARCHED = 200
 
 # A spelling's readings: JMdict's in the op, a table in the tests
 Dictionary = Callable[[str], set[str]]
@@ -96,17 +102,47 @@ def sudachi_morphemes(text: str) -> list:
 
 
 def show_of(note: Note) -> Optional[str]:
-    """The show a note is of: the first level of its first hierarchical tag, `<show>::01`."""
+    """The show a note is of: `<show>` of its tag `ep::<show>::<episode>`. None without one,
+    and when its tags name two shows, either of whose names would be a guess. Not its first
+    `::` tag, as it was: Anki keeps a note's tags sorted, so that was as likely JLPT::N3 or the
+    add-on's own sentence::regenerate."""
+    shows: dict[str, str] = {}
     for tag in note.tags:
-        if "::" in tag:
-            return tag.split("::", 1)[0]
-    return None
+        if tag[: len(EPISODE_TAG_PREFIX)].lower() != EPISODE_TAG_PREFIX:
+            continue
+        show, separator, episode = tag[len(EPISODE_TAG_PREFIX) :].partition("::")
+        if show and separator and episode:
+            # Anki's tags ignore case, and so does the show's search
+            shows.setdefault(show.lower(), show)
+    return next(iter(shows.values())) if len(shows) == 1 else None
 
 
 def show_search(show: str) -> str:
-    """`"tag:<show>::*"`: the notes tagged with an episode of the show, the characters Anki's
-    search reads as wildcards escaped as `note_roles.note_type_search` escapes them."""
-    return '"tag:' + _TAG_SEARCH_SPECIAL.sub(r"\\\g<0>", show) + '::*"'
+    """`"tag:ep::<show>::*"`: the notes tagged with an episode of the show, the characters Anki's
+    search reads as wildcards escaped as `note_roles.note_type_search` escapes them. As the
+    tag starts with `ep::`, no show's name is read as a search mode, as one starting the tag
+    was: a show "nc" found none of its notes, "re:zero" another show's too (checked against
+    Anki 26.09)."""
+    escaped = _TAG_SEARCH_SPECIAL.sub(r"\\\g<0>", show)
+    return f'"tag:{EPISODE_TAG_PREFIX}{escaped}::*"'
+
+
+def no_show_report(note_ids: Sequence[int]) -> Optional[str]:
+    """What a run says once of the notes it read with no show (`show_of` None): how many, and a
+    search finding them; None for none. Once, not a note at a time: a deck tagged otherwise
+    would fill the run's errors with one line each."""
+    ids = sorted(set(note_ids))
+    if not ids:
+        return None
+    search = "nid:" + ",".join(str(note_id) for note_id in ids[:NO_SHOW_SEARCHED])
+    if len(ids) > NO_SHOW_SEARCHED:
+        search += f" (the first {NO_SHOW_SEARCHED} of {len(ids)} notes)"
+    notes = "1 note has" if len(ids) == 1 else f"{len(ids)} notes have"
+    return (
+        f"{notes} no tag {EPISODE_TAG_PREFIX}<show>::<episode> naming one show, so the names"
+        " their show's other captions read, and its names in show_names.json, were not used"
+        f" for their furigana. To find them, search: {search}"
+    )
 
 
 def read_names_file(path: str) -> dict[str, dict[str, str]]:
@@ -160,6 +196,16 @@ class Shows:
         self.user_names = user_names
         self._read: dict[tuple[str, str, str], Show] = {}
         self._lock = threading.Lock()
+        # The notes read with no show, for the run's report (no_show_report)
+        self.showless: list[NoteId] = []
+
+    def of(self, note: Note, note_type_name: str, field: str, caption: str) -> Show:
+        """The note's show (`show_of`), a note of none counted in `showless`."""
+        show = show_of(note)
+        if show is None:
+            with self._lock:
+                self.showless.append(note.id)
+        return self.get(show, note_type_name, field, caption)
 
     def get(self, show: Optional[str], note_type_name: str, field: str, caption: str) -> Show:
         if show is None:
@@ -303,7 +349,7 @@ def set_furigana_in_note(
             f'No transcript from {", ".join(lacking)} yet: run "Transcribe sentence audio" first'
         )
         return False
-    show = shows.get(show_of(note), note_type["name"], sentence_field, caption)
+    show = shows.of(note, note_type["name"], sentence_field, caption)
     transcripts = [(label(m), heard[label(m)]) for m in models]
     result = audio_furigana(
         caption,
@@ -364,6 +410,13 @@ async def bulk_set_furigana_op(
         return None
     dictionary = jmdict_index.spelling_readings
     shows = Shows(show_captions, dictionary, read_names_file(NAMES_FILE))
+
+    def on_end() -> None:
+        report = no_show_report(shows.showless)
+        if report:
+            logger.warning(report)
+            report_error(report, "Notes of no show")
+
     op = partial(
         set_furigana_in_note,
         shows=shows,
@@ -383,6 +436,7 @@ async def bulk_set_furigana_op(
         progress_updater,
         notes_to_add_dict,
         notes_to_update_dict,
+        on_end=on_end,
         undo_label=undo_label,
     )
 
