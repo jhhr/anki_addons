@@ -214,6 +214,38 @@ class ServerCheckTest(unittest.TestCase):
         self.assertEqual(self.check(ConnectionError(), models=["gemini-x"]), (None, []))
 
 
+class SameFieldTest(unittest.TestCase):
+    def test_a_transcript_field_that_is_the_audio_field_is_refused_once_touching_nothing(self):
+        # Written there, the transcripts would replace the clip's [sound:] tag
+        config = {**CONFIG, SENTENCE: {**CONFIG[SENTENCE], "sentence_transcription_field": "Audio"}}
+        reports: list[str] = []
+        previous = run_errors.deliver_with(lambda _title, text: reports.append(text))
+        self.addCleanup(run_errors.deliver_with, previous)
+        ran: list = []
+
+        async def bulk_notes_op(message, config, note_op, col, notes, *args, **kwargs):
+            ran.extend(note.id for note in notes)
+            return "ran"
+
+        notes = [Note({"Audio": CLIP_TAG}, note_id=1), Note({"Audio": CLIP_TAG}, note_id=2)]
+        col = mock.Mock()
+        col.media.dir.return_value = "media"
+        with mock.patch.object(op, "mw") as mw, mock.patch.multiple(
+            op, bulk_notes_op=bulk_notes_op, server_problem=mock.Mock(return_value="down")
+        ):
+            mw.addonManager.getConfig.return_value = config
+            asyncio.run(op.bulk_transcribe_notes_op(col, notes, [], mock.Mock(), {}, {}))
+        self.assertEqual(ran, [])
+        [text] = reports
+        self.assertIn("sentence_transcription_field is the sentence_audio_field", text)
+        self.assertIn("2 notes", text)
+        self.assertEqual([note["Audio"] for note in notes], [CLIP_TAG, CLIP_TAG])
+
+    def test_two_fields_or_none_configured_are_no_such_error(self):
+        self.assertIsNone(op.same_field_error(CONFIG, SENTENCE))
+        self.assertIsNone(op.same_field_error({SENTENCE: {}}, SENTENCE))
+
+
 class BulkServerCheckTest(unittest.TestCase):
     def run_bulk(self, notes):
         """The bulk op with the server down: the notes it went on with, and what it reported."""

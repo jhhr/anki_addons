@@ -47,7 +47,7 @@ from .base_ops import (
     transcribe_url,
 )
 from .chain_types import ChainStep
-from .role_gate import notes_of_role
+from .role_gate import notes_of_role, notes_passing
 from .run_errors import report_error
 
 logger = logging.getLogger(__name__)
@@ -178,6 +178,20 @@ def lacks_transcript(config: dict, note: Note) -> bool:
     return not audio or audio not in note or audio_file(note[audio]) is not None
 
 
+def same_field_error(config: dict, note_type_name: str) -> Optional[str]:
+    """Why a note type's notes cannot be transcribed, if its transcript field is its audio field:
+    the transcripts would be written over the clip's [sound:] tag, and the clip would no longer
+    play. As `set_furigana` refuses a furigana field that is the sentence's."""
+    transcript = configured_field(config, note_type_name, "sentence_transcription_field")
+    audio = configured_field(config, note_type_name, "sentence_audio_field")
+    if transcript and transcript == audio:
+        return (
+            f'"{note_type_name}": sentence_transcription_field is the sentence_audio_field,'
+            " whose [sound:] tag the transcripts would be written over: name another field."
+        )
+    return None
+
+
 def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
     """Why the local transcription server cannot hear the clips with `models`, or None when it
     can or none of them is local: asked once before a run, so that a server not started fails
@@ -218,6 +232,8 @@ async def bulk_transcribe_notes_op(
         report_error("Missing addon configuration")
         return None
     notes = notes_of_role(config, notes, SENTENCE_ROLE)
+    # Said once a note type, before the server is asked about or any note is touched
+    notes = notes_passing(notes, lambda name: same_field_error(config, name))
     # Only a run that has a clip to send needs the server: one over notes transcribed already
     # (a rerun, or "Run all ops for new notes" again) must not fail for want of it, nor a
     # replay's or a test's, whose responder hears the clips in its place (get_transcript):
