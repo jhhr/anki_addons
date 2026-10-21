@@ -55,6 +55,16 @@ UNSPOKEN_RE = re.compile(r"（[^（）]*）|\[[^\[\]]*\]")
 ASS_TAG_RE = re.compile(r"\{\\[^}]*\}")
 KATAKANA_RE = re.compile(r"[ァ-ヺー・]+")
 DIGITS_RE = re.compile(r"[0-9０-９]+")
+# A number in digits as Sudachi takes it for one numeral: grouped by thousands (1,000) or with
+# a decimal part (2.5), else a run of digits. Run by run, 1,000 was 一,〇, read いち,れい; a
+# dotted date (2024.10.18) or version (1.2.3) Sudachi cuts at its dots, so it is runs too
+NUMBER_RE = re.compile(
+    r"[0-9０-９]{1,3}(?:[,，][0-9０-９]{3})+(?![0-9０-９])"
+    r"|(?<![0-9０-９][.．])[0-9０-９]+[.．][0-9０-９]+(?![.．]?[0-9０-９])"
+    r"|[0-9０-９]+"
+)
+# A separator inside such a number
+DIGIT_SEPARATOR_RE = re.compile(r"[0-9０-９][,，.．][0-9０-９]")
 # Latin letters, of either width and case
 LATIN_RE = re.compile(r"[A-Za-zＡ-Ｚａ-ｚ]+")
 # Each Latin letter's names as said, the first the one a letter is read by
@@ -97,10 +107,20 @@ def kanji_number(n: int) -> str:
 
 
 def kanji_numerals(text: str) -> str:
-    """`text` with each run of digits, half or full width, spelt in kanji numerals, the form
+    """`text` with each number in digits, half or full width, spelt in kanji numerals, the form
     a number is read and looked up in: Sudachi reads 10 digit by digit, イチレイ, and JMdict
-    has 十日 (とおか) but no 10日."""
-    return DIGITS_RE.sub(lambda m: kanji_number(int(m.group())), text)
+    has 十日 (とおか) but no 10日. A number grouped by thousands is one (1,000 千) and a
+    decimal is read with 点 (2.5 二点五), as Sudachi reads them in kanji (`NUMBER_RE`)."""
+    return NUMBER_RE.sub(lambda m: written_number(m.group()), text)
+
+
+def written_number(digits: str) -> str:
+    """A number as NUMBER_RE finds it, in kanji numerals."""
+    whole, _, fraction = re.sub("[,，]", "", digits).replace("．", ".").partition(".")
+    out = kanji_number(int(whole))
+    if fraction:
+        out += "点" + "".join(DIGITS[int(d)] for d in fraction)
+    return out
 
 
 def letter_names(letter: str) -> tuple[str, ...]:

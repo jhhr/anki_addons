@@ -39,6 +39,7 @@ from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
     make_furigana_from_reading,
 )
 from .captions import (
+    DIGIT_SEPARATOR_RE,
     KANJI_RE,
     LATIN_RE,
     BaseFinder,
@@ -257,7 +258,9 @@ def word_furigana(surface: str, reading: str) -> str:
     with the rest (十センチ[じゅっせんち]), so they are left out here: 十[じゅっ]センチ. Latin
     letters at either end are left out too, their names taken off the reading
     (`captions.read_letters`): Ｂ型 read びーがた is Ｂ 型[がた], a letter being its own
-    reading. Where the reading does not read them so, they stay in (`writable`)."""
+    reading. Where the reading does not read them so, they stay in (`writable`). A number with
+    a separator in it is one group (1,000円[せんえん]): make_furigana_from_reading takes the
+    digits for kanji and the separator for kana, and put the reading over 000円 alone."""
     split = split_letters(surface, reading)
     if split is not None and (split[0] or split[3]):
         before, rest, rest_reading, after = split
@@ -265,7 +268,9 @@ def word_furigana(surface: str, reading: str) -> str:
     tail = KATAKANA_TAIL_RE.search(surface)
     if tail and tail.start() and to_hiragana(reading).endswith(to_hiragana(tail.group())):
         head = reading[: len(reading) - len(tail.group())]
-        return make_furigana_from_reading(surface[: tail.start()], head) + tail.group()
+        return word_furigana(surface[: tail.start()], head) + tail.group()
+    if DIGIT_SEPARATOR_RE.search(surface):
+        return f" {surface}[{reading}]"
     return make_furigana_from_reading(surface, reading)
 
 

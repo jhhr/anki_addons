@@ -135,6 +135,13 @@ class NumeralsTest(unittest.TestCase):
     def test_digits_of_either_width_in_a_text(self):
         self.assertEqual(captions.kanji_numerals("船で10日、１万人"), "船で十日、一万人")
 
+    def test_a_number_grouped_by_thousands_or_with_a_decimal_part_is_one(self):
+        self.assertEqual(captions.kanji_numerals("1,000円と１，０００円"), "千円と千円")
+        self.assertEqual(captions.kanji_numerals("2.5倍"), "二点五倍")
+        # A dotted date or version is runs of digits, as Sudachi cuts it
+        self.assertEqual(captions.kanji_numerals("2024.10.18"), "二千二十四.十.十八")
+        self.assertEqual(captions.kanji_numerals("1.2.3"), "一.二.三")
+
 
 if __name__ == "__main__":
     unittest.main()

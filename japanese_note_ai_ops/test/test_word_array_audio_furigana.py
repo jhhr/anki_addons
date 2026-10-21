@@ -291,6 +291,10 @@ class WordFuriganaTest(unittest.TestCase):
         # A reading that does not end in the katakana is one group, as before
         self.assertEqual(af.word_furigana("十センチ", "じゅっ"), " 十センチ[じゅっ]")
 
+    def test_a_number_with_a_separator_is_one_group(self):
+        self.assertEqual(af.word_furigana("1,000円", "せんえん"), " 1,000円[せんえん]")
+        self.assertEqual(af.word_furigana("2.5センチ", "にてんごせんち"), " 2.5[にてんご]センチ")
+
     def test_latin_letters_at_either_end_are_left_out_their_names_taken_off_the_reading(self):
         self.assertEqual(af.word_furigana("Ｂ型", "びーがた"), "Ｂ 型[がた]")
         self.assertEqual(af.word_furigana("AB型", "えーびーがた"), "AB 型[がた]")

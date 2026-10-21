@@ -275,6 +275,18 @@ def test_words_side_by_side_without_a_particle_keep_their_own_furigana(col):
     }
 
 
+def test_a_number_grouped_by_thousands_or_with_a_decimal_part_is_read_whole(col):
+    # Run by run, 1,000 was 一,〇, read いち,れい, and 2.5 had no 点
+    price = sentence(col, "1,000円だ", "せんえんだ", "センエンダ")
+    times = sentence(col, "2.5倍だ", "にてんごばいだ", "ニテンゴバイダ")
+
+    run(col, [price, times])
+
+    assert furigana(col, price) == "1,000円[せんえん]だ"
+    assert furigana(col, times) == "2.5倍[にてんごばい]だ"
+    assert col.get_note(price.id).tags == col.get_note(times.id).tags == []
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))
