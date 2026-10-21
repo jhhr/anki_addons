@@ -16,8 +16,9 @@ is in doubt, and a person fixing it confirms each such word by editing it: kanji
 extraction leave a sentence holding one alone (`has_doubt`) even once its review tag is gone.
 
 Speaker labels and sound descriptions are not spoken, so they are left out of the furigana
-(captions.spoken_lines), and a word whose draft holds a kanji Sudachi could not read gets no
-furigana until someone gives it one: none is better than a wrong one.
+(captions.spoken_lines), as is the caption's HTML but for its line breaks, and a word whose
+draft holds a kanji Sudachi could not read gets no furigana until someone gives it one: none is
+better than a wrong one.
 
 A transcript is read as kana: anything else in it is dropped, so a model writing ruby text
 (漢字[かな]) gives its readings, and one writing ordinary text gives too little to check by.
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from html import escape
 from typing import Callable, Container, Iterable, Mapping, Optional, Sequence
 
 from ..kana_conv import to_hiragana
@@ -107,9 +109,10 @@ class Furigana:
 
     @property
     def lines(self) -> list[str]:
-        """Each spoken line with its furigana, Anki's 漢字[かな]."""
+        """Each spoken line with its furigana, Anki's 漢字[かな], as a field's HTML: the plain
+        text's &, < and > escaped."""
         return [
-            furigana_line(text, [r for r in self.readings if r.line == n])
+            escape(furigana_line(text, [r for r in self.readings if r.line == n]), quote=False)
             for n, text in enumerate(self.texts)
         ]
 

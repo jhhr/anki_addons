@@ -34,12 +34,11 @@ records as its inputs.
 
 from __future__ import annotations
 
-import html
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from ..html_stripping import blocks_as_breaks
+from ..html_stripping import text_lines
 from ..kana_conv import to_hiragana
 from .audio_furigana import Furigana, Reading
 from .captions import KANJI_RE, kanji_numerals, spoken_lines
@@ -68,8 +67,6 @@ RESPONSE_SCHEMA = {
     "additionalProperties": False,
 }
 KANA_RE = re.compile(r"[ぁ-ゖァ-ヺー]+")
-BR_RE = re.compile(r"<br\s*/?>", re.I)
-TAG_RE = re.compile(r"<[^>]+>")
 
 PROMPT_HEAD = """You decide how a speaker read some words of a line of Japanese anime dialogue, for the furigana of a flash card.
 
@@ -114,9 +111,9 @@ class Answer:
 
 def translation_text(field: str) -> str:
     """A translation field as the prompt shows it: its lines a row each, no other HTML. A line
-    is one of a <br> or of a <div> block, which Anki's editor writes; a field of <br> lines
-    only comes out as it always did, so the eval's cached answers stay its own."""
-    return html.unescape(TAG_RE.sub("", BR_RE.sub("\n", blocks_as_breaks(field)))).strip()
+    is one of a <br> or of a <div> block, which Anki's editor writes (`text_lines`); a field of
+    <br> lines only comes out as it always did, so the eval's cached answers stay its own."""
+    return "\n".join(text_lines(field)).strip()
 
 
 def heard_something(r: Reading) -> bool:

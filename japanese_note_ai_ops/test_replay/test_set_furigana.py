@@ -142,6 +142,38 @@ def test_the_furigana_as_the_clip_says_it(col, reported):
     assert col.undo_status().undo == "Setting furigana from audio for 3 notes."
 
 
+@pytest.mark.parametrize(
+    "caption",
+    [
+        '<font color="#ffff00">今日は本当に楽しかった</font>',
+        '<span style="color: rgb(0, 0, 0);">今日は<b>本当</b>に楽しかった</span>',
+        "<i>今日は本当に楽しかった</i>",
+        "<div>今日は本当に楽しかった<br></div>",
+    ],
+)
+def test_a_captions_html_is_neither_heard_nor_written(col, reported, caption):
+    # Sudachi reads a tag's name as words (フォント カラー), which no clip says
+    heard = "きょうわほんとうにたのしかった"
+    note = sentence(col, caption, heard, heard)
+
+    run(col, [note])
+
+    assert furigana(col, note) == "今日[きょう]は 本当[ほんとう]に 楽[たの]しかった"
+    assert col.get_note(note.id).tags == []
+    assert reported == []
+
+
+def test_a_captions_line_breaks_are_written_br_and_its_text_escaped(col):
+    lines = sentence(col, "猫が来た<BR />明日また来る", *["ねこがきたあしたまたくる"] * 2)
+    escaped = sentence(col, "猫&amp;犬が来た", *["ねこいぬがきた"] * 2)
+
+    run(col, [lines, escaped])
+
+    assert furigana(col, lines) == "猫[ねこ]が 来[き]た<br>明日[あした]また 来[く]る"
+    assert furigana(col, escaped) == "猫[ねこ]&amp; 犬[いぬ]が 来[き]た"
+    assert col.get_note(lines.id).tags == col.get_note(escaped.id).tags == []
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))

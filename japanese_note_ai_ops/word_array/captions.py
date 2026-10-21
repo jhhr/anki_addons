@@ -15,6 +15,12 @@ differs from what is said in ways furigana set from the audio has to know about:
   runs at the bottom. subs2srs merged such overlapping events into one card and repeated
   their text, so the card's text and its audio no longer match.
 
+A field is HTML. A caption should come without markup but may hold some: subs2srs keeps an
+SRT's <font> colors and takes its line separator from a setting (<br /> as well as <br>), and
+Anki's editor adds <span style> and writes lines as <div> blocks. Sudachi reads a tag's name as
+words (フォント カラー), so a caption is read as plain text, its line breaks kept
+(`caption_lines`), and the furigana written from it holds no other markup.
+
 Each of these turned up in the furigana audio eval's show (`research/furigana_audio*.py`), which
 reads its captions through this module.
 """
@@ -25,6 +31,7 @@ import re
 from collections import Counter, defaultdict
 from typing import Callable, Iterable, NamedTuple
 
+from ..html_stripping import text_lines
 from ..kana_conv import to_hiragana
 
 KANJI = "一-鿿㐀-䶿々〆ヶ"
@@ -72,11 +79,18 @@ def is_noisy(jp: str) -> bool:
     return ASS_TAG_RE.search(jp) is not None
 
 
+def caption_lines(jp: str) -> list[str]:
+    """The card's caption lines as plain text: no ASS tags, and of its HTML only the line
+    breaks (`html_stripping.text_lines`)."""
+    return text_lines(ASS_TAG_RE.sub("", jp))
+
+
 def spoken_lines(jp: str) -> list[str]:
-    """The card's caption lines with what is not spoken taken out: ASS tags, speaker labels and
-    sound descriptions. Inline readings stay, `猫猫(マオマオ)`; a line left empty is dropped."""
+    """The card's caption lines with what is not spoken taken out: ASS tags, HTML, speaker
+    labels and sound descriptions. Inline readings stay, `猫猫(マオマオ)`; a line left empty is
+    dropped."""
     out = []
-    for line in ASS_TAG_RE.sub("", jp).split("<br>"):
+    for line in caption_lines(jp):
         line = UNSPOKEN_RE.sub("", line).strip(" 　")
         if line:
             out.append(line)
@@ -132,7 +146,7 @@ def all_inline_readings(jp: str, base: BaseFinder = whole_run) -> list[InlineRea
     """Every inline reading of a card, labels' included: a name read in a label (（羅門(ルォメン)）)
     is read so wherever it is spoken."""
     found: list[InlineReading] = []
-    for line in ASS_TAG_RE.sub("", jp).split("<br>"):
+    for line in caption_lines(jp):
         found.extend(split_readings(line, base)[1])
     return found
 

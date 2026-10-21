@@ -21,6 +21,17 @@ class CleaningTest(unittest.TestCase):
             captions.spoken_lines("（白鈴）あら 猫猫 （猫猫）ん？"), ["あら 猫猫 ん？"]
         )
 
+    def test_html_is_no_speech_but_its_line_breaks(self):
+        # A caption should hold no markup, but an SRT's colors, an editor's styles and <div>
+        # lines, and a line break written otherwise than <br>, all reach a field
+        jp = (
+            '<font color="#ffff00">猫猫(マオマオ)</font><br />（猫猫）<i>ん？</i><BR>'
+            '<div><span style="color: rgb(0, 0, 0);">薬&amp;毒&nbsp;だ</span></div>'
+        )
+        self.assertEqual(captions.spoken_lines(jp), ["猫猫(マオマオ)", "ん？", "薬&毒 だ"])
+        readings = captions.all_inline_readings("<b>猫猫</b>(マオマオ)")
+        self.assertEqual([(r.surface, r.reading) for r in readings], [("猫猫", "まおまお")])
+
     def test_noisy_cards_have_ass_tags(self):
         self.assertTrue(captions.is_noisy("これじゃ {\\an8}（客）おお～っ これじゃ"))
         self.assertFalse(captions.is_noisy("（猫猫）ん？"))

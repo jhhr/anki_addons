@@ -137,6 +137,18 @@ class WrittenTest(unittest.TestCase):
         self.assertEqual([r.line for r in result.readings], [0, 0, 1])
 
 
+    def test_html_is_left_out_but_its_line_breaks_and_the_text_written_escaped(self):
+        # The tokenizer is given the text alone, so no tag's name is read as speech
+        caption = '<font color="#ffff00">（猫猫）他の人は</font><br />猫猫(マオマオ)'
+        result = furigana(caption, "ほかのひとわまおまお", "ホカノヒトワマオマオ")
+        self.assertEqual(result.texts, ["他の人は", "猫猫"])
+        self.assertEqual(result.text, "他[ほか]の 人[ひと]は<br>猫猫[まおまお]")
+        heard = "ほかのひとわどこにいるの"
+        result = furigana("他の人は&lt;どこ&gt;&amp;にいるの", heard, heard)
+        self.assertEqual(result.texts, ["他の人は<どこ>&にいるの"])
+        self.assertEqual(result.text, "他[ほか]の 人[ひと]は&lt;どこ&gt;&amp;にいるの")
+
+
 class ReviewTest(unittest.TestCase):
     def test_models_hearing_two_readings_leave_the_word_with_both(self):
         result = furigana(LINE, "ほかのひとわどこにいるの", "たのひとわどこにいるの")
