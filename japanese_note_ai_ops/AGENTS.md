@@ -339,7 +339,8 @@ cheap no-op and nothing is recorded.
   provider drops a parameter its model does not take (Anthropic's temperature fallback, OpenAI's
   fixed-temperature models, the claude CLI). `capture_store.research_cache_key(model, prompt)`
   is the research scripts' answer cache key (`judge_eval.prompt_key` and its siblings); no
-  column holds it.
+  column holds it. A transcription sends no prompt: its `request_key` holds the clip's name and
+  sha1, its `prompt_key` names its model only, and `dev/export_evals.py` writes it no `key`.
 - Log ids: every line of the addon's log carries `[r<run> n<note> c<call>]`, only the ids there
   are (`n` shows with capture off too), or `[-]`. Each captured call ends with
   `call <id> <kind> <outcome> <seconds>s`, the line that names its row, logged at INFO inside
@@ -800,7 +801,8 @@ against the labels.
   widgets: `load_with_real_qt()` loads the dialog module a second time with an `aqt.qt` built
   from PyQt6, for that load only, then restores `sys.modules`; without PyQt6 those tests
   skip. Copy it for another dialog rather than un-stubbing the suite.
-- Capture: `test_capture_store.py` (the file, its migration, writer, prune, keys),
+- Capture: `test_capture_store.py` (the file, its migration, writer, prune, keys, and the
+  key `dev/export_evals.py` writes),
   `test_capture.py` (the API), `test_capture_calls.py` (`get_response` through each provider
   over a fake session or Popen), `test_capture_runs.py` (a real `selected_notes_op` run, and
   `notes_run` called directly as a script does), `test_capture_notes.py` (a notes run's records

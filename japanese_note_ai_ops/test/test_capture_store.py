@@ -22,7 +22,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
-from addon_modules import load_ops_module
+from addon_modules import load_addon_module, load_ops_module
 
 capture_store = load_ops_module("capture_store")
 diagnostics = load_ops_module("diagnostics")
@@ -934,6 +934,35 @@ class ImportTests(unittest.TestCase):
                 continue
             for name in names:
                 self.assertIn(name.split(".")[0], sys.stdlib_module_names)
+
+
+
+class ExportEvalsTest(unittest.TestCase):
+    """dev/export_evals.py's rows: a call's research key, and none for a call with no prompt."""
+
+    def test_a_call_without_a_prompt_gets_no_research_key(self):
+        export_evals = load_addon_module("export_evals", subdir="dev")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.sqlite3"
+            with closing(sqlite3.connect(path)) as connection, connection:
+                for statement in capture_store._schema_statements():
+                    connection.execute(statement)
+                for kind, model, prompt, inputs in (
+                    ("kanjify.sentence", "terminal-x", "Kanjify: 他の人", {"sentence": "他の人"}),
+                    # A transcription: the clip goes in its place, named in the inputs
+                    ("transcribe.audio", "local-ruby-mora", "", {"audio": "a.opus", "sha1": "1"}),
+                    ("transcribe.audio", "local-ruby-mora", "", {"audio": "b.opus", "sha1": "2"}),
+                ):
+                    connection.execute(
+                        "INSERT INTO calls (v, kind, model, prompt, inputs_json, response_json,"
+                        " outcome) VALUES (1, ?, ?, ?, ?, '{}', 'ok')",
+                        (kind, model, prompt, json.dumps(inputs)),
+                    )
+            rows = list(export_evals.rows(path, ["kanjify.sentence", "transcribe.audio"]))
+        keys = [row["key"] for row in rows]
+        self.assertEqual(
+            keys, [capture_store.research_cache_key("terminal-x", "Kanjify: 他の人"), None, None]
+        )
 
 
 if __name__ == "__main__":
