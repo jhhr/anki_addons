@@ -199,6 +199,18 @@ class AudioFuriganaPhaseTests(unittest.TestCase):
             ],
         )
 
+    def test_the_capture_runs_row_names_each_audio_phase_by_its_op(self):
+        base_ops = load_ops_module("base_ops")
+        self.assertEqual(
+            base_ops._op_names(ops.new_note_phases(FURIGANA_TYPE)),
+            [
+                "bulk_transcribe_notes_op",
+                "bulk_set_furigana_op",
+                "bulk_new_note_all_ops",
+                "bulk_judge_sentence_notes_op",
+            ],
+        )
+
     def test_without_transcripts_the_run_is_as_before(self):
         self.assertEqual(self.names(TWO_TYPE), ["New note ops", "Judging words matchability"])
         # A transcription field named by a list in a hand-edited config is none: it used to

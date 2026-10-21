@@ -226,6 +226,9 @@ def audio_furigana_phase(name: str, bulk_op: Callable[..., Any]) -> OpPhase:
         ]
         return await bulk_op(col, wanted, undo_label=run_undo_label(notes), **kwargs)
 
+    # The capture store's run row names a phase by its function (base_ops._op_names): the op's,
+    # or both audio phases were "phase" there, and a query by op name missed these runs
+    phase.__name__ = getattr(bulk_op, "__name__", phase.__name__)
     return OpPhase(name, phase)
 
 
