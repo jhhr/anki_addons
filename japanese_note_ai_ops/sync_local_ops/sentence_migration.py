@@ -14,8 +14,8 @@ name: by the time the migration runs the vocab block names no sentence fields, a
 the vocab notes' old ones by the sentence block's names. Free of anki and aqt, so all of it is
 tested on hand-written arrays.
 
-Terms, as in the plan of this work: a *source* is a vocab note without `new_matched_jp_word`,
-one the user added, and the sentences that move are the sources'. A note with the tag is one the
+Terms: a *source* is a vocab note without `new_matched_jp_word`, one the user added, and the
+sentences that move are the sources'. A note with the tag is one the
 match op made, holding a copy of the sentence it was found in, and the migration leaves it
 alone: it gets no example and loses no tag, and a sentence only such notes hold gets no sentence
 note. Its link ID is still read, since the sources' arrays link it by that. A *sentence key* is
