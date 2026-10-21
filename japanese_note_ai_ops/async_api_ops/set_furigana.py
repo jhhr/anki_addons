@@ -38,7 +38,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -59,7 +58,7 @@ from ..configuration import (
 )
 from ..generator_resources import with_generator_resources
 from ..kana_conv import to_hiragana
-from ..note_roles import SENTENCE_ROLE, note_type_search
+from ..note_roles import SENTENCE_ROLE, note_type_search, search_escape
 from ..utils import get_field_config
 from ..word_array import furigana_arbiter, jmdict_index
 from ..word_array.audio_furigana import Furigana, Reading, audio_furigana, has_doubt
@@ -84,8 +83,6 @@ NAMES_FILE = os.path.join(ADDON_USER_FILES_DIR, "show_names.json")
 # Of the transcripts, how many must hear a reading for it to be written
 QUORUM = 1
 ARBITER_KIND = "furigana_arbiter.note"
-# The characters Anki's search syntax gives a meaning inside a quoted `tag:` search
-_TAG_SEARCH_SPECIAL = re.compile(r'[\\"*_]')
 # How many of the notes of no show the run's report names in its search, as link_ids'
 # refusals do: a run over a whole deck tagged otherwise has thousands
 NO_SHOW_SEARCHED = 200
@@ -118,13 +115,11 @@ def show_of(note: Note) -> Optional[str]:
 
 
 def show_search(show: str) -> str:
-    """`"tag:ep::<show>::*"`: the notes tagged with an episode of the show, the characters Anki's
-    search reads as wildcards escaped as `note_roles.note_type_search` escapes them. As the
-    tag starts with `ep::`, no show's name is read as a search mode, as one starting the tag
-    was: a show "nc" found none of its notes, "re:zero" another show's too (checked against
-    Anki 26.09)."""
-    escaped = _TAG_SEARCH_SPECIAL.sub(r"\\\g<0>", show)
-    return f'"tag:{EPISODE_TAG_PREFIX}{escaped}::*"'
+    """`"tag:ep::<show>::*"`: the notes tagged with an episode of the show, its name escaped as
+    every search's names are (`note_roles.search_escape`). As the tag starts with `ep::`, no
+    show's name is read as a search mode, as one starting the tag was: a show "nc" found none
+    of its notes, "re:zero" another show's too (checked against Anki 26.09)."""
+    return f'"tag:{EPISODE_TAG_PREFIX}{search_escape(show)}::*"'
 
 
 def no_show_report(note_ids: Sequence[int]) -> Optional[str]:

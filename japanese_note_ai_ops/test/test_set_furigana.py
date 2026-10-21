@@ -372,9 +372,11 @@ class ShowTest(unittest.TestCase):
         # One show in two cases is one show to Anki, whose tags ignore case
         self.assertEqual(op.show_of(self.Tagged("EP::Kusuri::01", "ep::kusuri::02")), "Kusuri")
 
-    def test_the_shows_search_escapes_what_anki_reads_as_wildcards(self):
+    def test_the_shows_search_escapes_what_anki_reads_as_syntax(self):
         self.assertEqual(op.show_search("show"), '"tag:ep::show::*"')
         self.assertEqual(op.show_search('a_b*"c'), '"tag:ep::a\\_b\\*\\"c::*"')
+        # A colon as every search's names have it (note_roles.search_escape)
+        self.assertEqual(op.show_search("re:zero"), '"tag:ep::re\\:zero::*"')
 
     def test_the_report_of_the_notes_of_no_show_names_them_in_one_search(self):
         self.assertIsNone(op.no_show_report([]))

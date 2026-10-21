@@ -25,6 +25,8 @@ from collections.abc import Container, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol
 
+from .note_roles import search_escape
+
 # Card scripts parse the arrays as JSON, and a JavaScript number is exact only below 2**53: a
 # larger value would name another number there
 LINK_ID_LIMIT = 2**53
@@ -431,26 +433,22 @@ SEARCH_KEYWORDS = frozenset(
     }
 )
 
-# What Anki reads as syntax in a field's name: `_` and `*` are wildcards (`a_b:1` also searches
-# a field "axb") and a lone backslash makes the search invalid. Escaped with a backslash, as
-# Anki's build_search_string does and as note_roles.note_type_search does for a note type's
-# name; `"` too, though Anki removes it from a field's name, as it removes `:`.
-_FIELD_NAME_SPECIAL = re.compile(r'[\\"*_]')
-
-
 def field_search(field_name: str, text: str) -> str:
     """`"<field>:<text>"`, a search term for the notes whose field `field_name` matches `text`.
 
     `text` is search syntax as given: digits find a field holding exactly those digits, and a
-    `*` in it stays a wildcard. The term is quoted, since field names have spaces. A field no
-    search can name (SEARCH_KEYWORDS) raises ValueError: its term would search something else.
+    `*` in it stays a wildcard. The term is quoted, since field names have spaces. The name is
+    escaped as Anki's build_search_string escapes it (`note_roles.search_escape`): `_` and `*`
+    are wildcards (`a_b:1` also searches a field "axb") and a lone backslash makes the search
+    invalid; Anki removes `"` and `:` from a field's name. A field no search can name
+    (SEARCH_KEYWORDS) raises ValueError: its term would search something else.
     """
     if field_name.lower() in SEARCH_KEYWORDS:
         raise ValueError(
             f'No search can name the field "{field_name}": Anki reads "{field_name}:" as a'
             " search of its own."
         )
-    return '"' + _FIELD_NAME_SPECIAL.sub(r"\\\g<0>", field_name) + ":" + text + '"'
+    return '"' + search_escape(field_name) + ":" + text + '"'
 
 
 def link_ids_search(field_name: str, link_ids: Iterable[int]) -> str:
