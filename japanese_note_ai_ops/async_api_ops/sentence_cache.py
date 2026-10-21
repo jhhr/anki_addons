@@ -1,9 +1,11 @@
 """The sentences a note's word appears in, looked up once per note rather than once per ask.
 
-`get_sentences_for_note` asks the collection which *other* notes list this note's id in their
-`sentence-vocab-list` field. That is a leading-wildcard match on a note field, so it is a
-whole-collection scan by the same argument as every other one here - 0.389s measured, and no
-index exists or can exist for it.
+`get_sentences_for_note` asks the collection which *other* notes list this note's link ID
+(link_ids.py) in their `sentence-vocab-list` field (in the two-type layout, which notes of its
+sentence type do, other than its example sentence note: the search is built there and the cache
+only runs it, keyed by the asking note's note id, which names one link ID for the run). That is
+a leading-wildcard match on a note field, so it is a whole-collection scan by the same argument
+as every other one here - 0.389s measured, and no index exists or can exist for it.
 
 It is not asked often, but it is asked about the same handful of notes over and over. Three
 runs, counted:
@@ -30,9 +32,10 @@ which notes mention a note id cannot change while the run is going.
 
 Two things beyond a plain dict:
 
-- **What is memoised is the other notes' sentences, not the answer.** The two call shapes
-  differ by `exclude_self`, which decides only whether the asking note's own sentence goes on
-  the front. Memoising the returned value would have the two callers poison each other.
+- **What is memoised is the other notes' sentences, not the answer.** The own sentence on the
+  front comes from the note object the caller hands in, which can be the run's edited copy, or
+  from the caller itself (`own_sentence`); the others come from the collection, which the run
+  does not change. Memoising the returned value would hand one caller's to the next.
 - **Single flight**, because the callers arrive from `asyncio.to_thread` and several hundred
   tasks are in flight: two tasks that want the same note id would otherwise both scan. The
   waiter blocks on the leader's lock rather than starting a second 0.389s pass.
