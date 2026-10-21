@@ -28,6 +28,7 @@ CONFIG = {
     "transcribe_models": ["local-kana-anime-whisper", "local-ruby-mora"],
 }
 CLIP = b"OggS clip bytes"
+CLIP_TAG = "[sound:clip.opus]"
 
 
 class Note:
@@ -236,21 +237,31 @@ class BulkServerCheckTest(unittest.TestCase):
 
     def test_notes_transcribed_already_need_no_server(self):
         both = "kana-anime-whisper: たのひとわ<br>ruby-mora: タノヒトワ"
-        result, ran, reported = self.run_bulk([Note({"Heard": both}, note_id=1)])
+        result, ran, reported = self.run_bulk([Note({"Audio": CLIP_TAG, "Heard": both}, 1)])
         self.assertEqual((result, ran, reported), ("ran", [1], []))
 
+    def test_a_note_without_a_clip_needs_no_server(self):
+        # One added by hand: no clip, so no line either, and nothing to send
+        both = "kana-anime-whisper: たのひとわ<br>ruby-mora: タノヒトワ"
+        notes = [Note({"Audio": CLIP_TAG, "Heard": both}, 1), Note({"Audio": "", "Heard": ""}, 2)]
+        result, ran, reported = self.run_bulk(notes)
+        self.assertEqual((result, ran, reported), ("ran", [1, 2], []))
+
     def test_a_note_lacking_a_line_stops_the_run_when_the_server_is_down(self):
-        notes = [Note({"Heard": "kana-anime-whisper: たのひとわ"}, note_id=2)]
+        notes = [Note({"Audio": CLIP_TAG, "Heard": "kana-anime-whisper: たのひとわ"}, note_id=2)]
         result, ran, reported = self.run_bulk(notes)
         self.assertEqual((result, ran), (None, []))
         self.assertEqual(reported[0].args[0], "The server does not answer")
 
     def test_a_line_lacking_is_one_of_the_configs_transcribers(self):
-        self.assertTrue(op.lacks_transcript(CONFIG, Note({"Heard": ""})))
+        self.assertTrue(op.lacks_transcript(CONFIG, Note({"Audio": CLIP_TAG, "Heard": ""})))
         every = "x: a<br>ruby-mora: b<br>kana-anime-whisper: c"
-        self.assertFalse(op.lacks_transcript(CONFIG, Note({"Heard": every})))
+        self.assertFalse(op.lacks_transcript(CONFIG, Note({"Audio": CLIP_TAG, "Heard": every})))
+        # One a note without a clip could never get
+        self.assertFalse(op.lacks_transcript(CONFIG, Note({"Audio": "", "Heard": ""})))
         # A field the note lacks is asked about, and the op says why it cannot be
         self.assertTrue(op.lacks_transcript(CONFIG, Note({})))
+        self.assertTrue(op.lacks_transcript(CONFIG, Note({"Heard": ""})))
         # So is one a hand-edited config names by a list, which raised TypeError before a run
         listed = {SENTENCE: {**CONFIG[SENTENCE], "sentence_transcription_field": ["Heard"]}}
         self.assertTrue(op.lacks_transcript(listed, Note({"Heard": every})))

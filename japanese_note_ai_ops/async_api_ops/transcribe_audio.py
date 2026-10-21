@@ -160,15 +160,21 @@ def transcribe_note(
 
 
 def lacks_transcript(config: dict, note: Note) -> bool:
-    """Whether a note's transcript field lacks the line of one of the config's transcribers,
-    so that a run asks for one. A note whose field cannot be read counts: `transcribe_note`
+    """Whether a run asks a transcriber about the note, as `transcribe_note` decides it: its
+    transcript field lacks the line of one of the config's transcribers, and its audio field
+    names a clip. A note added by hand names none, so it never gets a line and never lacks one
+    a run could get: counted, it made a run over a selection holding one need the server,
+    though nothing was sent. A note whose fields cannot be read counts: `transcribe_note`
     reports why."""
     note_type = note.note_type()
     name = note_type["name"] if note_type else ""
     field = configured_field(config, name, "sentence_transcription_field")
     if not field or field not in note:
         return True
-    return bool(lacking(transcribe_models(config), parse_transcripts(note[field])))
+    if not lacking(transcribe_models(config), parse_transcripts(note[field])):
+        return False
+    audio = configured_field(config, name, "sentence_audio_field")
+    return not audio or audio not in note or audio_file(note[audio]) is not None
 
 
 def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
