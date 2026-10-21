@@ -1056,6 +1056,41 @@ def _sentence_note_example(
     )
 
 
+def _give_sentence(
+    config: dict, match_op_args: MatchOpArgs, new_note: Note, sentence_link_id: int
+) -> Optional[EnAndJPSentence]:
+    """Give a new note the sentence its word was found in, for both new-note builders, each of
+    which first blanks what its note must not keep. Returns the cleaning's `own_sentence`.
+
+    In the one-type layout the processed note's four sentence fields, as a new note always got
+    them, and None: the cleaning reads them off the note, and an own sentence handed in would
+    change its prompts. In the two-type layout a vocab note holds no sentence, only its
+    example's translation, audio and link ID, the sentence note being processed, which is in
+    the collection (note_roles.copy_example), and the cleaning gets the target's sentence
+    (`_own_sentence`). The builders call this before any other note is renamed for the new
+    one: a field the settings name and a note lacks raises here."""
+    current_note = match_op_args["current_note"]
+    vocab_type = _two_type_vocab_type(match_op_args)
+    if vocab_type is None:
+        sentence_field = match_op_args["sentence_field"]
+        sentence_audio_field = match_op_args["sentence_audio_field"]
+        furigana_sentence_field = match_op_args["furigana_sentence_field"]
+        kanjified_sentence_field = match_op_args["kanjified_sentence_field"]
+        new_note[sentence_field] = current_note[sentence_field]
+        new_note[sentence_audio_field] = current_note[sentence_audio_field]
+        new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
+        new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
+        return None
+    copy_example(
+        config,
+        vocab_type,
+        sentence_note=current_note,
+        sentence_id=sentence_link_id,
+        vocab_note=new_note,
+    )
+    return _own_sentence(config, match_op_args)
+
+
 def create_new_note_without_matching(
     config: dict,
     log_prefix: str,
@@ -1082,15 +1117,11 @@ def create_new_note_without_matching(
     word_processed_furigana_field = match_op_args["word_processed_furigana_field"]
     word_sort_field = match_op_args["word_sort_field"]
     meaning_field = match_op_args["meaning_field"]
-    sentence_field = match_op_args["sentence_field"]
-    sentence_audio_field = match_op_args["sentence_audio_field"]
     furigana_sentence_field = match_op_args["furigana_sentence_field"]
-    kanjified_sentence_field = match_op_args["kanjified_sentence_field"]
     part_of_speech_field = match_op_args["part_of_speech_field"]
     english_meaning_field = match_op_args["english_meaning_field"]
     new_note_id_field = match_op_args["new_note_id_field"]
 
-    current_note = match_op_args["current_note"]
     note_type = match_op_args["note_type"]
     notes_to_add_dict = match_op_args["notes_to_add_dict"]
     notes_to_update_dict = match_op_args["notes_to_update_dict"]
@@ -1109,24 +1140,7 @@ def create_new_note_without_matching(
     new_note[word_kanjified_field] = word
     new_note[word_normal_field] = word
     new_note[word_reading_field] = reading
-    own_sentence: Optional[EnAndJPSentence] = None
-    if vocab_type is None:
-        new_note[sentence_field] = current_note[sentence_field]
-        new_note[sentence_audio_field] = current_note[sentence_audio_field]
-        new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
-        new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
-    else:
-        # A vocab note holds no sentence, only its example's translation, audio and link ID,
-        # the sentence note being processed, which is in the collection. Before any other note
-        # is renamed for this one: a field the settings name and a note lacks raises here
-        copy_example(
-            config,
-            vocab_type,
-            sentence_note=current_note,
-            sentence_id=sentence_link_id,
-            vocab_note=new_note,
-        )
-        own_sentence = _own_sentence(config, match_op_args)
+    own_sentence = _give_sentence(config, match_op_args, new_note, sentence_link_id)
     new_note_furigana = make_furigana_from_reading(word, reading)
     new_note[word_furigana_field] = new_note_furigana
     logger.debug(
@@ -1518,7 +1532,6 @@ def create_new_note_from_matched_note(
     word = match_op_args["word"]
     reading = match_op_args["reading"]
     multi_meaning_index = match_op_args.get("multi_meaning_index")
-    current_note = match_op_args["current_note"]
     notes_to_add_dict = match_op_args["notes_to_add_dict"]
     notes_to_update_dict = match_op_args["notes_to_update_dict"]
     all_generated_meanings_dict = match_op_args["all_generated_meanings_dict"]
@@ -1526,10 +1539,6 @@ def create_new_note_from_matched_note(
 
     word_list_field = match_op_args["word_list_field"]
     meaning_audio_field = match_op_args["meaning_audio_field"]
-    sentence_field = match_op_args["sentence_field"]
-    sentence_audio_field = match_op_args["sentence_audio_field"]
-    furigana_sentence_field = match_op_args["furigana_sentence_field"]
-    kanjified_sentence_field = match_op_args["kanjified_sentence_field"]
     meaning_field = match_op_args["meaning_field"]
     english_meaning_field = match_op_args["english_meaning_field"]
     word_sort_field = match_op_args["word_sort_field"]
@@ -1547,13 +1556,8 @@ def create_new_note_from_matched_note(
     new_note.set_tags_from_str("")
     new_note[meaning_audio_field] = ""
     new_note.add_tag("new_matched_jp_word")
-    own_sentence: Optional[EnAndJPSentence] = None
     if vocab_type is None:
         new_note[word_list_field] = ""
-        new_note[sentence_field] = current_note[sentence_field]
-        new_note[sentence_audio_field] = current_note[sentence_audio_field]
-        new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
-        new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
     else:
         # The copy brings along the copied note's example and, while the vocab type keeps the
         # fields, the sentence and array it held before the split: another note's sentence,
@@ -1561,14 +1565,7 @@ def create_new_note_from_matched_note(
         for field in _sentence_type_fields(config, match_op_args["note_type"]["name"]):
             if field in new_note:
                 new_note[field] = ""
-        copy_example(
-            config,
-            vocab_type,
-            sentence_note=current_note,
-            sentence_id=sentence_link_id,
-            vocab_note=new_note,
-        )
-        own_sentence = _own_sentence(config, match_op_args)
+    own_sentence = _give_sentence(config, match_op_args, new_note, sentence_link_id)
     new_note[meaning_field] = jp_meaning.strip() if jp_meaning else ""
     new_note[english_meaning_field] = en_meaning.strip() if en_meaning else ""
     # Its link ID from now on, in place of the copied note's: the array links it by this, and
