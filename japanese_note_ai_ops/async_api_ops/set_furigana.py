@@ -152,7 +152,8 @@ def read_names_file(path: str) -> dict[str, dict[str, str]]:
     """The names file's names by show, each surface's reading in hiragana: {} when there is no
     file. One that is not such JSON is reported and read as none. Read past a byte-order mark,
     which Notepad's "UTF-8 with BOM" and PowerShell 5's Out-File write, and which plain utf-8
-    reads as no JSON, every name of the file ignored."""
+    reads as no JSON, every name of the file ignored. A name that is blank is reported and left
+    out: it is found everywhere in a line (kanji_words)."""
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -165,9 +166,17 @@ def read_names_file(path: str) -> dict[str, dict[str, str]]:
         report_error(f'{path} is not {{"<show>": {{"<name>": "<reading>"}}}}: not used')
         return {}
     out: dict[str, dict[str, str]] = {}
+    blank = 0
     for show, names in data.items():
         if isinstance(names, dict):
-            out[show] = {s: to_hiragana(r) for s, r in names.items() if isinstance(r, str) and r}
+            blank += sum(not surface.strip() for surface in names)
+            out[show] = {
+                s: to_hiragana(r)
+                for s, r in names.items()
+                if s.strip() and isinstance(r, str) and r
+            }
+    if blank:
+        report_error(f"{path} has {blank} blank name(s), which are not used")
     return out
 
 

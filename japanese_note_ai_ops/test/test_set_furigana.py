@@ -451,6 +451,13 @@ class NamesFileTest(unittest.TestCase):
             {"show": {"響迂": "きょうう", "高順": "がおしゅん"}},
         )
 
+    def test_a_blank_name_is_reported_and_left_out(self):
+        names = {"show": {"": "まお", " ": "まお", "猫猫": "まおまお"}}
+        self.path.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(op.read_names_file(str(self.path)), {"show": {"猫猫": "まおまお"}})
+        self.assertEqual(len(self.reports), 1)
+        self.assertIn("2 blank name(s)", self.reports[0])
+
     def test_a_file_saved_with_a_byte_order_mark_is_read(self):
         names = {"show": {"響迂": "きょうう"}}
         self.path.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8-sig")
