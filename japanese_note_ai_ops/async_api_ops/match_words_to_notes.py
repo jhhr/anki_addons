@@ -2549,15 +2549,14 @@ def plan_word_array_matching(
     sentence_cache: SentenceCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]],
     log_prefix: str,
+    link_index_cache: LinkIndexCache,
     states: Iterable[MatchState] = (MatchState.MATCH,),
-    link_index_cache: Optional[LinkIndexCache] = None,
 ) -> Optional[NotePlan]:
     """Plan matching the words of a note's word array in `states`, by default the ones the
     judge made `["match"]` (see match_targets.states_to_match).
 
     `link_index_cache` holds the run's link indexes (link_lookup), which resolve a linked word
-    to its note when it is rated and a listed note's example sentence note; without one, the
-    plan reads its own the first time it needs one.
+    to its note when it is rated and a listed note's example sentence note.
 
     Each occurrence is its own task (match_single_word_in_word_tuple). Its result is kept
     by target index, and once every task is done the matched ids go into the elements'
@@ -2600,7 +2599,6 @@ def plan_word_array_matching(
         progress_updater.increment_counts(notes_done=1)
         return None
     vocab_note_type = vocab_type_of(config, note_type["name"])
-    link_indexes = link_index_cache if link_index_cache is not None else LinkIndexCache()
 
     def save_note():
         current_note = notes_to_update_dict.get(note.id, note)
@@ -2680,7 +2678,7 @@ def plan_word_array_matching(
                     word_note_index=word_note_index,
                     note_cache=note_cache,
                     sentence_cache=sentence_cache,
-                    link_index_cache=link_indexes,
+                    link_index_cache=link_index_cache,
                     cancel_state=cancel_state,
                 ),
             )
@@ -2708,7 +2706,7 @@ def plan_word_array_matching(
     ) -> bool:
         target = rate_targets[target_index]
         # The words link notes of the vocab type, by their link IDs
-        vocab_index = await link_indexes.get(config, vocab_note_type)
+        vocab_index = await link_index_cache.get(config, vocab_note_type)
         # A word target's capture task, as in match_op
         with capture.task_scope(f"{target.word}|{target.reading}"):
             quality = await rate_linked_word(
@@ -2819,9 +2817,9 @@ def match_words_to_notes_for_note(
     word_note_index_cache: WordIndexCache,
     note_cache: NoteCache,
     sentence_cache: SentenceCache,
+    link_index_cache: LinkIndexCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]] = None,
     reprocess_words: Optional[WithProcessed] = None,
-    link_index_cache: Optional[LinkIndexCache] = None,
 ) -> Optional[NotePlan]:
     """
     Plan the matching of words to notes for a single note.
@@ -2858,7 +2856,7 @@ def match_words_to_notes_for_note(
             instead of all words in the note.
         reprocess_words (str|None): When limit_words_and_readings is provided, which
             already-processed words to rematch as well. None matches unprocessed only.
-        link_index_cache (LinkIndexCache|None): The run's link indexes, shared by every note,
+        link_index_cache (LinkIndexCache): The run's link indexes, shared by every note,
             each read by the first task that needs it (plan_word_array_matching).
     """
     if not note:

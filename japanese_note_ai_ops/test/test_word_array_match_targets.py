@@ -377,6 +377,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
     def plan(
         self, note, arr, progress, updates, edited_nids, config=None, note_cache=None, **states
     ):
+        link_index_cache = states.pop("link_index_cache", None) or self.mwtn.LinkIndexCache()
         return self.mwtn.plan_word_array_matching(
             **states,
             config=config or self.config,
@@ -395,6 +396,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             word_note_index_cache=WordIndexCache(),
             note_cache=note_cache,
             sentence_cache=None,
+            link_index_cache=link_index_cache,
             limit_words_and_readings=None,
             log_prefix="",
         )
@@ -415,6 +417,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
             word_note_index_cache=None,
             note_cache=None,
             sentence_cache=None,
+            link_index_cache=self.mwtn.LinkIndexCache(),
         )
 
     def test_a_broken_array_is_tagged_and_the_note_counted_done(self):
@@ -536,6 +539,7 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
                 word_note_index_cache=None,
                 note_cache=None,
                 sentence_cache=None,
+                link_index_cache=self.mwtn.LinkIndexCache(),
                 **single_word,
             )
         return plans[0]["states"]
@@ -783,6 +787,7 @@ class TwoTypeMatchFieldsTests(unittest.TestCase):
             word_note_index_cache=WordIndexCache(),
             note_cache=None,
             sentence_cache=None,
+            link_index_cache=self.mwtn.LinkIndexCache(),
             limit_words_and_readings=None,
             log_prefix="",
         )
@@ -1075,6 +1080,7 @@ class CancelledMatchRunTests(unittest.TestCase):
             word_note_index_cache=WordIndexCache(),
             note_cache=None,
             sentence_cache=None,
+            link_index_cache=self.mwtn.LinkIndexCache(),
             limit_words_and_readings=None,
             log_prefix="",
         )
