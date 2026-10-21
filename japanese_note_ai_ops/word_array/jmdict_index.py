@@ -8,8 +8,8 @@ resources.ensure(); the parsed index is pickled next to it.
 import gzip
 import pickle
 import re
+import threading
 import xml.etree.ElementTree as ET
-from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -109,8 +109,23 @@ def build(gz_path: Path = JMDICT_GZ, spellings: Optional[dict] = None) -> dict[s
     return index
 
 
-@lru_cache(maxsize=1)
-def _data() -> tuple[dict[str, list[Entry]], dict[tuple, Spellings]]:
+Data = tuple[dict[str, list[Entry]], dict[tuple, Spellings]]
+_loaded: Optional[Data] = None
+_load_lock = threading.Lock()
+
+
+def _data() -> Data:
+    """The index and the spellings, loaded once: an op's worker threads ask for them at once,
+    and each loaded a copy of its own, a few hundred MB, before the first was done."""
+    global _loaded
+    if _loaded is None:
+        with _load_lock:
+            if _loaded is None:
+                _loaded = _load()
+    return _loaded
+
+
+def _load() -> Data:
     data = _load_pickle()
     if data is not None:
         return data

@@ -9,6 +9,8 @@ import gzip
 import hashlib
 import os
 import tempfile
+import threading
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -163,6 +165,32 @@ class JmdictBuildTests(TempDirTest):
                 ),
             },
         )
+
+
+class JmdictLoadTests(unittest.TestCase):
+    def test_threads_asking_at_once_load_the_index_once(self):
+        # An op's worker threads each loaded a copy of their own, a few hundred MB
+        loads = []
+        start = threading.Barrier(6)
+
+        def load():
+            loads.append(threading.get_ident())
+            time.sleep(0.05)
+            return {}, {}
+
+        def ask():
+            start.wait()
+            jmdict_index.spelling_readings("猫")
+
+        with mock.patch.object(jmdict_index, "_load", load), mock.patch.object(
+            jmdict_index, "_loaded", None
+        ):
+            threads = [threading.Thread(target=ask) for _ in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(len(loads), 1)
 
 
 if __name__ == "__main__":
