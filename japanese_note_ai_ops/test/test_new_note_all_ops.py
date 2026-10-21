@@ -116,12 +116,14 @@ class BulkOpRolesTests(unittest.TestCase):
 
     def run_bulk(self, config, notes):
         given_roles: dict[int, tuple] = {}
+        self.undo_label = None
 
         def in_note(config, note, *args):
             given_roles[note.id] = args[-1]
             return False
 
         async def bulk_notes_op(message, config, op, col, notes, *args, **kwargs):
+            self.undo_label = kwargs.get("undo_label")
             for note in notes:
                 op(config, note, {}, {})
             return [note.id for note in notes]
@@ -161,6 +163,8 @@ class BulkOpRolesTests(unittest.TestCase):
         self.assertEqual(report.call_count, 2)
         for call in report.call_args_list:
             self.assertIn("must name each other", call.args[0])
+        # The run's undo entry counts the selection, as the audio phases do when they come first
+        self.assertEqual(self.undo_label, "Running new note all ops for 4 notes.")
 
 
 FURIGANA_TYPE = {

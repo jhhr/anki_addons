@@ -121,6 +121,8 @@ async def bulk_new_note_all_ops(
         return
 
     message = MESSAGE
+    # Counted before the notes of no role are left out, as the audio phases count it
+    undo_label = run_undo_label(notes)
     processed_words_set: set[str] = set()
     all_generated_meanings_dict = load_meanings_dict_from_file()
     extract_words = extract_words_op()
@@ -174,7 +176,16 @@ async def bulk_new_note_all_ops(
         notes_to_add_dict=notes_to_add_dict,
         notes_to_update_dict=notes_to_update_dict,
         on_end=on_end,
+        undo_label=undo_label,
     )
+
+
+def run_undo_label(notes: Sequence[Note]) -> str:
+    """The name of the run's undo entry, by the notes selected. The first phase's entry is the
+    one the Undo menu shows for all of the run (base_ops.run_op_phases), and which phase comes
+    first depends on the config, so every phase that can be first names it so: the run over
+    one selection was "for 2 notes" or "for 1 notes", as the config kept transcripts or not."""
+    return f"{MESSAGE} for {len(notes)} notes."
 
 
 def judge_sentence_notes_op():
@@ -213,8 +224,7 @@ def audio_furigana_phase(name: str, bulk_op: Callable[..., Any]) -> OpPhase:
             for note in notes_of_role(config, notes, SENTENCE_ROLE, report=False)
             if wants_audio_furigana(config, note)
         ]
-        label = f"{MESSAGE} for {len(notes)} notes."
-        return await bulk_op(col, wanted, undo_label=label, **kwargs)
+        return await bulk_op(col, wanted, undo_label=run_undo_label(notes), **kwargs)
 
     return OpPhase(name, phase)
 

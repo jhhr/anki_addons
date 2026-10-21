@@ -323,6 +323,37 @@ def test_a_clip_is_the_file_anki_plays_for_its_sound_tag(col):
         assert transcribe_audio.audio_file(field) == played.sound_or_video, field
 
 
+@pytest.mark.parametrize("transcripts", [True, False])
+def test_the_runs_undo_name_counts_the_selection_whichever_phase_is_first(col, transcripts):
+    # The audio phases come first where the config keeps transcripts, and "New note ops" where
+    # it does not; a note of half a broken pair is left out of the run either way
+    stub = real_anki.install()
+    config = json.loads(json.dumps(NEW_NOTES_CONFIG))
+    config["Broken note"] = {"vocab_note_type": "Ghost note"}
+    if not transcripts:
+        del config[SENTENCE]["sentence_transcription_field"]
+    stub.addonManager.configs[PACKAGE] = config
+    real_anki.make_note_type(col, "Broken note", ["Sentence"])
+    said = "たのひとわどこにいるの"
+    notes = [
+        sentence(col, "他の人はどこにいるの", said, said),
+        real_anki.add_note(col, "Broken note", {"Sentence": "猫"}, deck_name="Sentences"),
+    ]
+
+    def answer(request: Any) -> Any:
+        if request.kind == "kanjify.sentence":
+            return {"kanjified_sentence": request.inputs["sentence"]}
+        if request.kind == "proper_nouns.sentence":
+            return {"proper_nouns": []}
+        if request.kind == "judge.word":
+            return {"reason": "", "decision": judge.DONT_MATCH}
+        raise AssertionError(f"not asked: {request.kind}")
+
+    run(col, notes, spec=new_note_all_ops_spec(), answer=answer)
+
+    assert col.undo_status().undo == "Running new note all ops for 2 notes."
+
+
 def test_a_note_without_its_transcripts_is_left_and_reported(col, reported):
     note = sentence(col, "他の人は", "たのひとわ")
 
