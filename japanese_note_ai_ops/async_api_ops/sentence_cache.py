@@ -32,9 +32,10 @@ which notes mention a note id cannot change while the run is going.
 
 Two things beyond a plain dict:
 
-- **What is memoised is the other notes' sentences, not the answer.** The two call shapes
-  differ by `exclude_self`, which decides only whether the asking note's own sentence goes on
-  the front. Memoising the returned value would have the two callers poison each other.
+- **What is memoised is the other notes' sentences, not the answer.** The own sentence on the
+  front comes from the note object the caller hands in, which can be the run's edited copy, or
+  from the caller itself (`own_sentence`); the others come from the collection, which the run
+  does not change. Memoising the returned value would hand one caller's to the next.
 - **Single flight**, because the callers arrive from `asyncio.to_thread` and several hundred
   tasks are in flight: two tasks that want the same note id would otherwise both scan. The
   waiter blocks on the leader's lock rather than starting a second 0.389s pass.

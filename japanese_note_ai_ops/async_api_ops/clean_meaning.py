@@ -99,17 +99,17 @@ def _example_sentence_link_id(
 def get_sentences_for_note(
     config: dict[str, str],
     note: Note,
-    exclude_self: bool = False,
     sentence_cache: Optional[SentenceCache] = None,
     note_cache: Optional[NoteCache] = None,
     own_sentence: Optional[EnAndJPSentence] = None,
 ) -> list[EnAndJPSentence]:
-    """The sentences this note's word appears in, its own first unless excluded.
+    """The sentences this note's word appears in, its own first.
 
     :param sentence_cache: The run's sentence cache, if the caller has one. What is cached is
-        the *other* notes' sentences: `exclude_self` decides only whether this note's own goes
-        on the front, so caching the return value would let the two call shapes poison each
-        other. Ops that run outside a bulk run pass nothing and scan every time.
+        the *other* notes' sentences: the own one on the front comes from the note object
+        handed in, which can be the run's edited copy, or is handed in itself (`own_sentence`),
+        so caching the return value could hand one caller's to another. Ops that run outside a
+        bulk run pass nothing and scan every time.
     :param note_cache: The run's fetched notes, if the caller has one. The sibling notes are
         fetched in one turn either way; through the cache, a note the run already holds costs
         no turn at all.
@@ -206,7 +206,7 @@ def get_sentences_for_note(
     # has no others, so its example is not looked up when its sentence is not wanted either.
     own_note_id: Optional[NoteId] = note.id
     if two_type:
-        wanted = note.id != 0 or (own_sentence is None and not exclude_self)
+        wanted = note.id != 0 or own_sentence is None
         example_link_id = (
             _example_sentence_link_id(config, note, note_type["name"]) if wanted else None
         )
@@ -215,14 +215,12 @@ def get_sentences_for_note(
         cur_note_sentences = [own_sentence]
     elif not two_type:
         cur_note_sentences = [make_en_and_jp_sentence(note)]
-    elif own_note_id is None or exclude_self:
+    elif own_note_id is None:
         cur_note_sentences = []
     else:
         cur_note_sentences = read_example_sentence(own_note_id)
     if note.id == 0 or word_link_id is None:
         # New note, nothing links it yet: even one holding an ID is not in any array saved
-        if exclude_self:
-            return []
         return cur_note_sentences
 
     links_to_note = field_search(word_list_field, f"*{word_link_id}*")
@@ -258,10 +256,7 @@ def get_sentences_for_note(
         other_sentences = sentence_cache.get(note.id, scan_for_other_sentences)
     else:
         other_sentences = scan_for_other_sentences()
-    if exclude_self:
-        # Copied, because the cached list belongs to the cache and every caller gets the same
-        # one; the callers below build on what they are handed.
-        return list(other_sentences)
+    # A new list: the cached one belongs to the cache, and the callers build on what they get
     return cur_note_sentences + list(other_sentences)
 
 
