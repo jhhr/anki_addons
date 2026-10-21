@@ -80,7 +80,7 @@ from .base_ops import (
 from .chain_types import ChainStep
 from .role_gate import notes_of_role
 from .run_errors import report_error
-from .transcribe_audio import audio_file, label, parse_transcripts, transcribe_models
+from .transcribe_audio import audio_file, label, lacking, parse_transcripts, transcribe_models
 
 logger = logging.getLogger(__name__)
 
@@ -349,10 +349,10 @@ def set_furigana_in_note(
         return False
     models = transcribe_models(config)
     heard = parse_transcripts(note[transcript_field])
-    lacking = [label(m) for m in models if label(m) not in heard]
-    if lacking:
+    missing = [label(model) for model in lacking(models, heard)]
+    if missing:
         report_error(
-            f'No transcript from {", ".join(lacking)} yet: run "Transcribe sentence audio" first'
+            f'No transcript from {", ".join(missing)} yet: run "Transcribe sentence audio" first'
         )
         return False
     show = shows.of(note, note_type["name"], sentence_field, caption)

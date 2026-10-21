@@ -68,6 +68,12 @@ class FieldTest(unittest.TestCase):
         self.assertEqual(op.audio_file("[sound:a b.opus][sound:c.mp3]"), "a b.opus")
         self.assertIsNone(op.audio_file(""))
 
+    def test_the_transcribers_whose_line_a_field_lacks(self):
+        heard = op.parse_transcripts("ruby-mora: ネコ<br>old-model: ねこ")
+        models = ["local-kana-anime-whisper", "local-ruby-mora", "gemini-x"]
+        self.assertEqual(op.lacking(models, heard), ["local-kana-anime-whisper", "gemini-x"])
+        self.assertEqual(op.lacking(models[1:2], heard), [])
+
     def test_a_local_transcribers_line_is_named_for_its_model(self):
         self.assertEqual(op.label("local-ruby-mora"), "ruby-mora")
         self.assertEqual(op.label("gemini-x"), "gemini-x")

@@ -88,6 +88,12 @@ def parse_transcripts(field: str) -> dict[str, str]:
     return out
 
 
+def lacking(models: Sequence[str], heard: dict[str, str]) -> list[str]:
+    """The transcribers of `models` whose line the field's lines `heard` (`parse_transcripts`)
+    do not hold: those a run asks, and whose lines "Set furigana from audio" waits for."""
+    return [model for model in models if label(model) not in heard]
+
+
 def format_transcripts(transcripts: dict[str, str], models: Sequence[str]) -> str:
     """The field's text: the configured transcribers' lines in the config's order, then any
     other the field held."""
@@ -120,7 +126,7 @@ def transcribe_note(
         return False
     models = transcribe_models(config)
     heard = parse_transcripts(note[transcript_field])
-    todo = [m for m in models if label(m) not in heard]
+    todo = lacking(models, heard)
     if not todo:
         return False
     name = audio_file(note[audio_field])
@@ -162,8 +168,7 @@ def lacks_transcript(config: dict, note: Note) -> bool:
     field = configured_field(config, name, "sentence_transcription_field")
     if not field or field not in note:
         return True
-    heard = parse_transcripts(note[field])
-    return any(label(m) not in heard for m in transcribe_models(config))
+    return bool(lacking(transcribe_models(config), parse_transcripts(note[field])))
 
 
 def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
