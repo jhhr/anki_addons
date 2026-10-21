@@ -20,8 +20,9 @@ what each hook does is decided in `note_hooks.py`. After a sync, the words of th
 MDX dictionary entries, translate, kanji mnemonic story, kanjify a furigana sentence, extract a
 **word array** from a sentence (rule-based: SudachiPy + JMdict, one LLM call for proper nouns),
 judge which words deserve a note, match words to vocab notes or create them, give each note a
-link ID of its own, and for the two-type layout move the sentences out of the vocab notes and
-refresh their example copies.
+link ID of its own, transcribe a sentence's audio clip with a local speech recognition server
+and set its furigana from the transcripts, and for the two-type layout move the sentences out
+of the vocab notes and refresh their example copies.
 Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 
 ## Map
@@ -197,7 +198,7 @@ file name and sha1 (kind `transcribe.audio`, `async_api_ops/transcribe_audio.py`
 There is no configured rate; throttling reacts to `retry-after`. Concurrency is
 memory-driven, with learned per-operation costs in `user_files/memory_estimates.json`.
 Never log, print or commit an API key, and never read the user's `meta.json` to find one.
-Every `get_response` call is recorded in the capture store, below.
+Every `get_response` and `get_transcript` call is recorded in the capture store, below.
 
 ### Capture store
 
@@ -216,7 +217,7 @@ cheap no-op and nothing is recorded.
 | table | one row is |
 | --- | --- |
 | `runs` | one `notes_run` (a chain step is one run): `label` (its done text), `ops_json`, `chain_step`, `note_count`, `config_json` (keys naming an API key, token, secret or password removed), `versions_json`, `log_path`, `started`/`ended`, `outcome` (`completed`, `cancelled`, `failed`, `abandoned` for a caught `RunCancelled`), `profile` (the Anki profile's name), `notes` (1 when it recorded its notes), `dropped` (a notes run's records lost: dropped at a full queue, or a note whose record could not be built; a replay needs 0). A call made outside any run opens an *implicit* run for itself alone (`implicit` 1, labelled with its kind): the editor hooks' calls are recorded that way |
-| `calls` | one `get_response`, retries included: `run_id`, `note_id`, `task_id`/`parent_task_id`, `kind`, `inputs_json`, `request_key`, `prompt_key`, `model`, `params_json`, `prompt`, `instructions_hash`/`schema_hash`, `response_raw` (the answer text before parsing), `response_json` (what `get_response` returned), `outcome`, `error`, `started` (seconds into the run), `latency_ms`, `attempts`, `usage_json`, `extra_json` (`corrected` when the corrector made the result), `context_json` (below) |
+| `calls` | one `get_response` or `get_transcript` call, retries included: `run_id`, `note_id`, `task_id`/`parent_task_id`, `kind`, `inputs_json`, `request_key`, `prompt_key`, `model`, `params_json`, `prompt`, `instructions_hash`/`schema_hash`, `response_raw` (the answer text before parsing), `response_json` (what `get_response` returned), `outcome`, `error`, `started` (seconds into the run), `latency_ms`, `attempts`, `usage_json`, `extra_json` (`corrected` when the corrector made the result), `context_json` (below) |
 | `blobs` | instructions, response schemas and snapshotted notes, stored once by sha1 |
 | `note_snapshots` | a notes run's note at one stage, once per run, note and stage: `run_id`, `note_id` (a new note's link ID before it is added; a made-up negative id when it holds none), `stage`, `t` (seconds into the run), `mid`, `note_hash` (the blob of `capture_notes.note_record`: id, guid, mid, fields by name, tags) |
 | `events` | a notes run's other facts, in the order recorded: `run_id`, `note_id`, `task_id`, `kind`, `t`, `payload_json` |
@@ -739,7 +740,7 @@ labels, sound descriptions and readings of their own (`猫猫(マオマオ)`), w
 (names, numbers with their counters and runs Sudachi cut, each taken whole): the op's own
 modules, so the eval reads a line as the op will. `furigana_audio_run.py` runs one
 transcriber over the clips into `runs/` with the models and loaders of the op's transcription
-server (`dev/transcribe_server.py`, below), in an environment of its own (PyTorch,
+server (`dev/transcribe_server.py`, above), in an environment of its own (PyTorch,
 transformers, Ruby-ASR's package, PyAV: none of them is a dev dependency here, and the scripts
 import them only when they run); `furigana_audio_score.py` scores the runs against the readings the captions
 give and the labels by ear, through the op's own check (`word_array/reading_check.py`: the
