@@ -181,12 +181,17 @@ class ReviewTest(unittest.TestCase):
         # line may be another line's speech
         self.assertEqual(result.text, "他[ほか？]の 人[ひと？]は 猫猫[まおまお]")
 
-    def test_no_transcripts_or_overlapping_captions_are_a_mismatch(self):
-        self.assertTrue(furigana(LINE).mismatched)
-        heard = "ほかのひとわどこにいるの"
-        result = furigana("{\\an8}" + LINE, heard, heard)
+    def test_no_transcripts_are_a_mismatch(self):
+        result = furigana(LINE)
         self.assertTrue(result.mismatched)
         self.assertEqual(result.text, "他[ほか？]の 人[ひと？]はどこにいるの")
+
+    def test_an_ass_tag_is_formatting(self):
+        # A line drawn at the top of the screen, said as written
+        heard = "ほかのひとわどこにいるの"
+        result = furigana("{\\an8}" + LINE, heard, heard)
+        self.assertFalse(result.mismatched)
+        self.assertEqual(result.text, "他[ほか]の 人[ひと]はどこにいるの")
 
     def test_a_draft_sudachi_could_not_read_is_offered_no_reading(self):
         result = furigana("響迂はどこにいるのかしら")

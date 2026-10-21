@@ -6,8 +6,8 @@ A sentence mined from a show's captions (`captions.py`) is drafted by Sudachi wo
 reading the dictionary has for its spelling or the show's list has for a name. Anything else
 goes to review. A word the captions read themselves (猫猫(マオマオ)) is written as they read
 it, which needs no audio. A transcript far from its caption (one the clip cuts off, lines spoken
-over each other) is no evidence for any word of the sentence, so all of them go to review, as do
-those of a caption of overlapping events (`captions.is_noisy`).
+over each other, a caption repeating the text of events subs2srs merged) is no evidence for any
+word of the sentence, so all of them go to review.
 
 A word in review is written with the readings to choose between in its brackets, joined by ？
 (`DOUBT`): its draft, then what else the transcripts heard there (`Reading.offered`),
@@ -40,7 +40,6 @@ from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
 from .captions import (
     KANJI_RE,
     BaseFinder,
-    is_noisy,
     kanji_numerals,
     spoken_lines,
     split_readings,
@@ -175,9 +174,7 @@ def audio_furigana(
     options = [choices(w.sudachi, licensed[i]) for i, w in enumerate(words)]
     hearings: dict[int, list[dict[str, bool]]] = {i: [] for i in placed}
     stretches: dict[int, list[str]] = {i: [] for i in placed}
-    # A caption of overlapping events says each of them twice (captions.is_noisy): no clip
-    # says that
-    mismatched = not transcripts or is_noisy(caption)
+    mismatched = not transcripts
     for transcript in transcripts:
         hyp = morae(transcript)
         cost, pairs = align(ref, hyp)

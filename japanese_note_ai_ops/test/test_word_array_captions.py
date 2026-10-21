@@ -32,10 +32,6 @@ class CleaningTest(unittest.TestCase):
         readings = captions.all_inline_readings("<b>猫猫</b>(マオマオ)")
         self.assertEqual([(r.surface, r.reading) for r in readings], [("猫猫", "まおまお")])
 
-    def test_noisy_cards_have_ass_tags(self):
-        self.assertTrue(captions.is_noisy("これじゃ {\\an8}（客）おお～っ これじゃ"))
-        self.assertFalse(captions.is_noisy("（猫猫）ん？"))
-
     def test_readings_are_taken_out_and_kept_by_place(self):
         text, readings = captions.split_readings("あら 猫猫(マオマオ) 緑青館(ろくしょうかん)に")
         self.assertEqual(text, "あら 猫猫 緑青館に")

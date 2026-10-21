@@ -234,6 +234,8 @@ class SelectTest(unittest.TestCase):
         self.assertEqual([(w.line, w.surface) for w in card.words], [(1, "薬")])
 
     def test_noisy_cards_and_cards_without_kanji_are_never_picked(self):
+        self.assertTrue(fa.is_noisy("これじゃ {\\an8}（客）おお～っ これじゃ"))
+        self.assertFalse(fa.is_noisy("（猫猫）ん？"))
         ids = {c.row.id for c in self.cards()}
         self.assertNotIn(row(6, "").id, ids)
         self.assertNotIn(row(7, "").id, ids)

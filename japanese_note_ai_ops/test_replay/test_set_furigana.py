@@ -149,9 +149,11 @@ def test_the_furigana_as_the_clip_says_it(col, reported):
         '<span style="color: rgb(0, 0, 0);">今日は<b>本当</b>に楽しかった</span>',
         "<i>今日は本当に楽しかった</i>",
         "<div>今日は本当に楽しかった<br></div>",
+        # An ASS tag: a line drawn at the top of the screen
+        "{\\an8}今日は本当に楽しかった",
     ],
 )
-def test_a_captions_html_is_neither_heard_nor_written(col, reported, caption):
+def test_a_captions_markup_is_neither_heard_nor_written(col, reported, caption):
     # Sudachi reads a tag's name as words (フォント カラー), which no clip says
     heard = "きょうわほんとうにたのしかった"
     note = sentence(col, caption, heard, heard)

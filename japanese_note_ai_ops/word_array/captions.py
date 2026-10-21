@@ -12,8 +12,11 @@ differs from what is said in ways furigana set from the audio has to know about:
   furigana. The word can follow other kanji, `白鈴姐(ねえ)` or `鈴麗公主(ひめ)`, so which of them
   the reading is for is a guess (`split_readings`' `base`);
 - ASS override tags (`{\\an8}`) mark a line drawn at the top of the screen while another one
-  runs at the bottom. subs2srs merged such overlapping events into one card and repeated
-  their text, so the card's text and its audio no longer match.
+  runs at the bottom. They are formatting, dropped as HTML is (below). subs2srs merged such
+  overlapping events into one card and repeated their text, so the card's text and its audio
+  no longer match: such a card is left to `audio_furigana`'s check of the transcripts against
+  the caption, which took 6 of the eval show's 12 for a mismatch (given transcripts that say
+  each repeated piece once).
 
 A field is HTML. A caption should come without markup but may hold some: subs2srs keeps an
 SRT's <font> colors and takes its line separator from a setting (<br /> as well as <br>), and
@@ -71,12 +74,6 @@ def kanji_numerals(text: str) -> str:
     a number is read and looked up in: Sudachi reads 10 digit by digit, イチレイ, and JMdict
     has 十日 (とおか) but no 10日."""
     return DIGITS_RE.sub(lambda m: kanji_number(int(m.group())), text)
-
-
-def is_noisy(jp: str) -> bool:
-    """A card whose text holds overlapping caption events, merged and repeated: its audio
-    says each once, so the text is no transcript of it."""
-    return ASS_TAG_RE.search(jp) is not None
 
 
 def caption_lines(jp: str) -> list[str]:

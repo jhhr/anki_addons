@@ -60,10 +60,16 @@ whole_run = captions.whole_run
 kanji_number = captions.kanji_number
 kanji_numerals = captions.kanji_numerals
 to_hiragana = captions.to_hiragana
-is_noisy = captions.is_noisy
 spoken_lines = captions.spoken_lines
 split_readings = captions.split_readings
 all_inline_readings = captions.all_inline_readings
+
+
+def is_noisy(jp: str) -> bool:
+    """Whether a card holds an ASS override tag. The op drops a tag as formatting, but in this
+    show the cards subs2srs merged from overlapping caption events, their text repeated, carry
+    one, so the selection leaves every tagged card out (41 of its 53 are said once as written)."""
+    return captions.ASS_TAG_RE.search(jp) is not None
 
 SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
 # A media column of a subs2srs export: its audio, snapshot, animated snapshot and video
