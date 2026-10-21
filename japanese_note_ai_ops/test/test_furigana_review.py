@@ -1,6 +1,6 @@
 """Whether a sentence note's furigana has been checked (async_api_ops/furigana_review.py): the
-one test kanjify, word extraction and "Run all ops for new notes" make before they read the
-furigana. Each op's use of it is in that op's tests."""
+one test kanjify, word extraction, the match op, the kanjify export and "Run all ops for new
+notes" make before they read the furigana. Each op's use of it is in that op's tests."""
 
 from __future__ import annotations
 

@@ -12,9 +12,9 @@ translation, the transcripts and what each heard at the word, answers a reading 
 reading is written where every model is sure of it and a transcript heard it there. A word
 still unsettled is written with the readings to choose between,
 方[ほう？かた] (`audio_furigana.doubt_furigana`), and the note is tagged `furigana-review`:
-kanjify and word extraction leave it alone until a person has fixed each such word and taken
-the tag off. Speaker labels and sound descriptions are not said, so the furigana leaves them
-out.
+kanjify, word extraction and the match op leave it alone, and the kanjify export leaves it out,
+until a person has fixed each such word and taken the tag off (`furigana_review`). Speaker
+labels and sound descriptions are not said, so the furigana leaves them out.
 
 Only a note whose furigana field is empty is written, so furigana a person typed or fixed is
 never replaced: empty the field to have it set again. A note needs a transcript from each of

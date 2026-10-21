@@ -236,10 +236,10 @@ heard it there. A word no line heard anything at (the clip stops before it) coul
 written so, and is not asked about; a note with only such words asks nothing. A word still unsettled is written with the readings to choose between in its
 brackets, joined by `？`: Sudachi's reading, then what the lines heard there, ` 方[ほう？かた]`.
 A word with nothing else heard has its one reading and a `？`, ` 薬[くすり？]`, and one Sudachi
-cannot read has the `？` alone. The note is tagged `furigana-review`. Kanjify and word
-extraction leave such a note alone: listen to the clip, leave each marked word with the reading
-said (` 方[かた]`), and take the tag off. A sentence whose furigana still holds a `？` is left
-alone too, tag or no tag.
+cannot read has the `？` alone. The note is tagged `furigana-review`. Kanjify, word extraction
+and "Match extracted words" leave such a note alone, and the kanjify export leaves it out:
+listen to the clip, leave each marked word with the reading said (` 方[かた]`), and take the tag
+off. A sentence whose furigana still holds a `？` is left alone too, tag or no tag.
 
 - `furigana_models`: Default `[]` (none). The models that settle the words the audio leaves in
   review; a reading is written only where all of them give it. On the eval's 400 cards the

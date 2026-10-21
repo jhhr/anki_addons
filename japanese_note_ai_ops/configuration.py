@@ -46,8 +46,9 @@ NO_DICTIONARY_ENTRY_TAG = "2-no-dictionary-entry"
 MEANINGS_GENERATED_TAG = "2-meanings-generated-to-json"
 MEANING_MAPPED_TAG = "2-note-mapped-to-generated-meaning"
 # "Set furigana from audio" tags a sentence note whose furigana holds a reading its audio did
-# not settle. Kanjify and word extraction read the furigana, so they leave the note alone
-# until a person has checked it and taken the tag off
+# not settle. Kanjify, word extraction and the match op read the furigana (the match op copies
+# it into new notes), so they leave the note alone, and the kanjify export leaves it out, until
+# a person has checked it and taken the tag off (async_api_ops/furigana_review.py)
 FURIGANA_REVIEW_TAG = "furigana-review"
 FURIGANA_REVIEW_LEFT = f'Left alone: tagged "{FURIGANA_REVIEW_TAG}", its furigana is unchecked'
 # ...and while a word of the furigana still offers readings to choose between, 方[ほう？かた]

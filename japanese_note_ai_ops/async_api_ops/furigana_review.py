@@ -5,8 +5,9 @@ furigana make before they do.
 between, 方[ほう？かた] (`word_array/audio_furigana.py`, `has_doubt`), and tags the note
 `furigana-review` (`configuration.FURIGANA_REVIEW_TAG`). A person listens, leaves each such
 word with the reading said and takes the tag off. Until then a reading in doubt read as said
-would be kanjified, extracted into the word array, or copied on, so kanjify and word extraction
-leave such a note alone, and "Run all ops for new notes" gives it neither.
+would be kanjified, extracted into the word array, or copied into the new notes of its words,
+so kanjify, word extraction and the match op leave such a note alone, "Run all ops for new
+notes" gives it neither kanjify nor extraction, and the kanjify training export leaves it out.
 
 A module of its own, light, so that the ops asking need nothing of set_furigana's: it imports
 only the tag and its messages, the doubt test and the config reader.
