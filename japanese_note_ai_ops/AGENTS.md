@@ -38,16 +38,16 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `split_compound_tag.py` | the `vocab::split-compound-word` sweep (see "word_array"): `tagged_compounds`, `list_compounds` (the `CollectionOp`'s body), `add_to_list` (the config write), `sweep`, the two sync hook handlers, `init_split_compound_tag()` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
-| `note_roles.py` | which configured note type plays which role (see "Sentence and vocab note types"): `is_sentence_type`/`is_vocab_type`, `vocab_type_of`/`sentence_type_of` (the type itself in the one-type layout), `layout_error` (the pre-flight message) and `LayoutError`, `role_error`/`roles_of` (what an op of a role may run on), `example_field_pairs`, `example_id_field`, `link_id_field` (`sentence_id_field`, else `new_note_id_field`), `copy_example` (a sentence note into a vocab note, every field checked before any write), `note_type_search` (the quoted, escaped `note:` term every typed search uses). Every function takes a type **name**. anki- and aqt-free |
-| `note_hooks.py` | what `__init__.py`'s note hooks do, decided without Anki so it can be tested: `ops_on_added_note`, `translates_on_unfocus`, `suspends_added_cards`. anki- and aqt-free |
-| `link_ids.py` | link IDs, what every link holds (see Invariants): `parse_link_id`, `link_id(value, note_id)`, `note_link_id` (a note in hand), `new_link_id(key, taken)` (16 digits from the key's sha1), `LinkIndex` (one type's IDs from (note id, field value) rows: `note_id(s)`, `in`, `duplicates`, `invalid`, `new_link_id`), `placeholder_holders`, `plan_id_fills`, `duplicates_error`/`DuplicateLinkIdsError`/`FILL_LINK_IDS`, `field_search` and `link_ids_search` (escaped; a field named like a search keyword refused). anki- and aqt-free |
+| `note_roles.py` | which configured note type plays which role (see "Sentence and vocab note types"): `is_sentence_type`/`is_vocab_type`, `vocab_type_of`/`sentence_type_of` (the type itself in the one-type layout), `layout_error` (the pre-flight message) and `LayoutError`, `role_error`/`roles_of` (what an op of a role may run on), `example_field_pairs`, `example_id_field`, `link_id_field` (`sentence_id_field`, else `new_note_id_field`), `copy_example` (a sentence note into a vocab note, every field checked before any write), `note_type_search` (the quoted, escaped `note:` term every typed search uses). Every function takes a type **name**, but `named_field(block, key)`: what a block names for a key, "" for nothing usable, which the match op and the migration read blocks with too. anki- and aqt-free |
+| `note_hooks.py` | what `__init__.py`'s note hooks do, decided without Anki so it can be tested: `skips_added_note(tags, op_adding)` (the add hook's first question, below), `ops_on_added_note` (the ops for a note a person added), `translates_on_unfocus`, `suspends_added_cards`; `NEW_MATCHED_TAG`, the tag on every note the match op makes, which the match op and the migration planner import. anki- and aqt-free |
+| `link_ids.py` | link IDs, what every link holds (see Invariants): `parse_link_id`, `link_id(value, note_id)`, `note_link_id` (a note in hand), `new_link_id(key, taken)` (16 digits from the key's sha1), `LinkIndex` (one type's IDs from (note id, field value) rows: `note_id(s)`, `in`, `duplicates`, `invalid`, `new_link_id`), `placeholder_holders`, `plan_id_fills`, `duplicates_error`/`DuplicateLinkIdsError`/`FILL_LINK_IDS`, `field_search` (one field's term, escaped; a field named like a search keyword, `SEARCH_KEYWORDS`, refused). anki- and aqt-free |
 | `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), `note_context(note)` names the note for errors and capture together |
 | `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation and pause. stdlib + `requests` only |
 | `async_api_ops/capture_store.py` | the capture store's SQLite file (`runs`, `calls`, `blobs`), its one writer thread, schema, `prune` and keys (`request_key`, `prompt_key`, `research_cache_key`). Recording methods only enqueue: `get_response` runs in hundreds of pool threads. Imports nothing of the addon's |
 | `async_api_ops/capture.py` | what the addon calls: `install`/`shutdown`, the run, note, task and call ContextVars and their scopes, `begin_run`/`end_run`, `call(...)` (one `calls` row), `note_attempt`/`note_response`/`note_outcome` for the providers, a notes run's `snapshot_note`, `event`, `reference_notes`, `note_added`, `scrub_config`, `CaptureContextFilter`. A cheap no-op until a store is installed. Imports only `capture_store`, so `api_client` and `terminal_client` can note their sends and outcomes through it |
 | `async_api_ops/capture_notes.py` | a notes run's records built from Anki notes and the collection (`note_record`, `fetch_unread`, `record_final`, `record_collection`, `MeaningsRecorder`); nothing outside a notes run. anki only under TYPE_CHECKING |
 | `async_api_ops/concurrency.py` | `ConcurrencyGate`, `MemoryEstimator`, `cpu_bound_section`; optional `psutil` |
-| `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run |
+| `async_api_ops/collection_access.py` | the one thread that owns collection reads during a run. `get_notes(ids, skip_gone=True)` (and `get_notes_async`) leaves out an id with no note, within the same one turn, logged, as the run's note cache asks; by default Anki's `NotFoundError` for it fails the whole batch |
 | `async_api_ops/word_index.py`, `note_cache.py`, `sentence_cache.py` | per-run read caches |
 | `async_api_ops/terminal_client.py`, `diagnostics.py` | `claude -p` subprocess provider (its usage limit pauses the run, an expired login or unusable model stops it); cancel watchdog and stack dumps |
 | `async_api_ops/chain_types.py` | `ChainStep(label, on_done, op_label)` (`.title` is "Step i/n: <op>"), `StepOutcome` and its `STEP_*` statuses, `fail_step(chain, error)`; aqt- and anki-free |
@@ -57,18 +57,18 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/progress_controls.py` | Pause/Resume and Cancel buttons in Anki's progress dialog, through private `mw.progress._win`; main thread; no buttons if Anki changes the dialog |
 | `async_api_ops/progress_errors.py` | `report_run_error(title, text) -> bool`: an error pane in that dialog; the first error widens it, progress and buttons on the left, the list on the right. State on the dialog, so a chain's steps share one pane and the next dialog starts clean. Main thread; False (nothing shown) off it or with no dialog, and the caller falls back to its own error box. Also `report_run_error_from_any_thread` (hops via `mw.taskman.run_on_main`; `run_errors` delivers through it), `report_exception(error, what, where)` (skips `Interrupted` and `RunCancelled`), and `show_run_end(text, parent, errors)`: the end message of a run that met errors, one box whose "Show errors" button opens them all in `showText` |
 | `async_api_ops/role_gate.py` | `notes_of_role(config, notes, role)`: the notes an op of one role may run on, the rest left out with one `run_errors` report per note type; `notes_passing` for any other refusal. anki- and aqt-free |
-| `async_api_ops/link_lookup.py` | link IDs read from the collection: `link_index(config, T, col=None)` (one SQL pass over a type), `LinkIndexCache` (a run's indexes, one per type), `find_note_ids`/`find_note_id` (one search, field and `nid:` together, the found notes' fields read back). Through `collection_access` on a run's worker threads; a sync op or hook passes `col`. A missing type or field, or one named like a search keyword: `LayoutError` |
+| `async_api_ops/link_lookup.py` | link IDs read from the collection: `link_index(config, T, col)` (one SQL pass over a type, a sync op's), `LinkIndexCache` (a run's indexes, one per type, read through `collection_access`), `find_note_id` (one ID: one search, field and `nid:` together, the found notes' fields read back; through `collection_access` on a run's worker threads, or the `col` it is given). A missing type or field, or one named like a search keyword: `LayoutError` |
 | `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 3250 lines |
 | `async_api_ops/kanjify_policy.md` | the kanjification policy, read at run time: kanjify_sentence's prompt holds it whole (see "word_array") |
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
-| `sync_local_ops/refresh_example_sentences.py` | "Refresh example sentences" (two-type only): a vocab note copies its example sentence note again; a gone example is replaced by the oldest sentence note whose array links the note, else the id is emptied and the note tagged `example-sentence-missing` |
+| `sync_local_ops/refresh_example_sentences.py` | "Refresh example sentences" (two-type only): a vocab note copies its example sentence note again; a gone example is replaced by the oldest sentence note whose array links the note, else the id is emptied and the note tagged `example-sentence-missing`. Which note links what comes from one SQL pass over the sentence type's arrays, made the first time a note's example is not found and kept for the run beside the type's link index: Anki cannot index a field's contents, so the search per note it replaced read every array each time |
 | `sync_local_ops/fill_link_ids.py` | "Fill link IDs": each selected note of a type with a link ID field left holding an ID of its own (a field holding none gets the note id; each holder of a duplicated ID but its keeper its own note id, or a generated `dup\|<note id>` one when another note holds that), and legacy placeholders in the arrays of the selected notes of the sentence role resolved. Report `user_files/fill_link_ids_<timestamp>.txt`, written before any change; one undo entry |
 | `sync_local_ops/sentence_migration.py`, `migrate_to_sentence_notes.py` | "Move sentences to sentence notes", single-use (see "Sentence and vocab note types"): the pure planner (`plan_migration`, `preflight_error`, the report's `CASES`; anki- and aqt-free) and the op that reads every vocab and sentence note in one SQL pass each, writes the report to `user_files/sentence_migration_<timestamp>.txt` and applies the plan (`SentenceMigration`, `migrate_spec()`) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
 | `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs, `sentence_migration_run.py` for the migration's practice run (every note of the vocab type, not `capture_run`'s notes holding an array; prints a summary naming the report). **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture or a corpus (by name from the test data checkout, below: `corpora/` holds the runs too big to replay strictly, where contending notes ask in lock order, which is timing) with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted), optionally a fixed free memory for the gate and the corpus's CopyAnywhere add definitions (`--copy-anywhere`, around the run only), and appends each run's figures, and the added notes' fields, to `user_files/benchmarks/<fixture>.jsonl` with the commit, the machine and the hash of the corpus's inputs. Each run's `work` (calls by kind, decisions, new notes, errors) is the same on any machine: `--record-work` writes it to the corpus's work.json, and every later run, on this machine or another, is checked against it (`work_as_recorded`). `--background N` adds N notes shaped like the corpus's with their Japanese moved into Hangul and their note ids and generated link IDs replaced (`replay.background_notes`): every scan and the word index pay for them as for a real collection's, no request can find one, and the run's work is the same with them (test_pipeline). A replay keeps the gate's learned per-task costs in memory (`replay.memory_estimates`), never in the user's `memory_estimates.json`: a benchmark's first run is cold, its repeats warm. `benchmark_compare.py` compares two sets of summaries of one profile and corpus by where the time went: async (planning, running the plans), collection (held seconds, turns), writes (the cleanup's, merges included) and hooks (the adds). Only `headless` installs the stub `mw`, and only over none or a stub, so the other dev modules import inside a running Anki too |
 | `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included, and that a hook writing `new_note_id_field` still leaves the new note holding its link ID (`base_ops.link_id_kept`, the note saved again within the run's undo step); `test_real_anki_replay.py` is opt-in (`JNAIO_REAL_ANKI_REPLAY=<fixture name or path>`, `JNAIO_REAL_ANKI_SCALE`, `JNAIO_REAL_ANKI_COPY_ANYWHERE`) and replays a fixture or corpus there (`replay.replay_in_anki`, the corpus's CopyAnywhere definitions attached by `before_run`, after the corpus is built; strict, the notes must match expected.json or expected_copy_anywhere.json), appending its figures and the added notes' fields to `user_files/benchmarks/<fixture>-real-anki.jsonl`; `test_real_anki_split_compound_tag.py` runs the `vocab::split-compound-word` sweep there: what Anki's searches find, the tags and their one undo step, the list in the config the real `AddonManager` reads, and that an older config copied back in the same hook call does not undo it. It calls the two handlers directly, because `media_sync_did_start_or_stop` still holds the handlers of main windows earlier tests closed |
-| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds), and does the same for a two-type match run (a new vocab note with its example copied, a failed add replayed in a stand-in note type); `test_migrate_to_sentence_notes.py` runs the migration in a made-up two-type collection (fields, arrays, tags, decks, suspension, one undo step, the add hook running nothing, a cancel then a rerun, the pre-flight); `test_sentence_note_ops.py` runs Refresh and Translate's copy to vocab notes; `test_link_lookup.py` pins what the link ID searches find and that the index and the lookups answer alike; `test_fill_link_ids.py` runs Fill over both types (copies, an empty field, placeholders, one undo step), after which the migration's pre-flight and find_missing pass; `test_find_missing_matched_note_ids.py` runs find_missing over link IDs; `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
+| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds), and does the same for a two-type match run (a new vocab note with its example copied, a failed add replayed in a stand-in note type); `test_migrate_to_sentence_notes.py` runs the migration in a made-up two-type collection (fields, arrays, tags, decks, suspension, one undo step, the add hook running nothing, a cancel then a rerun, the pre-flight); `test_sentence_note_ops.py` runs Refresh and Translate's copy to vocab notes; `test_meaning_group_search.py` runs the searches for a word's other meaning notes outside a match run (clean_meaning's, "Make meanings'"), with a sort field named with spaces and without; `test_link_lookup.py` pins what the link ID searches find and that the index and the lookups answer alike; `test_fill_link_ids.py` runs Fill over both types (copies, an empty field, placeholders, one undo step), after which the migration's pre-flight and find_missing pass; `test_find_missing_matched_note_ids.py` runs find_missing over link IDs; `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
 ### `__init__.py` order is load-bearing
@@ -82,10 +82,13 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 4. Hooks and menus are registered only when `MISSING_PACKAGE is None`.
 5. `install_rebuild_ui(...)`, unconditionally, so a broken install can still repair itself.
 
-In `run_op_on_add_note` the `new_matched_jp_word` tag check stays first; a comment records
-that checking later cost 25 minutes per bulk run. The `in_bulk_op()` exit comes right after it,
-before the note type and config are read: an op's cleanup adds on the run's thread inside its
-bulk op, and the migration adds thousands of notes the hook must leave alone.
+`run_op_on_add_note` starts with its one exit for a note an op adds, a return when
+`skips_added_note(note.tags, in_bulk_op())` (`note_hooks`) is true: the match op's
+`new_matched_jp_word` tag, or an add on the run's thread inside its bulk op, which is how an
+op's cleanup adds (the migration adds thousands of untagged notes the hook must leave alone).
+It stays first, before the log file, the note type and the config: a comment records that
+deciding later cost 25 minutes per bulk run. `test_note_hooks` reads the statement off the
+source with `ast` and fails when anything comes before it.
 
 ### An operation is three functions
 
@@ -390,7 +393,10 @@ cheap no-op and nothing is recorded.
 - Pass `context` when the answer refers to things by position (a numbered list of notes'
   meanings) or the call changes notes other than `note_id`: short snake_case keys, note ids as
   ints, read off the list as the prompt shows it (after any sort), and a line for the kind
-  above. Test that it names the note the op then changes.
+  above. Test that it names the note the op then changes. `translate.sentence` records none,
+  though in the two-type layout the op copies its answer into the vocab notes whose example the
+  sentence note is: which notes those are follows from the collection (their example id
+  field), not from the answer.
 - Build the prompt with a pure module-level builder from exactly those inputs (with no such
   extra, `prompt = builder(**inputs)`), and test that the builder given the recorded inputs,
   also after `canonical_json`'s round trip (it sorts dict keys), returns the prompt sent.
@@ -434,7 +440,19 @@ cheap no-op and nothing is recorded.
   (the words linked to them put back to `["match"]` by `clear_unadded_note_ids`, by their
   IDs, which no note will ever hold). The markers preparing either of the last two put on
   other notes are the tidying's, below. `new_notes_op` (the migration's) and the unlinking
-  always run to the end; a `new_notes_op` that raises fails the op after the unlinking.
+  always run to the end, after a raise in the dedupe or the adding too; a `new_notes_op` that
+  raises fails the op after the unlinking. Without that, a raise left the words of the notes
+  never added linked to IDs no note holds, which no later match run asks about again.
+  `add_new_notes` catches the raise, splits the notes as a cancel at that point would,
+  re-saves the notes an add hook wrote over (below), runs the two, then raises it, ahead of
+  any `new_notes_op` error (then only logged). A refused merge is such a raise: a hook that
+  wrote outside Anki's undo threw the queue away, the run's entry with it, so the writes after
+  it are each an undo step of their own (`merge_into_run`; before a raise a refused merge
+  raises as ever), and one undo no longer takes the whole run back. A note whose type the
+  config lacks, which the adding raises on, is skipped by `clear_unadded_note_ids`, so its
+  words stay linked to nothing. A raise skips the marker tidying (below), and a crash or a
+  kill runs none of this: "Find missing matched note ids" over the run's notes puts such
+  words back to be matched (config.md).
 - **A new note's link ID field is what makes its ID its own, and the add must not change
   it.** `col.add_note` runs every addon's `note_will_be_added` hook on the note first, and a
   hook can write that field: a CopyAnywhere definition filling it with `{{__Note_ID}}` writes
@@ -446,14 +464,15 @@ cheap no-op and nothing is recorded.
   what the hook wrote until then.
 - **The cleanup's last stage tidies the sort field markers** (`tidy_markers`, given the match
   op's `tidy_sort_field_markers`), after every other write, cancelled or not and with or
-  without notes to add. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
+  without notes to add; a raise out of `add_new_notes` passes it by, since nothing around that
+  call catches it. Every word a saved or added note carries `(kun)`/`(on)`/`(rN)`/`(mN)`
   for is read whole from the collection (`word_index.sort_base_note_ids`) and renumbered
   without gaps in creation (note id) order, meanings then readings, dropping a marker that
   tells nothing apart; the rules are the pure `sort_field_markers.tidy_word_markers`.
   Preparing a note renames its word's other notes, saved before the adding decides whether it
   will exist, so a note not added (cancelled, failed, a dedupe's duplicate) or a new reading
   whose meaning failed leaves such markers. This is the only thing that takes them back:
-  there is no record of renames to undo. It cannot be cancelled, and a raise only logs.
+  there is no record of renames to undo. It cannot be cancelled, and a raise in it only logs.
 - Cancellation is per run and per thread (`begin_run`, `join_run`, `end_run`); teardown never
   joins pool threads. `resize_run_executor` pokes the private `executor._max_workers`.
 - **A paused run starts no new task, phase, request or `claude` process**; what is in flight
@@ -581,9 +600,10 @@ is three functions"):
 
 - Match op: `get_match_fields` reads `SENTENCE_MATCH_FIELD_KEYS` from the processed sentence
   type's block and the rest from its vocab type's; `MatchOpArgs.vocab_note_type` names the
-  latter. A new note is of the vocab type, with `copy_example` from the processed note (a
-  CREATE NEW copy first blanks every field the sentence block names that it has), and is
-  cleaned with the target's highlighted sentence handed in (`own_sentence`). A candidate's
+  latter. A new note is of the vocab type, with `copy_example` from the processed note
+  (`_give_sentence`, which both new-note builders call; a CREATE NEW copy first blanks every
+  field the sentence block names that it has), and is cleaned with the target's highlighted
+  sentence handed in (`own_sentence`). A candidate's
   example in the prompt is its example sentence note's array (`_sentence_note_example`; `""`
   without one, since no `<b>` is stored). The cleanup's searches go through `_ArrayLinks`.
 - clean_meaning (`get_sentences_for_note`): the own sentence is the example note's, the others
@@ -606,8 +626,13 @@ another op's adds), `test_replay/test_pipeline.py`'s import of the tag list keys
 `test_replay/test_fill_link_ids.py`'s import of `collection_preflight_error` and its check that
 the migration's pre-flight passes after Fill, and the steps and the migration-only keys in
 config.md (`migration_move_tags`, `migration_copy_tags`; nothing
-then writes `sentence_seen_count_field`). Keep `replay.PRIVATE_BLOCK_KEYS` while a config may
-still hold the lists.
+then writes `sentence_seen_count_field`). `base_ops`' `new_notes_op` goes with it, since only
+the migration passes one: the parameter of `add_new_notes`, `notes_run` and
+`selected_notes_op`, `NotesRunSpec`'s field, the stage in `add_new_notes` with
+`new_notes_op_error` and its log "Error in new_notes_op, after the adding", and the tests and
+docstrings that pass or name it, most in `test/test_cleanup_new_notes.py` (`NewNotesOp` stays:
+`unadded_notes_op` and `tidy_markers_op` have that type). Keep `replay.PRIVATE_BLOCK_KEYS`
+while a config may still hold the lists.
 
 ## word_array
 
@@ -733,9 +758,10 @@ what such a session follows), writing the same result files.
   `test_op_registry.py` pins the menu's labels, order and wiring. `__init__.py`'s Edit-menu
   hook has no test.
 - Two note types: `test_note_roles.py` (roles, layouts, `copy_example`, the search term),
-  `test_note_hooks.py` (what each hook does; the hooks in `__init__.py` themselves have no
-  test), `test_role_gate.py` and `test_role_gating_ops.py` (every op's bulk function leaves the
-  other role's notes out), `test_new_note_all_ops.py`, `test_translate_field.py`,
+  `test_note_hooks.py` (what each hook does, and the add hook's first statement, read off
+  `__init__.py` with `ast`; the hooks themselves have no other test), `test_role_gate.py`
+  and `test_role_gating_ops.py` (every op's bulk function leaves the other role's notes
+  out), `test_new_note_all_ops.py`, `test_translate_field.py`,
   `test_sentence_migration.py` (the planner and pre-flight), `test_link_ids.py` (the link ID
   rules, the generator's numbers, the index and its keeper, `plan_id_fills`, the search terms),
   `test_fill_link_ids.py` (Fill's plan and report), and two-type tests (mostly
