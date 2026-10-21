@@ -10,8 +10,9 @@ and what a vocab note copies from its example sentence note.
 
 The one-type layout, one block with both roles naming no other type, is what every config held
 before the split and stays valid; in it each helper answers as the code did before: the type
-is its own vocab type and its own sentence type, the example copy maps every sentence field onto
-itself, and there is no example id field unless the block names one.
+is its own vocab type and its own sentence type, and there is no example id field unless the
+block names one. Nothing copies an example there (the match op's one-type new note takes four
+sentence fields of its own accord); the example copy would map every sentence field onto itself.
 
 Free of anki and aqt, unlike utils.py (which imports anki for `Note`): blocks are read straight
 from the config dict and a note is anything with item access and `in`, so all of it is tested on
@@ -350,8 +351,9 @@ def example_field_pairs(config: Mapping[str, Any], vocab_type_name: str) -> list
     type's block and its sentence type's block name, in SENTENCE_KEYS' order.
 
     In the two-type layout, the few fields a vocab note keeps a copy of (translation, audio);
-    in the one-type layout, every configured sentence field onto itself, which is what the match
-    op copies into a new note from the note its word was found in.
+    in the one-type layout, every configured sentence field onto itself. No caller asks there:
+    the match op's one-type new note copies the sentence, furigana, kanjified and audio fields
+    of the processed note itself and leaves the translation and extraction fields alone.
     """
     _, sentence_block, vocab_block = _example_blocks(config, vocab_type_name)
     return _field_pairs(sentence_block, vocab_block)
