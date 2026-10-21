@@ -115,9 +115,11 @@ from japanese_note_ai_ops.word_array import match_targets  # noqa: E402
 
 def user_config(overrides: Optional[Mapping[str, Any]] = None, model: Optional[str] = None) -> dict:
     """The config a run uses: config.json under meta.json's config, secrets removed, then
-    `overrides`; with `model`, every model key set to it. Raises ValueError when a model key
-    would reach an API provider rather than the claude CLI: a headless run is meant to cost
-    nothing but the subscription."""
+    `overrides`; with `model`, every model key set to it, after the overrides, and a list of
+    models that names any made that one model alone: the arbiter (`furigana_models`) of a run
+    with `model` is one model whatever `overrides` says, and it settles words a pair would
+    leave in review. Raises ValueError when a model key would reach an API provider rather
+    than the claude CLI: a headless run is meant to cost nothing but the subscription."""
     config: dict = json.loads((ADDON_DIR / "config.json").read_text(encoding="utf-8"))
     meta_path = ADDON_DIR / "meta.json"
     if meta_path.exists():
