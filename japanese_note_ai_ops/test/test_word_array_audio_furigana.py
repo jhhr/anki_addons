@@ -253,6 +253,16 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(result.text, "薬師[やくし？くすし]ならどこにいるのかしら")
 
 
+class WordFuriganaTest(unittest.TestCase):
+    def test_kana_around_a_word_are_left_out_of_its_brackets_katakana_at_its_end_too(self):
+        self.assertEqual(af.word_furigana("お茶", "おちゃ"), "お 茶[ちゃ]")
+        self.assertEqual(af.word_furigana("三つ", "みっつ"), " 三[みっ]つ")
+        self.assertEqual(af.word_furigana("十センチ", "じゅっせんち"), " 十[じゅっ]センチ")
+        self.assertEqual(af.word_furigana("十メートル", "じゅうめーとる"), " 十[じゅう]メートル")
+        # A reading that does not end in the katakana is one group, as before
+        self.assertEqual(af.word_furigana("十センチ", "じゅっ"), " 十センチ[じゅっ]")
+
+
 class DoubtTest(unittest.TestCase):
     def test_choices_split_as_the_draft_where_each_leaves_the_same_kana(self):
         self.assertEqual(af.doubt_furigana("開か", ["ひらか", "あか"]), " 開[ひら？あ]か")

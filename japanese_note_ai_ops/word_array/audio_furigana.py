@@ -65,6 +65,8 @@ Dictionary = Callable[[str], Iterable[str]]
 # Joins the readings a word in review is written with; no reading holds it
 DOUBT = "？"
 DOUBT_RE = re.compile(r"\[[^\]]*" + DOUBT + r"[^\]]*\]")
+# Katakana at the end of a word: a counter, 十センチ
+KATAKANA_TAIL_RE = re.compile(r"[ァ-ヺー]+$")
 # make_furigana_from_reading's furigana of a word that is one group: kana before it, the group,
 # kana after it (お 茶[ちゃ], 開[ひら]か)
 ONE_GROUP_RE = re.compile(
@@ -230,12 +232,23 @@ def furigana_line(text: str, readings: Sequence[Reading]) -> str:
         elif KANJI_RE.search(r.written):
             out.append(r.surface)
         else:
-            out.append(make_furigana_from_reading(r.surface, r.written))
+            out.append(word_furigana(r.surface, r.written))
         pos = r.end
     out.append(text[pos:])
     # Anki's furigana takes a space before a word as its start; at the line's start none is
     # needed, and the notes have none there
     return "".join(out).lstrip(" ")
+
+
+def word_furigana(surface: str, reading: str) -> str:
+    """A word's furigana, Anki's 漢字[かな], as make_furigana_from_reading writes it, which
+    leaves the word's kana out of the brackets: but for katakana at its end, which it takes in
+    with the rest (十センチ[じゅっせんち]), so they are left out here: 十[じゅっ]センチ."""
+    tail = KATAKANA_TAIL_RE.search(surface)
+    if tail and tail.start() and to_hiragana(reading).endswith(to_hiragana(tail.group())):
+        head = reading[: len(reading) - len(tail.group())]
+        return make_furigana_from_reading(surface[: tail.start()], head) + tail.group()
+    return make_furigana_from_reading(surface, reading)
 
 
 def doubt_choices(r: Reading) -> list[str]:
@@ -259,7 +272,7 @@ def doubt_furigana(surface: str, choices: Sequence[str]) -> str:
     def joined(readings: Sequence[str]) -> str:
         return DOUBT.join(readings) + (DOUBT if len(readings) < 2 else "")
 
-    groups = [ONE_GROUP_RE.fullmatch(make_furigana_from_reading(surface, c)) for c in choices]
+    groups = [ONE_GROUP_RE.fullmatch(word_furigana(surface, c)) for c in choices]
     shapes = {(m["head"], m["base"], m["tail"]) for m in groups if m}
     if choices and all(groups) and len(shapes) == 1:
         head, base, tail = shapes.pop()
