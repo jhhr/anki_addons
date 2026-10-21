@@ -601,8 +601,10 @@ is three functions"):
   "Transcribe sentence audio" and "Set furigana from audio" over the sentence notes with a clip
   and no furigana yet (`new_note_all_ops.audio_furigana_phase`,
   `set_furigana.wants_audio_furigana`), the first naming the run's undo entry
-  (`bulk_notes_op(undo_label=...)`); a note whose furigana awaits a check
-  (`set_furigana.unchecked_furigana`) then gets no kanjify or extraction, reported once.
+  (`bulk_notes_op(undo_label=...)`), the second leaving out without a word a note the first
+  left lacking a transcript (the first said why, a server down once); a note whose furigana
+  awaits a check (`set_furigana.unchecked_furigana`) then gets no kanjify or extraction,
+  reported once.
 
 **"Move sentences to sentence notes" is single-use.** It moves the one-type layout's sentences
 into sentence notes once: the user runs it after a practice run on a copy, by the steps in

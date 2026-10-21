@@ -201,7 +201,8 @@ a Python environment with PyTorch (the CUDA 12.6 build for a GTX 970 and other M
 made outside the add-on's folder, which an update of the add-on replaces, then, from
 `japanese_note_ai_ops/`, `python dev/transcribe_server.py --device cuda`. Its first start
 downloads the two models, about 5.5 GB, and for a moment takes about 7 GB of memory while it
-loads Ruby-ASR. A run that cannot reach the server stops at once and says so.
+loads Ruby-ASR. A run of "Transcribe sentence audio" that cannot reach the server stops at
+once and says so.
 
 - `transcribe_models`: Default `["local-kana-anime-whisper", "local-ruby-mora"]`. The models a
   clip is sent to, each `local-<model>` for one the server has loaded. The default pair is the
@@ -254,8 +255,10 @@ replaced. Empty the field to have it set again.
 "Run all ops for new notes" does both first, before kanjify and word extraction, which read the
 furigana, wherever a sentence note type has `sentence_transcription_field`: its notes with a
 clip and an empty furigana field are transcribed, which needs the server only when one of them
-still lacks a model's line, and their furigana is set. A note left for review gets no kanjify
-or word extraction in that run, and the run says so once per note.
+still lacks a model's line, and their furigana is set. When the server cannot be reached, the
+run says so once and goes on: the notes it could not transcribe get no furigana from it, and
+nothing more is said of them. A note left for review gets no kanjify or word extraction in that
+run, and the run says so once per note.
 
 The show's names: a show's captions give a name its reading at the first mention in an episode
 (`猫猫(マオマオ)`) and seldom after. The op reads the reading the show's captions give a name

@@ -246,6 +246,33 @@ class AudioFuriganaPhaseTests(unittest.TestCase):
         report.assert_not_called()
 
 
+    def test_the_furigana_phase_leaves_out_quietly_a_note_still_untranscribed(self):
+        # The transcription phase could not hear the second note's clip (the server down) and
+        # said so once: told to "run Transcribe sentence audio first", it would hear it again
+        given: dict = {}
+
+        def recorder(name):
+            async def bulk_op(col, notes, undo_label=None, **kwargs):
+                given[name] = [note.id for note in notes]
+                return "ran"
+
+            return bulk_op
+
+        heard = sentence(1)
+        heard.fields["Heard"] = "kana-anime-whisper: たのひとわ<br>ruby-mora: たのひとわ"
+        notes = [heard, sentence(2)]
+        with mock.patch.multiple(
+            ops,
+            mw=mock.DEFAULT,
+            bulk_transcribe_notes_op=recorder("transcribe"),
+            bulk_set_furigana_op=recorder("furigana"),
+        ) as patched:
+            patched["mw"].addonManager.getConfig.return_value = FURIGANA_TYPE
+            for phase in ops.new_note_phases(FURIGANA_TYPE)[:2]:
+                asyncio.run(phase.bulk_op(None, notes=notes, edited_nids=[]))
+        self.assertEqual(given, {"transcribe": [1, 2], "furigana": [1]})
+
+
 class JudgePhaseTests(unittest.TestCase):
     def test_the_judge_gets_the_sentence_notes_and_leaves_the_vocab_notes_silently(self):
         judged: list = []

@@ -323,6 +323,40 @@ def test_a_clip_is_the_file_anki_plays_for_its_sound_tag(col):
         assert transcribe_audio.audio_file(field) == played.sound_or_video, field
 
 
+def test_a_run_whose_server_is_down_says_so_once_and_goes_on(col, reported, monkeypatch):
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(NEW_NOTES_CONFIG))
+
+    class NoServer:
+        def get(self, url: str, timeout: Any = None) -> Any:
+            raise ConnectionError("[Errno 111] Connection refused")
+
+    def answer(request: Any) -> Any:
+        if request.kind == "kanjify.sentence":
+            return {"kanjified_sentence": request.inputs["sentence"]}
+        if request.kind == "proper_nouns.sentence":
+            return {"proper_nouns": []}
+        if request.kind == "judge.word":
+            return {"reason": "", "decision": judge.DONT_MATCH}
+        raise AssertionError(f"not asked: {request.kind}")
+
+    monkeypatch.setattr(transcribe_audio, "get_session", lambda provider: NoServer())
+    # The check is made, as in Anki, where no responder hears the clips
+    monkeypatch.setattr(transcribe_audio, "responder_active", lambda: False)
+    # A clip each and no transcript yet
+    new = [sentence(col, "他の人はどこにいるの"), sentence(col, "他の人は")]
+    typed = sentence(col, "他の人は", furigana="他[ほか]の 人[ひと]は")
+
+    run(col, [*new, typed], spec=new_note_all_ops_spec(), answer=answer)
+
+    # Said once, not again for each note as "run Transcribe sentence audio first"
+    [(_, text)] = reported
+    assert "does not answer" in text
+    assert [col.get_note(note.id)["Sentence furigana"] for note in new] == ["", ""]
+    # The rest of the run went on
+    assert col.get_note(typed.id)["Kanjified"] == "他[ほか]の 人[ひと]は"
+
+
 @pytest.mark.parametrize("transcripts", [True, False])
 def test_the_runs_undo_name_counts_the_selection_whichever_phase_is_first(col, transcripts):
     # The audio phases come first where the config keeps transcripts, and "New note ops" where

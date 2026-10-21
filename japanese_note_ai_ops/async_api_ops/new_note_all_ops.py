@@ -39,7 +39,7 @@ from .make_all_meanings import (
 from .role_gate import note_type_name, notes_of_role, notes_passing
 from .run_errors import report_error
 from .set_furigana import bulk_set_furigana_op, unchecked_furigana, wants_audio_furigana
-from .transcribe_audio import bulk_transcribe_notes_op
+from .transcribe_audio import bulk_transcribe_notes_op, lacks_transcript
 from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
 logger = logging.getLogger(__name__)
@@ -212,10 +212,15 @@ def audio_furigana_configured(config: dict) -> bool:
     )
 
 
-def audio_furigana_phase(name: str, bulk_op: Callable[..., Any]) -> OpPhase:
+def audio_furigana_phase(
+    name: str, bulk_op: Callable[..., Any], transcribed: bool = False
+) -> OpPhase:
     """`bulk_op` as a phase over the run's sentence notes whose furigana is to be set from their
     audio (`set_furigana.wants_audio_furigana`), its undo entry named for the run's: the first
-    phase's is the one the Undo menu shows for all of it."""
+    phase's is the one the Undo menu shows for all of it. With `transcribed`, only the notes
+    the phase before left with every transcript (`transcribe_audio.lacks_transcript`): one it
+    could not finish, the server down or a clip missing, was reported there, and "Set furigana
+    from audio" would tell each to "run Transcribe sentence audio first", the step just run."""
 
     async def phase(col: Collection, notes: Sequence[Note], **kwargs):
         config = mw.addonManager.getConfig(__name__) or {}
@@ -223,6 +228,7 @@ def audio_furigana_phase(name: str, bulk_op: Callable[..., Any]) -> OpPhase:
             note
             for note in notes_of_role(config, notes, SENTENCE_ROLE, report=False)
             if wants_audio_furigana(config, note)
+            and not (transcribed and lacks_transcript(config, note))
         ]
         return await bulk_op(col, wanted, undo_label=run_undo_label(notes), **kwargs)
 
@@ -242,7 +248,7 @@ def new_note_phases(config: dict) -> list[OpPhase]:
     if audio_furigana_configured(config):
         phases += [
             audio_furigana_phase("Transcribing sentence audio", bulk_transcribe_notes_op),
-            audio_furigana_phase("Setting furigana from audio", bulk_set_furigana_op),
+            audio_furigana_phase("Setting furigana from audio", bulk_set_furigana_op, True),
         ]
     return phases + [
         OpPhase("New note ops", bulk_new_note_all_ops),
