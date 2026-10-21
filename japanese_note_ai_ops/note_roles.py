@@ -423,8 +423,8 @@ def copy_example(
         )
     if id_field and sentence_id <= 0:
         raise ValueError(
-            f"Example sentence id {sentence_id} is not a note id: the sentence note has to be"
-            " added before a vocab note can link it."
+            f"Example sentence id {sentence_id} is not a link ID: a sentence note not added yet"
+            " has to hold one in its link ID field before a vocab note can name it."
         )
     for sentence_field, vocab_field in pairs:
         vocab_note[vocab_field] = sentence_note[sentence_field]

@@ -78,7 +78,7 @@ def new_note_link_id(note: "Note", config: Mapping[str, Any]) -> Optional[int]:
         if not field or field not in note:
             return None
         return parse_link_id(note[field])
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, TypeError):
         return None
 
 
