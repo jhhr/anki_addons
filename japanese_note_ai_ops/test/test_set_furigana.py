@@ -169,11 +169,11 @@ class OpTest(OpHarness):
         note = Note({"Sentence": LINE, "Heard": heard("ほかのひとわどこにいるの", "たのひとわどこにいるの")})
         self.assertEqual(self.run_op(note)[0], [True])
         self.assertEqual(note["Furigana"], "他[ほか？た]の 人[ひと]はどこにいるの")
-        self.assertEqual(note.tags, [op.REVIEW_TAG])
+        self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
 
     def test_a_review_tag_goes_when_the_furigana_is_set_again_and_settled(self):
         said = "ほかのひとわどこにいるの"
-        note = Note({"Sentence": LINE, "Heard": heard(said, said)}, tags=[op.REVIEW_TAG])
+        note = Note({"Sentence": LINE, "Heard": heard(said, said)}, tags=[op.FURIGANA_REVIEW_TAG])
         self.run_op(note)
         self.assertEqual(note.tags, [])
 
@@ -311,7 +311,7 @@ class ArbiterTest(OpHarness):
     def test_a_reading_every_model_gives_is_written(self):
         config = {SENTENCE: {**CONFIG[SENTENCE], "translated_sentence_field": "English"}}
         fields = {"Sentence": LINE, "Heard": self.TWO_WAYS, "English": "Where are the<br>others?"}
-        note = Note(fields, tags=[op.REVIEW_TAG])
+        note = Note(fields, tags=[op.FURIGANA_REVIEW_TAG])
         calls = self.ask(note, {m: answer("タ") for m in self.MODELS}, config)
         self.assertEqual(note["Furigana"], "他[た]の 人[ひと]はどこにいるの")
         self.assertEqual(note.tags, [])
@@ -328,13 +328,13 @@ class ArbiterTest(OpHarness):
         note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
         self.ask(note, {"first-model": answer("た"), "second-model": answer("ほか")})
         self.assertEqual(note["Furigana"], "他[ほか？た]の 人[ひと]はどこにいるの")
-        self.assertEqual(note.tags, [op.REVIEW_TAG])
+        self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
 
     def test_a_failed_call_settles_nothing_and_asks_no_further(self):
         note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
         calls = self.ask(note, {"second-model": answer("た")})
         self.assertEqual([model for model, _, _ in calls], ["first-model"])
-        self.assertEqual(note.tags, [op.REVIEW_TAG])
+        self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
 
     def test_no_word_in_review_asks_nothing(self):
         said = heard("ほかのひとわどこにいるの", "ほかのひとわどこにいるの")
@@ -345,7 +345,7 @@ class ArbiterTest(OpHarness):
         skipped = heard("のひとわどこにいるの", "のひとわどこにいるの")
         note = Note({"Sentence": LINE, "Heard": skipped})
         self.assertEqual(self.ask(note, {m: answer("ほか") for m in self.MODELS}), [])
-        self.assertEqual(note.tags, [op.REVIEW_TAG])
+        self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
 
     def test_the_models_of_the_config(self):
         self.assertEqual(op.arbiter_models({"furigana_models": [" a ", "", 3, "b"]}), ["a", "b"])
@@ -377,7 +377,7 @@ class NewNotesTest(unittest.TestCase):
 
     def test_furigana_awaiting_a_check_by_tag_or_by_a_word_still_marked(self):
         checked = Note({"Furigana": "他[ほか]の 人[ひと]は？"})
-        tagged = Note({"Furigana": "他[ほか]の"}, tags=[op.REVIEW_TAG])
+        tagged = Note({"Furigana": "他[ほか]の"}, tags=[op.FURIGANA_REVIEW_TAG])
         marked = Note({"Furigana": "他[ほか？た]の"})
         self.assertIsNone(op.unchecked_furigana(CONFIG, checked))
         self.assertIn("furigana-review", op.unchecked_furigana(CONFIG, tagged))

@@ -25,7 +25,11 @@ import replay
 from anki_shared.testing import real_anki
 from japanese_note_ai_ops.async_api_ops import base_ops, run_errors, set_furigana
 from japanese_note_ai_ops.async_api_ops.new_note_all_ops import new_note_all_ops_spec
-from japanese_note_ai_ops.configuration import REGENERATE_TAG
+from japanese_note_ai_ops.configuration import (
+    FURIGANA_REVIEW_LEFT,
+    FURIGANA_REVIEW_TAG,
+    REGENERATE_TAG,
+)
 from japanese_note_ai_ops.word_array import judge, resources
 
 pytestmark = pytest.mark.skipif(
@@ -145,7 +149,7 @@ def test_the_furigana_as_the_clip_says_it(col, reported):
     assert col.get_note(said.id).tags == [SHOW_TAG]
     # The models heard it two ways: both are offered and the note left for review
     assert furigana(col, unsure) == "他[ほか？た]の 人[ひと]はどこにいるの"
-    assert col.get_note(unsure.id).tags == [SHOW_TAG, set_furigana.REVIEW_TAG]
+    assert col.get_note(unsure.id).tags == [SHOW_TAG, FURIGANA_REVIEW_TAG]
     assert furigana(col, typed) == "他[ほか]の 人[ひと]は"
     assert reported == []
     assert col.undo_status().undo == "Setting furigana from audio for 3 notes."
@@ -263,8 +267,8 @@ def test_new_notes_get_their_furigana_from_audio_before_kanjify_and_extraction(c
     # Left for a person: neither kanjified nor extracted, which is said once
     assert field(unsure, "Sentence furigana") == "他[ほか？た]の 人[ひと]はどこにいるの"
     assert (field(unsure, "Kanjified"), field(unsure, "Words")) == ("", "")
-    assert col.get_note(unsure.id).tags == [SHOW_TAG, set_furigana.REVIEW_TAG]
-    assert [text for _, text in reported] == [set_furigana.FURIGANA_REVIEW_LEFT]
+    assert col.get_note(unsure.id).tags == [SHOW_TAG, FURIGANA_REVIEW_TAG]
+    assert [text for _, text in reported] == [FURIGANA_REVIEW_LEFT]
     # Its furigana typed already: kept, and read as it is
     assert field(typed, "Sentence furigana") == "他[ほか]の 人[ひと]は"
     assert field(typed, "Kanjified") == "他[ほか]の 人[ひと]は"

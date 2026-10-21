@@ -78,7 +78,6 @@ from .transcribe_audio import audio_file, label, parse_transcripts, transcribe_m
 
 logger = logging.getLogger(__name__)
 
-REVIEW_TAG = FURIGANA_REVIEW_TAG
 NAMES_FILE = os.path.join(ADDON_USER_FILES_DIR, "show_names.json")
 # Of the transcripts, how many must hear a reading for it to be written
 QUORUM = 1
@@ -295,7 +294,7 @@ def wants_audio_furigana(config: dict, note: Note) -> bool:
 def unchecked_furigana(config: dict, note: Note) -> Optional[str]:
     """Why a sentence note's furigana is not to be read yet, as kanjify and word extraction say
     it when they leave the note alone: its review tag, or a word still marked for review."""
-    if note.has_tag(REVIEW_TAG):
+    if note.has_tag(FURIGANA_REVIEW_TAG):
         return FURIGANA_REVIEW_LEFT
     note_type = note.note_type()
     block = config.get(note_type["name"]) if note_type else None
@@ -385,14 +384,14 @@ def set_furigana_in_note(
             )
     note[furigana_field] = result.text
     if result.review:
-        note.add_tag(REVIEW_TAG)
+        note.add_tag(FURIGANA_REVIEW_TAG)
         logger.info(
             "Note %s: furigana to review: %s",
             note.id,
             ", ".join(f"{r.surface} ({r.why})" for r in result.review),
         )
     else:
-        note.remove_tag(REVIEW_TAG)
+        note.remove_tag(FURIGANA_REVIEW_TAG)
     notes_to_update_dict[note.id] = note
     return True
 
