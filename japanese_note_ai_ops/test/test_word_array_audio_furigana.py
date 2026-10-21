@@ -130,6 +130,13 @@ class WrittenTest(unittest.TestCase):
         result = furigana(line, heard, heard)
         self.assertEqual(result.text, "10日[じゅうにち]にはどこにいるのかしら")
 
+    def test_a_label_in_square_brackets_is_no_word_in_review(self):
+        # Copied into the furigana, its ？ would read as one (has_doubt) for good
+        heard = "ほかのひとわどこにいるの"
+        result = furigana("[？？？]" + LINE, heard, heard)
+        self.assertEqual(result.text, "他[ほか]の 人[ひと]はどこにいるの")
+        self.assertFalse(af.has_doubt(result.text))
+
     def test_lines_are_joined_and_what_is_not_spoken_left_out(self):
         caption = "（赤ん坊の泣き声）<br>（猫猫）他の人は<br>猫猫(マオマオ)"
         result = furigana(caption, "ほかのひとわまおまお", "ホカノヒトワマオマオ")

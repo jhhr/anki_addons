@@ -16,6 +16,9 @@ class CleaningTest(unittest.TestCase):
         )
         self.assertEqual(captions.spoken_lines(jp), ["猫猫(マオマオ)", "ん？", "おお～っ"])
 
+    def test_a_label_in_square_brackets(self):
+        self.assertEqual(captions.spoken_lines("[？？？]ん？<br>あら [猫猫]猫猫"), ["ん？", "あら 猫猫"])
+
     def test_a_label_in_the_middle_of_a_line(self):
         self.assertEqual(
             captions.spoken_lines("（白鈴）あら 猫猫 （猫猫）ん？"), ["あら 猫猫 ん？"]

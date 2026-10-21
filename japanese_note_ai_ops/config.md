@@ -216,12 +216,12 @@ seven seconds a clip on the CPU alone in the eval, less with the GPU (not measur
 reading each kanji word of `sentence_field` as the clip says it: the reading a model's line in
 `sentence_transcription_field` hears, where that is Sudachi's reading, one JMdict has for the
 word or the show's for a name. A reading the captions give themselves, `猫猫(マオマオ)`, is
-written as they give it. Speaker labels and sound descriptions, `（猫猫）` or `（足音）`, are not
-said and are left out, as is the caption's formatting but its line breaks (HTML such as an
-SRT's `<font>` colors or the editor's `<span style>`, and ASS tags such as `{\an8}`): the
-furigana is plain text, a `<br>` between lines. Run "Transcribe sentence audio" first: a note
-needs a line from each of the `transcribe_models`, and one of them hearing a reading is enough
-to write it.
+written as they give it. Speaker labels and sound descriptions, `（猫猫）`, `（足音）` or
+`[？？？]`, are not said and are left out, as is the caption's formatting but its line breaks
+(HTML such as an SRT's `<font>` colors or the editor's `<span style>`, and ASS tags such as
+`{\an8}`): the furigana is plain text, a `<br>` between lines. Run "Transcribe sentence audio"
+first: a note needs a line from each of the `transcribe_models`, and one of them hearing a
+reading is enough to write it.
 
 A word the lines do not settle (they hear two readings, or one nothing has for the word), or
 every word of a sentence whose clip is far from its text, goes to the language models of

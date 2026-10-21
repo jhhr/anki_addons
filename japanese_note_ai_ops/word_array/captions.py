@@ -5,7 +5,7 @@ A sentence note made from subtitles (subs2srs) holds the caption as the show wro
 differs from what is said in ways furigana set from the audio has to know about:
 - a speaker label opens a speaker's part, `（猫猫）ん？`, and a sound description stands alone,
   `（赤ん坊のはしゃぎ声）`. Neither is spoken, so both are dropped, full-width parentheses and
-  all;
+  all, as is text in square brackets, `[？？？]`;
 - a reading follows a word in half-width parentheses, `猫猫(マオマオ)` or `緑青館(ろくしょうかん)`,
   usually only at the word's first mention in an episode, sometimes inside a label
   (`（羅門(ルォメン)）`). It is the caption writer's reading, so it is kept as the word's
@@ -46,8 +46,10 @@ KANJI_RE = re.compile(f"[{KANJI}]")
 # more right after it, 猫猫(マオマオ)(ねこ), are taken out with it and not read
 INLINE_READING_RE = re.compile(f"([{KANJI}]+)\\(([ぁ-ゖァ-ヺー・]+)\\)(?:\\([ぁ-ゖァ-ヺー・]+\\))*")
 # Labels and sound descriptions; the half-width parentheses of a reading inside a label are no
-# delimiter here, so （羅門(ルォメン)） is one segment
-UNSPOKEN_RE = re.compile(r"（[^（）]*）")
+# delimiter here, so （羅門(ルォメン)） is one segment. A label in square brackets, [？？？], is
+# one too: Anki's furigana takes square brackets for a reading, and its ？ for a word in review
+# (audio_furigana.has_doubt), which no one would ever confirm
+UNSPOKEN_RE = re.compile(r"（[^（）]*）|\[[^\[\]]*\]")
 ASS_TAG_RE = re.compile(r"\{\\[^}]*\}")
 KATAKANA_RE = re.compile(r"[ァ-ヺー・]+")
 DIGITS_RE = re.compile(r"[0-9０-９]+")
