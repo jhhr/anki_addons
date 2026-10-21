@@ -161,6 +161,17 @@ def readings(form: str) -> list[str]:
 
 
 def spelling_readings(form: str) -> set[str]:
-    """Every reading of the entries that spell `form` in kanji; an entry it is a reading of
-    gives none."""
-    return {reb for kebs, rebs, _ in lookup(form) if form in kebs for reb in rebs}
+    """Every reading of the entries that spell `form` in kanji, but one JMdict gives only the
+    entry's other spellings (re_restr): 絵 is never が, which is 画's, nor 集落 じゅらく, 聚落's.
+    A search-only spelling no re_restr names (田ぼ, sK) reads as its entry does. A reading JMdict
+    gives no kanji spelling (re_nokanji) stays: 度 said たんび is still the word over the
+    caption's kanji. An entry `form` is a reading of gives none."""
+    out: set[str] = set()
+    for kebs, rebs, _ in lookup(form):
+        if form not in kebs:
+            continue
+        restr = spellings(kebs, rebs)[1]
+        named = [reb for reb in rebs if form in restr.get(reb, kebs)]
+        out.update(named or rebs)
+        out.update(reb for reb in rebs if restr.get(reb) == ())
+    return out

@@ -232,6 +232,21 @@ def test_latin_letters_are_given_no_furigana(col):
     assert col.get_note(cup.id).tags == [set_furigana.REVIEW_TAG]
 
 
+def test_a_reading_jmdict_gives_another_spelling_is_not_written(col):
+    # 豪勢 is ごうせい, こうせい is 強勢's; 集落 is しゅうらく, じゅらく is 聚落's: heard where
+    # these are written, they are slips of the transcripts, not corrections
+    lavish = sentence(col, "豪勢な食事だな", "こうせいなしょくじだな", "こうせいなしょくじだな")
+    village = sentence(col, "集落に戻ろう", "じゅうらくにもどろう", "じゅうらくにもどろう")
+
+    run(col, [lavish, village])
+
+    assert furigana(col, lavish) == "豪勢[ごうせい？こうせい]な 食事[しょくじ]だな"
+    assert furigana(col, village) == "集落[しゅうらく？じゅうらく]に 戻[もど]ろう"
+    assert col.get_note(lavish.id).tags == col.get_note(village.id).tags == [
+        set_furigana.REVIEW_TAG
+    ]
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))

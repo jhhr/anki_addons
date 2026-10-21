@@ -166,6 +166,50 @@ class JmdictBuildTests(TempDirTest):
             },
         )
 
+    def test_a_spelling_reads_as_jmdict_restricts_its_readings(self):
+        gz = self.dir / "JMdict_e.gz"
+        entries = """<entry>
+<k_ele><keb>矢張り</keb></k_ele>
+<k_ele><keb>矢っ張り</keb></k_ele>
+<r_ele><reb>やはり</reb></r_ele>
+<r_ele><reb>やっぱり</reb><re_restr>矢っ張り</re_restr></r_ele>
+<r_ele><reb>ヤッパリ</reb><re_nokanji/></r_ele>
+<sense><pos>&adv;</pos></sense>
+</entry>
+<entry>
+<k_ele><keb>絵</keb></k_ele>
+<k_ele><keb>画</keb></k_ele>
+<r_ele><reb>え</reb></r_ele>
+<r_ele><reb>が</reb><re_restr>画</re_restr></r_ele>
+<sense><pos>&n;</pos></sense>
+</entry>
+<entry>
+<k_ele><keb>田んぼ</keb></k_ele>
+<k_ele><keb>田圃</keb></k_ele>
+<k_ele><keb>田ぼ</keb><ke_inf>&sK;</ke_inf></k_ele>
+<r_ele><reb>たんぼ</reb><re_restr>田んぼ</re_restr><re_restr>田圃</re_restr></r_ele>
+<r_ele><reb>でんぽ</reb><re_restr>田圃</re_restr></r_ele>
+<sense><pos>&n;</pos></sense>
+</entry>
+</JMdict>"""
+        with gzip.open(gz, "wt", encoding="utf-8") as f:
+            f.write(JMDICT_SAMPLE.replace("</JMdict>", entries))
+        spellings = {}
+        index = jmdict_index.build(gz, spellings)
+        with mock.patch.object(jmdict_index, "_loaded", (index, spellings)):
+            # A reading restricted to another spelling is not this one's; one for no kanji
+            # spelling (re_nokanji) still is
+            self.assertEqual(jmdict_index.spelling_readings("絵"), {"え"})
+            self.assertEqual(jmdict_index.spelling_readings("画"), {"え", "が"})
+            self.assertEqual(jmdict_index.spelling_readings("矢張り"), {"やはり", "ヤッパリ"})
+            self.assertEqual(
+                jmdict_index.spelling_readings("矢っ張り"), {"やはり", "やっぱり", "ヤッパリ"}
+            )
+            self.assertEqual(jmdict_index.spelling_readings("やっぱり"), set())
+            self.assertEqual(jmdict_index.spelling_readings("田んぼ"), {"たんぼ"})
+            # A search-only spelling, which no re_restr names, reads as its entry does
+            self.assertEqual(jmdict_index.spelling_readings("田ぼ"), {"たんぼ", "でんぽ"})
+
 
 class JmdictLoadTests(unittest.TestCase):
     def test_threads_asking_at_once_load_the_index_once(self):
