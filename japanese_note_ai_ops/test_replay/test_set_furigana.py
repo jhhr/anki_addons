@@ -3,7 +3,8 @@ Sudachi and JMdict, run through its NotesRunSpec as a script runs it: the furiga
 the transcripts hear it, a name read from the show's other notes (the show by its `ep::` tag
 among tags as Anki sorts them, its search whatever the show's name, notes of no show said
 once), a note left for review tagged, a note with furigana left alone, the run one undo step,
-and a word the arbiter's models agree on written. Then "Run all ops for new notes"
+a word the arbiter's models agree on written, and a note whose arbiter call failed or was
+cancelled left for the next run. Then "Run all ops for new notes"
 (async_api_ops/new_note_all_ops.py) over such notes: their furigana set from audio before
 kanjify and word extraction read it, a note left for review given neither, all of it one undo
 step. The models are a responder's.
@@ -15,6 +16,7 @@ The lines are made up for these tests. Skipped without the generator's resources
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -24,6 +26,7 @@ from anki.notes import NoteId
 import replay
 from anki_shared.testing import real_anki
 from japanese_note_ai_ops.async_api_ops import (
+    api_client,
     base_ops,
     capture_store,
     extract_words,
@@ -243,6 +246,100 @@ def test_a_word_the_arbiters_models_agree_on_is_written(col):
     assert sorted(asked) == ["first-model", "second-model"]
     assert furigana(col, note) == "他[た]の 人[ひと]はどこにいるの"
     assert col.get_note(note.id).tags == [SHOW_TAG]
+
+
+SURE = {"words": [{"n": 1, "why": "", "reading": "た", "sure": True}]}
+IN_REVIEW = "他[ほか？た]の 人[ひと]はどこにいるの"
+SETTLED = "他[た]の 人[ひと]はどこにいるの"
+
+
+def arbiters(*models: str) -> None:
+    real_anki.install().addonManager.configs[PACKAGE]["furigana_models"] = list(models)
+
+
+def held(col: Any, note: Any) -> tuple:
+    stored = col.get_note(note.id)
+    return stored["Sentence furigana"], stored.tags
+
+
+def test_a_failed_arbiter_call_leaves_the_note_for_the_next_run(col, reported):
+    # Written with its words in review, the note would never be asked about again: a run writes
+    # only an empty field
+    arbiters("first-model", "second-model")
+    asked: list = []
+    failing = True
+
+    def answer(request: Any) -> Any:
+        asked.append(request.model)
+        # None from a responder is a failed call
+        return None if failing else SURE
+
+    note = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+    first = run(col, [note], answer=answer)
+
+    assert (first.edited_nids, asked) == ([], ["first-model"])
+    assert held(col, note) == ("", [SHOW_TAG])
+    assert [text for _, text in reported] == [set_furigana.ARBITER_FAILED]
+    failing = False
+    asked.clear()
+    run(col, [note], answer=answer)
+    assert asked == ["first-model", "second-model"]
+    assert held(col, note) == (SETTLED, [SHOW_TAG])
+
+
+def test_a_model_name_no_provider_takes_is_said_and_leaves_the_note(col, reported):
+    # A typo, or a provider's prefix left out: no provider is asked, and the call answers None
+    arbiters("haiku-5-5")
+    note = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+
+    result = run(col, [note])
+
+    assert result.edited_nids == []
+    assert held(col, note) == ("", [SHOW_TAG])
+    assert [text for _, text in reported] == [set_furigana.ARBITER_FAILED]
+
+
+def test_a_call_the_user_cancels_leaves_the_note_unsaid(col, reported, monkeypatch):
+    # The worker returns before the cleanup lists the notes to write, as an aborted call does;
+    # forced here by holding the cleanup's start until it has
+    stub = real_anki.install()
+    arbiters("first-model")
+    returned = threading.Event()
+    inner = set_furigana.set_furigana_in_note
+
+    def watched(*args: Any, **kwargs: Any) -> bool:
+        try:
+            return inner(*args, **kwargs)
+        finally:
+            returned.set()
+
+    def cancelling(request: Any) -> Any:
+        run_state = api_client.current_run()
+        stub.progress.set_cancel(True)
+        assert run_state is not None and run_state.cancelled.wait(10), "never cancelled"
+        return None
+
+    begin = base_ops.begin_cleanup_phase
+
+    def cleanup_after_the_worker() -> None:
+        assert returned.wait(10)
+        begin()
+
+    note = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(set_furigana, "set_furigana_in_note", watched)
+        patched.setattr(base_ops, "begin_cleanup_phase", cleanup_after_the_worker)
+        result = run(col, [note], answer=cancelling)
+
+    stub.progress.set_cancel(False)
+    assert result.cancelled
+    assert held(col, note) == ("", [SHOW_TAG])
+    assert reported == []
+    asked: list = []
+    arbiters("first-model")
+    run(col, [note], answer=lambda request: asked.append(request.model) or SURE)
+    assert (asked, held(col, note)) == (["first-model"], (SETTLED, [SHOW_TAG]))
 
 
 def test_a_replay_hands_each_arbiter_model_its_own_answers():

@@ -250,7 +250,9 @@ off. A sentence whose furigana still holds a `？` is left alone too, tag or no 
   than these were not measured.
 
 Only a note whose furigana field is empty is written, so furigana you typed or fixed is never
-replaced. Empty the field to have it set again.
+replaced. Empty the field to have it set again. A note whose call to a `furigana_models` model
+got no answer (an error the run lists, or a run cancelled while it waited) is left as it was,
+so that the next run asks again.
 
 "Run all ops for new notes" does both first, before kanjify and word extraction, which read the
 furigana, wherever a sentence note type has `sentence_transcription_field`: its notes with a

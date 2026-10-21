@@ -333,11 +333,22 @@ class ArbiterTest(OpHarness):
         self.assertEqual(note["Furigana"], "他[ほか？た]の 人[ひと]はどこにいるの")
         self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
 
-    def test_a_failed_call_settles_nothing_and_asks_no_further(self):
+    def test_a_failed_call_leaves_the_note_for_the_next_run_and_asks_no_further(self):
+        # Written, the note would be in review for good: a run only writes an empty field
         note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
         calls = self.ask(note, {"second-model": answer("た")})
         self.assertEqual([model for model, _, _ in calls], ["first-model"])
-        self.assertEqual(note.tags, [op.FURIGANA_REVIEW_TAG])
+        self.assertEqual((note["Furigana"], note.tags), ("", []))
+        self.assertEqual(self.reports, [op.ARBITER_FAILED])
+        # The next run, every model answering, asks again and writes it
+        self.ask(note, {m: answer("た") for m in self.MODELS})
+        self.assertEqual(note["Furigana"], "他[た]の 人[ひと]はどこにいるの")
+
+    def test_a_call_a_cancel_ended_leaves_the_note_and_is_no_error(self):
+        note = Note({"Sentence": LINE, "Heard": self.TWO_WAYS})
+        with mock.patch.object(op, "run_cancelled", return_value=True):
+            self.ask(note, {})
+        self.assertEqual((note["Furigana"], note.tags, self.reports), ("", [], []))
 
     def test_no_word_in_review_asks_nothing(self):
         said = heard("ほかのひとわどこにいるの", "ほかのひとわどこにいるの")

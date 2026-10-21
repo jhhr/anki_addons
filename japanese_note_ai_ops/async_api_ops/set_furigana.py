@@ -17,10 +17,12 @@ until a person has fixed each such word and taken the tag off (`furigana_review`
 labels and sound descriptions are not said, so the furigana leaves them out.
 
 Only a note whose furigana field is empty is written, so furigana a person typed or fixed is
-never replaced: empty the field to have it set again. A note needs a transcript from each of
-the config's `transcribe_models`, and one of them hearing a reading is enough to write it: the
-furigana audio eval measured that rule on the default pair, which sent half as many words to
-review as asking both, for no more wrong readings.
+never replaced: empty the field to have it set again. So a note whose arbiter call got no answer
+(the provider failed, or the run was cancelled while it waited) is left as it was, for the next
+run to ask again: written with its words in review, it would stay so for good. A note needs a
+transcript from each of the config's `transcribe_models`, and one of them hearing a reading is
+enough to write it: the furigana audio eval measured that rule on the default pair, which sent
+half as many words to review as asking both, for no more wrong readings.
 
 The show: subs2srs tags a card as its export's tag template says, and a note's tag
 `ep::<show>::<episode>` names its show (`configuration.EPISODE_TAG_PREFIX`, hardcoded: the
@@ -64,6 +66,7 @@ from ..word_array import furigana_arbiter, jmdict_index
 from ..word_array.audio_furigana import Furigana, Reading, audio_furigana
 from ..word_array.captions import BaseFinder, ReadingBase, show_readings
 from . import collection_access
+from .api_client import run_cancelled
 from .base_ops import (
     AsyncTaskProgressUpdater,
     NotesRunSpec,
@@ -82,6 +85,12 @@ NAMES_FILE = os.path.join(ADDON_USER_FILES_DIR, "show_names.json")
 # Of the transcripts, how many must hear a reading for it to be written
 QUORUM = 1
 ARBITER_KIND = "furigana_arbiter.note"
+# Said of each note whose arbiter call got no answer; one text, so that the run's errors count
+# them as one
+ARBITER_FAILED = (
+    "Furigana not set: a model of furigana_models gave no answer, so the note is left for the"
+    " next run to ask again"
+)
 # How many of the notes of no show the run's report names in its search, as link_ids'
 # refusals do: a run over a whole deck tagged otherwise has thousands
 NO_SHOW_SEARCHED = 200
@@ -244,11 +253,12 @@ def settle_by_arbiter(
     caption: str,
     translation: str,
     transcripts: Sequence[tuple[str, str]],
-) -> list[Reading]:
+) -> Optional[list[Reading]]:
     """Asks each of `models` about the words `result` leaves in review that a transcript heard
     something at (`furigana_arbiter.asked`) and writes those they all settle alike
-    (`furigana_arbiter.settle`); the words it wrote. A failed call settles none, since every
-    model has to agree, and the provider has reported it."""
+    (`furigana_arbiter.settle`); the words it wrote. None when a call got no answer, which
+    settles nothing, since every model has to agree: the provider has reported why, and a call
+    a cancel ended answers so too. The models after it are not asked, and not paid."""
     inputs = furigana_arbiter.review_inputs(caption, translation, transcripts, result)
     prompt = furigana_arbiter.review_prompt(**inputs)
     answers = []
@@ -265,7 +275,7 @@ def settle_by_arbiter(
             inputs={**inputs, "model": model},
         )
         if response is None:
-            return []
+            return None
         answers.append(
             furigana_arbiter.answers_from_response(response, len(inputs["words"]))
         )
@@ -365,6 +375,12 @@ def set_furigana_in_note(
             furigana_arbiter.translation_text(translation),
             transcripts,
         )
+        if settled is None:
+            # No answer is not the models' doubt: written, the note would be in review for good,
+            # since a run only writes an empty field. Left as it is, the next run asks again
+            if not run_cancelled():
+                report_error(ARBITER_FAILED)
+            return False
         if settled:
             logger.info(
                 "Note %s: settled by the arbiter: %s",
