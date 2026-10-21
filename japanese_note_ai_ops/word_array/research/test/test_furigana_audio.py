@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import furigana_audio as fa  # noqa: E402
+import furigana_audio_arbiter as arbiter_eval  # noqa: E402
 import furigana_audio_copy as copy_script  # noqa: E402
 import furigana_audio_run as run_script  # noqa: E402
 import furigana_audio_score as score  # noqa: E402
@@ -485,6 +486,19 @@ class CombineTest(unittest.TestCase):
                 with unittest.mock.patch.object(fa, "SELECTION", selection):
                     with unittest.mock.patch.object(fa, "LABELS", here / "labels.jsonl"):
                         return score.combine(list(runs), quorum)
+
+
+class ArbiterEvalTest(unittest.TestCase):
+    """The arbiter over the eval's cards (furigana_audio_arbiter.py): what it asks with and what
+    it keeps."""
+
+    def test_no_secret_of_the_config_is_kept(self):
+        config = {"openai_api_key": "k", "x": {"together_api_key": "k", "y": 1}, "z": 2}
+        self.assertEqual(arbiter_eval.without_secrets(config), {"x": {"y": 1}, "z": 2})
+
+    def test_only_terminal_models_which_need_no_key_are_asked(self):
+        with self.assertRaises(SystemExit):
+            arbiter_eval.load_get_response(1, ["terminal-claude-haiku-5-5", "gemini-x"])
 
 
 class FoldTest(unittest.TestCase):

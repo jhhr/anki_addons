@@ -10,7 +10,9 @@ export's captions and names.jsonl, as the op reads them from the show's notes an
 show_names.json; the transcripts kana-anime-whisper's and ruby-mora's runs), the prompt is the
 op's (`furigana_arbiter.review_inputs`, the English subtitle as the translation), and each model
 is asked through the op's request code (`base_ops.get_response`), so a `terminal-` model runs
-`claude -p` as the op does. Answers are cached by model and prompt in
+`claude -p` as the op does. Only `terminal-` models: the add-on's config is read with
+meta.json's settings over it, but never an API key (AGENTS.md). Answers are cached by model and
+prompt in
 `evals/furigana_audio/arbiter_results.jsonl` of the test data checkout: a rerun pays only for
 prompts that changed. `--workers` is requests at once, and for `terminal-` models the cap on
 live `claude` processes.
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import threading
 import time
@@ -51,7 +54,8 @@ DEFAULT_MODELS = ("terminal-claude-haiku-5-5", "terminal-claude-sonnet-5-5")
 KIND = "furigana_arbiter.note"
 # The op's rule: a reading one transcript hears is written (set_furigana.QUORUM)
 QUORUM = 1
-
+# The config keys that hold a secret, which are dropped from meta.json's settings
+SECRET_RE = re.compile(r"api_?key|token|secret|password", re.I)
 
 
 class Card:
@@ -98,15 +102,30 @@ def read_cards() -> list[Card]:
     return cards
 
 
-def load_get_response(workers: int):
-    """The op's `get_response`, loaded with Anki stubbed and the add-on's config behind `mw`."""
+def without_secrets(config: dict) -> dict:
+    """`config` without the keys that hold a secret (an API key), at any depth."""
+    return {
+        key: without_secrets(value) if isinstance(value, dict) else value
+        for key, value in config.items()
+        if not SECRET_RE.search(key)
+    }
+
+
+def load_get_response(workers: int, models: Sequence[str]):
+    """The op's `get_response`, loaded with Anki stubbed and the add-on's config behind `mw`:
+    config.json with meta.json's settings over it, without a secret. So only `terminal-` models
+    can be asked, which `claude -p` answers with no key."""
+    keyed = [model for model in models if not model.startswith("terminal-")]
+    if keyed:
+        raise SystemExit(f"only terminal- models are asked here, which need no API key: {keyed}")
     sys.path.insert(0, str(ADDON_ROOT / "test"))
     from addon_modules import load_ops_module, mw
 
-    config = json.loads((ADDON_ROOT / "config.json").read_text(encoding="utf-8"))
+    config = without_secrets(json.loads((ADDON_ROOT / "config.json").read_text(encoding="utf-8")))
     meta = ADDON_ROOT / "meta.json"
     if meta.exists():
-        config.update(json.loads(meta.read_text(encoding="utf-8")).get("config", {}))
+        settings = json.loads(meta.read_text(encoding="utf-8")).get("config", {})
+        config.update(without_secrets(settings))
     # Here --workers is the cap on live `claude` processes, over every model of the run
     config["terminal_max_concurrent_requests"] = workers
     setattr(mw, "addonManager", SimpleNamespace(getConfig=lambda _name: config))
@@ -237,7 +256,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"{len(cards)} cards with {words} words in review", file=sys.stderr)
     cached = read_results()
     if not args.score_only:
-        get_response = load_get_response(args.workers)
+        get_response = load_get_response(args.workers, models)
         asking = [card for card in cards if card.prompt]
         for model in models:
             todo = [
