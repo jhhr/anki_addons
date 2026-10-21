@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import http.client
 import importlib.util
 import io
 import json
@@ -13,8 +14,6 @@ import socket
 import subprocess
 import threading
 import unittest
-import urllib.error
-import urllib.request
 from types import ModuleType
 from unittest import mock
 
@@ -131,22 +130,25 @@ class HttpTest(unittest.TestCase):
     def setUp(self):
         broken = fails_with(RuntimeError("no frames"))
         transcribers = {"kana-anime-whisper": lambda wav: f"き{len(wav)}", "ruby-mora": broken}
-        service = ts.Service(transcribers, {}, decoder=lambda data: data)
+        self.decoded: list[bytes] = []
+        service = ts.Service(transcribers, {}, lambda data: self.decoded.append(data) or data)
         self.server = ts.Server(("127.0.0.1", 0), ts.make_handler(service))
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
 
-    def request(self, path, data=None):
-        req = urllib.request.Request(self.url + path, data=data)
-        if data is not None:
-            req.add_header("Content-Type", "application/json")
+    def request(self, path, data=None, content_type: str | None = "application/json"):
+        """(status, answer) of a GET, or of a POST of `data` sent as `content_type`, or with
+        none."""
+        host, port = self.server.server_address[:2]
+        connection = http.client.HTTPConnection(str(host), port, timeout=10)
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                return response.status, json.loads(response.read())
-        except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read())
+            headers = {"Content-Type": content_type} if data is not None and content_type else {}
+            connection.request("GET" if data is None else "POST", path, data, headers)
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
 
     def clip(self, data: bytes, *models: str) -> bytes:
         audio = base64.b64encode(data).decode("ascii")
@@ -161,6 +163,21 @@ class HttpTest(unittest.TestCase):
             status, answer = self.request("/transcribe", body)
             self.assertEqual(status, 400, body)
             self.assertIn("base64", answer["error"])
+
+    def test_a_post_not_sent_as_json_is_refused(self):
+        """A web page may send another site a form, text/plain or an untyped body without a
+        CORS preflight; JSON only after one, which the server never answers."""
+        body = self.clip(b"12345", "kana-anime-whisper")
+        for content_type in (
+            "text/plain",
+            "application/x-www-form-urlencoded",
+            "multipart/form-data; boundary=x",
+            None,
+        ):
+            self.assertEqual(self.request("/transcribe", body, content_type)[0], 415, content_type)
+        self.assertEqual(self.decoded, [])
+        status, _ = self.request("/transcribe", body, "application/json; charset=utf-8")
+        self.assertEqual((status, self.decoded), (200, [b"12345"]))
 
     def test_a_model_failing_answers_with_its_error_and_the_server_goes_on(self):
         with contextlib.redirect_stderr(io.StringIO()):
@@ -178,7 +195,8 @@ class HttpTest(unittest.TestCase):
 
 
 class ClientTest(unittest.TestCase):
-    """The add-on's client against the server: which answers it sends a clip again for."""
+    """The add-on's client against the server: what it sends, and which answers it sends a
+    clip again for."""
 
     def setUp(self):
         # The client's sessions and cooldowns are the module's; this test's are its own
@@ -194,6 +212,7 @@ class ClientTest(unittest.TestCase):
         deliver = run_errors.deliver_with(lambda _title, text: self.reports.append(text))
         self.addCleanup(run_errors.deliver_with, deliver)
         self.asked = 0
+        self.content_types: list[str] = []
 
     @staticmethod
     def restore_sessions(sessions) -> None:
@@ -214,7 +233,14 @@ class ClientTest(unittest.TestCase):
             return outcome
 
         service = ts.Service({"ruby-mora": transcribe}, {}, decoder=lambda data: data)
-        server = ts.Server(("127.0.0.1", 0), ts.make_handler(service))
+        content_types = self.content_types
+
+        class Recording(ts.make_handler(service)):  # type: ignore[misc]
+            def do_POST(self):
+                content_types.append(self.headers.get("Content-Type"))
+                super().do_POST()
+
+        server = ts.Server(("127.0.0.1", 0), Recording)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -224,6 +250,11 @@ class ClientTest(unittest.TestCase):
     def transcribe(self, config: dict):
         with contextlib.redirect_stderr(io.StringIO()):
             return base_ops.get_transcript_from_local_server("local-ruby-mora", b"OggS", config)
+
+    def test_the_client_sends_its_clip_as_json(self):
+        config = self.serve("ネコ")
+        self.assertEqual(self.transcribe(config), {"text": "ネコ"})
+        self.assertEqual(self.content_types, ["application/json"])
 
     def test_a_clip_a_model_fails_on_is_sent_once_and_the_error_reported(self):
         config = self.serve(*[RuntimeError("no frames")] * 6)

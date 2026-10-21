@@ -57,7 +57,9 @@ The clip comes in JSON as Anki's other requests do, so the add-on sends, retries
 cancels it as it does those.
 
 It listens on 127.0.0.1 unless `--host` says otherwise, and asks for no password: whatever can
-reach its port can have clips transcribed.
+reach its port can have clips transcribed. It takes a POST only as JSON (Content-Type
+application/json): a web page may send another site a form or text/plain without asking, but
+JSON only after a CORS preflight, which this server never answers.
 """
 
 from __future__ import annotations
@@ -351,8 +353,13 @@ def make_handler(service: Service):
             if url.path != "/transcribe":
                 self._send(404, {"error": f"no {url.path} here"})
                 return
+            # Read even when refused: a body left unread turns the close into a reset, which
+            # can lose the answer
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length > 0 else b""
+            if self.headers.get_content_type() != "application/json":
+                self._send(415, {"error": "the body must be JSON, as application/json"})
+                return
             try:
                 body = json.loads(raw or b"{}")
                 data = base64.b64decode(body.get("audio") or "", validate=True)
