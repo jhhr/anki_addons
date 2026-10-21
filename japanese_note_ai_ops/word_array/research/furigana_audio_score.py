@@ -22,8 +22,8 @@ in other kanji than the caption's.
 
 A card whose transcript is far from its line is mostly not the model's fault: the captions of
 a card can hold text its clip cuts off, or lines spoken over each other. Cards whose morae are
-off by more than `reading_check.MISMATCH` are counted apart (`clean` and `all` in the
-table).
+off by more than `reading_check.MISMATCH`, each word read as the model hears it as the op reads
+it (`reading_check.line_up`), are counted apart (`clean` and `all` in the table).
 
 Writes `runs/<model>.words.jsonl` (each word with what the model heard, for the labelling) and
 prints a table per model. `--combine` reads those files back and says what accepting a reading
@@ -93,7 +93,7 @@ class WordResult:
     verdicts: dict = field(default_factory=dict)
     # Whether the model hears the draft, and each reading the op may write instead
     op_verdicts: dict = field(default_factory=dict)
-    clean: bool = True  # the card's transcript is close enough to its line (MISMATCH)
+    clean: bool = True  # the card's transcript is close enough to its line (`rc.line_up`)
     # The readings the op may write besides the draft, before `reading_check.choices` drops
     # those that sound like it
     licensed: list = field(default_factory=list)
@@ -125,17 +125,14 @@ class WordResult:
         }
 
 
-def reference(
-    card: dict, tokenize: Callable[[str], Sequence]
-) -> tuple[list[str], list[int], list[WordResult]]:
-    """The card's spoken lines as morae, which word each mora belongs to (-1 for none), and
-    the words (`reading_check.reference`). A kanji word is read as the caption reads it, else
-    as Sudachi does."""
-    words = card["words"]
-    spans = [rc.Span(w["line"], w["start"], w["end"], w["caption"] or w["sudachi"]) for w in words]
-    texts = [fa.split_readings(line)[0] for line in card["lines"]]
-    ref, owner, placed = rc.reference(texts, spans, tokenize)
-    return ref, owner, [WordResult(card["id"], words[k], spans[k].reading) for k in placed]
+def card_spans(card: dict) -> tuple[list[str], list]:
+    """The card's spoken lines without their readings, and its words as `reading_check.Span`s,
+    each read as the caption reads it, else as Sudachi does."""
+    spans = [
+        rc.Span(w["line"], w["start"], w["end"], w["caption"] or w["sudachi"])
+        for w in card["words"]
+    ]
+    return [fa.split_readings(line)[0] for line in card["lines"]], spans
 
 
 # A word's other readings in the dictionary, which the op may write instead of the draft
@@ -157,43 +154,37 @@ def score_card(
 ) -> tuple[list[WordResult], float, int]:
     """The card's words with what the model heard for each, the alignment's cost and the
     number of reference morae. A word labelled by ear (`labels`, fa.read_labels) also says
-    whether the model heard the labelled reading rather than the draft."""
-    ref, owner, words = reference(card, tokenize)
+    whether the model heard the labelled reading rather than the draft. The words are heard
+    as the op hears them, on the alignment `reading_check.line_up` gives, which says too
+    whether the card is clean: its transcript not far from its lines."""
+    texts, word_spans = card_spans(card)
+    ref, owner, placed = rc.reference(texts, word_spans, tokenize)
+    words = [WordResult(card["id"], card["words"][i], word_spans[i].reading) for i in placed]
+    readings = [judged_readings(result, show, alternatives) for result in words]
+    for result, (_, others) in zip(words, readings):
+        result.licensed = others
     hyp = morae(heard_text(model, text, tokenize))
-    cost, pairs = align(ref, hyp)
-    clean = cost <= rc.MISMATCH * max(len(ref), 1)
+    cost, _ = align(ref, hyp)
+    as_heard = {
+        i: rc.choices(result.word["sudachi"], result.licensed)
+        for i, result in zip(placed, words)
+        if not result.word["caption"]
+    }
+    heard_owner, pairs, far = rc.line_up(
+        texts, word_spans, ref, owner, placed, hyp, as_heard, tokenize
+    )
     spans: dict[int, list[int]] = defaultdict(list)
     for i, j in enumerate(pairs):
-        if owner[i] >= 0 and j is not None:
-            spans[owner[i]].append(j)
-    for k, result in enumerate(words):
+        if heard_owner[i] >= 0 and j is not None:
+            spans[heard_owner[i]].append(j)
+    for k, (result, (judged, others)) in enumerate(zip(words, readings)):
         js = spans.get(k)
         result.heard = "".join(hyp[min(js) : max(js) + 1]) if js else ""
-        result.clean = clean
-        lo, hi = rc.neighbours(owner, pairs, k, len(hyp))
+        result.clean = not far
+        lo, hi = rc.neighbours(heard_owner, pairs, k, len(hyp))
         w = result.word
-        readings = {"draft": w["sudachi"]}
-        # What the op may write besides the draft: a reading the dictionary has for the spelling
-        # and, for a name, the show's
-        others = list(alternatives(w))
-        if w["caption"]:
-            readings["caption"] = w["caption"]
-            result.gold = w["caption"]
-        if w["surface"] in show:
-            # Judged only where the pick took the word for one: 子 is a clan read シ in one
-            # line, and the child こ everywhere else
-            script, reading = show[w["surface"]]
-            if (script == "name" and "name" in w["kinds"]) or (
-                script == "word" and "caption_word" in w["kinds"]
-            ):
-                if not w["caption"]:
-                    readings[f"show_{script}"] = reading
-                if script == "name":
-                    others.append(reading)
-                    result.gold = result.gold or reading
-        result.verdicts = hears(readings, hyp, lo, hi)
+        result.verdicts = hears(judged, hyp, lo, hi)
         result.op_verdicts = rc.hears_choices(rc.choices(w["sudachi"], others), hyp, lo, hi)
-        result.licensed = others
         key = (card["id"], w["line"], w["start"])
         result.label = fa.label_for(labels or {}, key, w["surface"])
         if result.label and result.label["verdict"] == "heard":
@@ -202,6 +193,33 @@ def score_card(
                 said["draft"] = w["sudachi"]
             result.verdicts["label"] = hears(said, hyp, lo, hi)["label"]
     return words, cost, len(ref)
+
+
+def judged_readings(
+    result: WordResult, show: dict, alternatives: Alternatives
+) -> tuple[dict[str, str], list[str]]:
+    """The readings a model's hearing of a word is judged on, by name: the draft's, the
+    caption's and the show's; and what the op may write besides the draft: a reading the
+    dictionary has for the spelling and, for a name, the show's. Sets the word's `gold`."""
+    w = result.word
+    readings = {"draft": w["sudachi"]}
+    others = list(alternatives(w))
+    if w["caption"]:
+        readings["caption"] = w["caption"]
+        result.gold = w["caption"]
+    if w["surface"] in show:
+        # Judged only where the pick took the word for one: 子 is a clan read シ in one line,
+        # and the child こ everywhere else
+        script, reading = show[w["surface"]]
+        if (script == "name" and "name" in w["kinds"]) or (
+            script == "word" and "caption_word" in w["kinds"]
+        ):
+            if not w["caption"]:
+                readings[f"show_{script}"] = reading
+            if script == "name":
+                others.append(reading)
+                result.gold = result.gold or reading
+    return readings, others
 
 
 def show_readings() -> dict[str, tuple[str, str]]:

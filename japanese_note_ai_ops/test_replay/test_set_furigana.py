@@ -188,6 +188,23 @@ def test_a_word_after_an_ellipsis_is_read_once(col):
     assert col.get_note(note.id).tags == []
 
 
+def test_a_short_line_with_a_wrong_draft_is_no_mismatch(col, reported):
+    # 何時 is いつ to Sudachi, which on a line this short put the clip too far from it; JMdict
+    # also reads it なんじ, which both models hear
+    when = sentence(col, "何時に起きた？", "なんじにおきた", "なんじにおきた")
+    today = sentence(col, "今日中にやる", "きょうじゅうにやる", "きょうじゅうにやる")
+    other = sentence(col, "何時に起きた？", "おはようございます", "おはようございます")
+
+    run(col, [when, today, other])
+
+    assert furigana(col, when) == "何時[なんじ]に 起[お]きた？"
+    assert furigana(col, today) == "今日[きょう] 中[じゅう]にやる"
+    assert col.get_note(when.id).tags == col.get_note(today.id).tags == []
+    # A clip of another line is one still: each word offers its draft alone
+    assert furigana(col, other) == "何時[いつ？]に 起[お？]きた？"
+    assert col.get_note(other.id).tags == [set_furigana.REVIEW_TAG]
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))

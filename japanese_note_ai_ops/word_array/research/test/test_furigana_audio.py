@@ -308,8 +308,11 @@ class ScoreCardTest(unittest.TestCase):
     def card(self, line, word):
         return {"id": "c1", "lines": [line], "words": [{"line": 0, "start": 0, **word}]}
 
+    def reference(self, card):
+        return score.rc.reference(*score.card_spans(card), tokenize)
+
     def test_digits_no_word_took_are_read_as_a_number(self):
-        ref, _, _ = score.reference({"id": "c1", "lines": ["175"], "words": []}, tokenize)
+        ref, _, _ = self.reference({"id": "c1", "lines": ["175"], "words": []})
         self.assertEqual(ref, score.morae("ヒャクナナジュウゴ"))
 
     def test_a_numbers_dictionary_readings_are_those_of_it_in_kanji(self):
@@ -330,7 +333,7 @@ class ScoreCardTest(unittest.TestCase):
     def test_a_space_or_a_bracket_is_no_sound(self):
         word = {"end": 2, "surface": "他", "sudachi": "ほか", "caption": None, "kinds": []}
         card = self.card("《他\u3000に", {**word, "start": 1})
-        ref, owner, _ = score.reference(card, tokenize)
+        ref, owner, _ = self.reference(card)
         self.assertEqual(ref, ["ホ", "カ", "ニ"])
         self.assertEqual(owner, [0, 0, -1])
 

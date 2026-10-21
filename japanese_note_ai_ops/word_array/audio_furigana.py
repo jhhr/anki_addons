@@ -7,7 +7,8 @@ reading the dictionary has for its spelling or the show's list has for a name. A
 goes to review. A word the captions read themselves (猫猫(マオマオ)) is written as they read
 it, which needs no audio. A transcript far from its caption (one the clip cuts off, lines spoken
 over each other, a caption repeating the text of events subs2srs merged) is no evidence for any
-word of the sentence, so all of them go to review.
+word of the sentence, so all of them go to review. Far means far with each word read as the
+transcript hears it (`reading_check.line_up`): on a short line one wrong draft is enough else.
 
 A word in review is written with the readings to choose between in its brackets, joined by ？
 (`DOUBT`): its draft, then what else the transcripts heard there (`Reading.offered`),
@@ -47,13 +48,12 @@ from .captions import (
 )
 from .kanji_words import Word, kanji_words, numeral_reading
 from .reading_check import (
-    MISMATCH,
     Span,
     agrees,
-    align,
     choices,
     decide,
     hears_choices,
+    line_up,
     morae,
     neighbours,
     reference,
@@ -172,15 +172,17 @@ def audio_furigana(
     ref, owner, placed = reference(texts, spans, tokenize)
     licensed = [licensed_readings(w, dictionary, names) for w in words]
     options = [choices(w.sudachi, licensed[i]) for i, w in enumerate(words)]
+    # The words a transcript far from the caption is lined up again by, read as it hears them
+    as_heard = {i: options[i] for i, w in enumerate(words) if w.caption is None}
     hearings: dict[int, list[dict[str, bool]]] = {i: [] for i in placed}
     stretches: dict[int, list[str]] = {i: [] for i in placed}
     mismatched = not transcripts
     for transcript in transcripts:
         hyp = morae(transcript)
-        cost, pairs = align(ref, hyp)
-        mismatched |= cost > MISMATCH * max(len(ref), 1)
+        heard_owner, pairs, far = line_up(texts, spans, ref, owner, placed, hyp, as_heard, tokenize)
+        mismatched |= far
         for k, i in enumerate(placed):
-            lo, hi = neighbours(owner, pairs, k, len(hyp))
+            lo, hi = neighbours(heard_owner, pairs, k, len(hyp))
             hearings[i].append(hears_choices(options[i], hyp, lo, hi))
             stretches[i].append("".join(hyp[lo:hi]))
     readings: list[Reading] = []

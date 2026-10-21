@@ -193,6 +193,12 @@ class RuleTest(unittest.TestCase):
         self.assertEqual(check.hears_choices(options, hyp, 0, 1), {"draft": False, "た": True})
         self.assertEqual(check.hears_choices({}, hyp, 0, 1), {"draft": False})
 
+    def test_the_reading_a_transcript_hears_a_word_as(self):
+        options = {"draft": "ほか", "た": "た", "あ": "あ"}
+        self.assertEqual(check.heard_reading(options, {"draft": True, "た": True}), "ほか")
+        self.assertEqual(check.heard_reading(options, {"draft": False, "た": True, "あ": True}), "あ")
+        self.assertIsNone(check.heard_reading(options, {"draft": False, "た": False}))
+
     def test_the_draft_where_a_quorum_hears_it_and_no_other(self):
         draft = {"draft": True, "た": False}
         self.assertEqual(check.decide([draft, draft], "ほか", 2), "ほか")

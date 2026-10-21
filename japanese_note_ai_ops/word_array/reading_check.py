@@ -43,9 +43,9 @@ VOWEL_OF = {ch: v for v, row in VOWEL_ROWS.items() for ch in row}
 VOWEL_KANA = {"a": "ア", "i": "イ", "u": "ウ", "e": "エ", "o": "オ"}
 PARTICLE_SOUND = {"ハ": "ワ", "ヘ": "エ", "ヲ": "オ"}
 SYMBOLS = ("記号", "補助記号", "空白")
-# A line whose transcript is off it by more than this share of morae is taken for one whose
-# caption and clip differ: the caption holds text the clip cuts off, or lines spoken over each
-# other
+# A line whose transcript is off it by more than this share of morae, its words read as the
+# transcript hears them (`line_up`), is taken for one whose caption and clip differ: the
+# caption holds text the clip cuts off, or lines spoken over each other
 MISMATCH = 0.35
 # Two readings agree when the steps between them cost no more than this: cheap ones only
 AGREE = 0.45
@@ -311,6 +311,56 @@ def hears_choices(
     others = [key for key in options if key != "draft"]
     heard = hears(dict(options), hyp, lo, hi, strict=others) if options else {}
     return {"draft": False, **heard}
+
+
+def heard_reading(options: Mapping[str, str], heard: Mapping[str, bool]) -> Optional[str]:
+    """The reading a transcript hears a word as, of its `choices` (`hears_choices`' answer):
+    the draft where it hears that, else the first other it hears; None where it hears none."""
+    if heard.get("draft"):
+        return options["draft"]
+    others = sorted(key for key, yes in heard.items() if yes and key != "draft")
+    return options[others[0]] if others else None
+
+
+def over_limit(cost: float, ref: Sequence[str]) -> bool:
+    return cost > MISMATCH * max(len(ref), 1)
+
+
+def line_up(
+    texts: Sequence[str],
+    spans: Sequence[Span],
+    ref: Sequence[str],
+    owner: Sequence[int],
+    placed: Sequence[int],
+    hyp: Sequence[str],
+    options: Mapping[int, Mapping[str, str]],
+    tokenize: Callable[[str], Sequence],
+) -> tuple[list[int], list[Optional[int]], bool]:
+    """How a transcript lines up with its lines (`reference`: `ref`, `owner`, `placed`): the
+    owner of each mora and the transcript's mora aligned to it, which each word is heard by
+    (`neighbours`), and whether the transcript is far from the lines (MISMATCH).
+
+    The lines are read with Sudachi's drafts, which the op is there to correct, and on a short
+    line one wrong draft is enough to put a transcript over the limit (何時に起きた heard
+    ナンジニオキタ, drafted いつ). So a transcript over it is aligned again with each word read
+    as it hears it, of the word's `choices` (`options`, by index into `spans`; none for a word
+    the captions read): it is far only if it is still over, and otherwise its words are heard
+    on the second alignment, where a word read wrong no longer pulls its neighbours' morae."""
+    cost, pairs = align(ref, hyp)
+    if not over_limit(cost, ref):
+        return list(owner), pairs, False
+    refit = list(spans)
+    for k, i in enumerate(placed):
+        if i in options:
+            lo, hi = neighbours(owner, pairs, k, len(hyp))
+            reading = heard_reading(options[i], hears_choices(options[i], hyp, lo, hi))
+            if reading is not None:
+                refit[i] = refit[i]._replace(reading=reading)
+    again, again_owner, _ = reference(texts, refit, tokenize)
+    again_cost, again_pairs = align(again, hyp)
+    if over_limit(again_cost, again):
+        return list(owner), pairs, True
+    return again_owner, again_pairs, False
 
 
 def length_sibling(reading: str, readings: Iterable[str]) -> bool:

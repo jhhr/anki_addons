@@ -188,6 +188,21 @@ class ReviewTest(unittest.TestCase):
         # line may be another line's speech
         self.assertEqual(result.text, "他[ほか？]の 人[ひと？]は 猫猫[まおまお]")
 
+    def test_a_short_line_whose_draft_of_a_word_is_wrong_is_no_mismatch(self):
+        # 他 drafted ほか is two morae off a line of three the clip says as た; read as the
+        # models hear it, the line is their transcript, so the word is corrected
+        result = furigana("他は", "たわ", "タワ")
+        self.assertFalse(result.mismatched)
+        self.assertEqual(result.text, "他[た]は")
+        # A clip saying another line matches the line however its words are read
+        self.assertTrue(furigana("他は", "まったくちがう", "まったくちがう").mismatched)
+
+    def test_such_a_line_is_heard_as_it_lines_up_read_as_heard(self):
+        # Read as drafted, ねこねこ ほか, the line lines 他 up with 猫猫's last オ as well as
+        # its た, which no reading fits: read as heard, 他 has its た alone
+        result = furigana("猫猫、他", "まおまおた", "まおまおた", names={"猫猫": "まおまお"})
+        self.assertEqual(result.text, "猫猫[まおまお]、 他[た]")
+
     def test_no_transcripts_are_a_mismatch(self):
         result = furigana(LINE)
         self.assertTrue(result.mismatched)
