@@ -136,10 +136,11 @@ def _link_ids_error(
 ) -> Optional[str]:
     """Why the types' link IDs do not allow the run, if so: a link ID field no search can name
     (link_lookup refuses one, as every op reading the links would), or an ID two notes of a
-    type hold. The plan would read such an ID as its oldest holder's: a word linked to a copy
-    holding its original's ID would be taken for the original's, and the copy's links by its
-    own note id, written before link IDs, for links to no note. "Fill link IDs" gives each
-    holder an ID of its own first (duplicates_error)."""
+    type hold. The plan would read such an ID as naming the holder that keeps it (LinkIndex: the
+    one whose own note id the ID is, else the oldest): a word linked to a copy holding its
+    original's ID would be taken for the original's, and the copy's links by its own note id,
+    written before link IDs, for links to no note. "Fill link IDs" gives each holder an ID of
+    its own first (duplicates_error)."""
     for name in note_type_names:
         try:
             index = link_index(config, name, col=col)

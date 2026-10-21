@@ -580,7 +580,8 @@ def plan_migration(
     A new sentence note gets an ID generated from its origin's (`sentence|<origin's link ID>`,
     so the same records plan the same IDs) that no sentence note holds, which its vocab notes
     then name. The op refuses to run while two notes of either type hold one ID; given such
-    records anyway, an ID names its oldest holder, as `LinkIndex` answers.
+    records anyway, an ID names the holder keeping it, as `LinkIndex` answers: the one whose own
+    note id the ID is, else the oldest.
     """
     user_tags = _UserTags(
         _tag_list(move_tags, MOVE_TAGS_KEY), _tag_list(copy_tags, COPY_TAGS_KEY)

@@ -2924,7 +2924,8 @@ async def refuse_duplicate_link_ids(
 ) -> None:
     """Raises DuplicateLinkIdsError, before the run's first request, while two notes of a type
     the notes' words are notes of hold one link ID (link_ids.duplicates_error): the run would
-    link a word matched to the newer of them by an ID that names the older one, and hand its
+    link a word matched to either of them by an ID that names the one keeping it
+    (link_ids.LinkIndex: the holder whose own note id the ID is, else the oldest), and hand its
     own new notes IDs beside it. A note whose type has no vocab type (a broken layout, a type
     the settings lack) is left to fail as it plans, as it always has.
 
