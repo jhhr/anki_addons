@@ -1,12 +1,12 @@
 """What the match op, the word matching judge, the proper noun, translate, kanjify and kanji
 story ops and the furigana arbiter record of their AI calls: each call's `kind`, and as `inputs`
 the values its prompt is built from, so that the prompt's builder given the recorded inputs
-gives back the prompt that was sent. The prompts themselves are pinned byte for byte (written before their builders were
-taken out of the ops). The match op's two calls also record a `context`, the word and notes their
-answers are read against, which must name what the op then does with the answer; and which of a
-word's notes the op sends to clean_meaning before it matches the word. The meaning ops' calls are
-test_capture_meaning_kinds'. Last, a scan of async_api_ops that every call site names a kind and
-inputs.
+gives back the prompt that was sent. The prompts themselves are pinned byte for byte (written
+before their builders were taken out of the ops). The match op's two calls also record a
+`context`, the word and notes their answers are read against, which must name what the op then
+does with the answer; and which of a word's notes the op sends to clean_meaning before it
+matches the word. The meaning ops' calls are test_capture_meaning_kinds'. Last, a scan of
+async_api_ops that every call site names a kind and inputs.
 
 `get_response` is the test's in most tests, as in test_word_array_match_targets and test_judge.
 One runs a note's word array match through the real `get_response` with a store installed in a
