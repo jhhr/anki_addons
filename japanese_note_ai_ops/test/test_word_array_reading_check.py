@@ -134,20 +134,20 @@ class HearsTest(unittest.TestCase):
 class ReferenceTest(unittest.TestCase):
     def test_a_word_is_read_as_its_reading_and_the_rest_as_pronounced(self):
         spans = [check.Span(0, 0, 2, "まおまお")]
-        ref, owner, placed = check.reference(["猫猫は薬"], spans, tokenize)
+        ref, owner, placed, _ = check.reference(["猫猫は薬"], spans, tokenize)
         self.assertEqual(ref, ["マ", "オ", "マ", "オ", "ワ", "ク", "ス", "リ"])
         self.assertEqual(owner, [0, 0, 0, 0, -1, -1, -1, -1])
         self.assertEqual(placed, [0])
 
     def test_digits_no_word_took_are_a_number_and_a_space_no_sound(self):
-        ref, owner, _ = check.reference(["175\u3000猫"], [], tokenize)
+        ref, owner, _, _ = check.reference(["175\u3000猫"], [], tokenize)
         self.assertEqual("".join(ref), "ヒャクナナジュウゴネコ")
         self.assertEqual(owner, [-1] * len(ref))
 
     def test_a_word_not_starting_at_a_morpheme_is_not_found(self):
         # 175 is one morpheme: a word from its second digit starts inside it
         spans = [check.Span(0, 1, 3, "ななじゅうご")]
-        _, owner, placed = check.reference(["175"], spans, tokenize)
+        _, owner, placed, _ = check.reference(["175"], spans, tokenize)
         self.assertEqual(placed, [])
         self.assertNotIn(0, owner)
 
@@ -162,14 +162,14 @@ class ReferenceTest(unittest.TestCase):
             return out
 
         spans = [check.Span(0, 2, 4, "まおまお")]
-        ref, owner, placed = check.reference(["ん…猫猫"], spans, tokenize_ellipsis)
+        ref, owner, placed, _ = check.reference(["ん…猫猫"], spans, tokenize_ellipsis)
         self.assertEqual("".join(ref), "ンマオマオ")
         self.assertEqual(owner, [-1, 0, 0, 0, 0])
         self.assertEqual(placed, [0])
 
     def test_words_are_placed_in_line_order(self):
         spans = [check.Span(1, 0, 1, "くすり"), check.Span(0, 0, 1, "ねこ")]
-        _, _, placed = check.reference(["猫", "薬"], spans, tokenize)
+        _, _, placed, _ = check.reference(["猫", "薬"], spans, tokenize)
         self.assertEqual(placed, [1, 0])
 
     def test_a_words_stretch_is_between_its_aligned_neighbours(self):
@@ -177,6 +177,13 @@ class ReferenceTest(unittest.TestCase):
         self.assertEqual(check.neighbours([-1, 0, 0, -1], [0, 1, None, 3], 0, 5), (1, 3))
         self.assertEqual(check.neighbours([-1, 0], [0, None], 0, 4), (1, 4))
         self.assertEqual(check.neighbours([-1], [0], 0, 4), (0, 0))
+
+    def test_a_word_with_no_morae_is_found_by_where_they_would_start(self):
+        # Between morae 0 and 1 of the line, aligned with hyp morae 0 and 3
+        self.assertEqual(check.neighbours([-1, -1], [0, 3], 0, 5, start=1), (1, 3))
+        spans = [check.Span(0, 0, 1, "ねこ"), check.Span(0, 1, 2, "迂")]
+        lines = check.reference(["猫迂は"], spans, tokenize)
+        self.assertEqual((lines.placed, lines.starts), ([0, 1], [0, 2]))
 
 
 class RuleTest(unittest.TestCase):

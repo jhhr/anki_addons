@@ -169,20 +169,20 @@ def audio_furigana(
                 w.kinds.remove("name")
         words.extend(line_words)
     spans = [Span(w.line, w.start, w.end, w.caption or w.sudachi) for w in words]
-    ref, owner, placed = reference(texts, spans, tokenize)
+    lines = reference(texts, spans, tokenize)
     licensed = [licensed_readings(w, dictionary, names) for w in words]
     options = [choices(w.sudachi, licensed[i]) for i, w in enumerate(words)]
     # The words a transcript far from the caption is lined up again by, read as it hears them
     as_heard = {i: options[i] for i, w in enumerate(words) if w.caption is None}
-    hearings: dict[int, list[dict[str, bool]]] = {i: [] for i in placed}
-    stretches: dict[int, list[str]] = {i: [] for i in placed}
+    hearings: dict[int, list[dict[str, bool]]] = {i: [] for i in lines.placed}
+    stretches: dict[int, list[str]] = {i: [] for i in lines.placed}
     mismatched = not transcripts
     for transcript in transcripts:
         hyp = morae(transcript)
-        heard_owner, pairs, far = line_up(texts, spans, ref, owner, placed, hyp, as_heard, tokenize)
+        heard_on, pairs, far = line_up(texts, spans, lines, hyp, as_heard, tokenize)
         mismatched |= far
-        for k, i in enumerate(placed):
-            lo, hi = neighbours(heard_owner, pairs, k, len(hyp))
+        for k, i in enumerate(heard_on.placed):
+            lo, hi = neighbours(heard_on.owner, pairs, k, len(hyp), heard_on.starts[k])
             hearings[i].append(hears_choices(options[i], hyp, lo, hi))
             stretches[i].append("".join(hyp[lo:hi]))
     readings: list[Reading] = []

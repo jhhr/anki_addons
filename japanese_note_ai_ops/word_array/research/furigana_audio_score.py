@@ -158,30 +158,30 @@ def score_card(
     as the op hears them, on the alignment `reading_check.line_up` gives, which says too
     whether the card is clean: its transcript not far from its lines."""
     texts, word_spans = card_spans(card)
-    ref, owner, placed = rc.reference(texts, word_spans, tokenize)
-    words = [WordResult(card["id"], card["words"][i], word_spans[i].reading) for i in placed]
+    lines = rc.reference(texts, word_spans, tokenize)
+    words = [
+        WordResult(card["id"], card["words"][i], word_spans[i].reading) for i in lines.placed
+    ]
     readings = [judged_readings(result, show, alternatives) for result in words]
     for result, (_, others) in zip(words, readings):
         result.licensed = others
     hyp = morae(heard_text(model, text, tokenize))
-    cost, _ = align(ref, hyp)
+    cost, _ = align(lines.morae, hyp)
     as_heard = {
         i: rc.choices(result.word["sudachi"], result.licensed)
-        for i, result in zip(placed, words)
+        for i, result in zip(lines.placed, words)
         if not result.word["caption"]
     }
-    heard_owner, pairs, far = rc.line_up(
-        texts, word_spans, ref, owner, placed, hyp, as_heard, tokenize
-    )
+    heard_on, pairs, far = rc.line_up(texts, word_spans, lines, hyp, as_heard, tokenize)
     spans: dict[int, list[int]] = defaultdict(list)
     for i, j in enumerate(pairs):
-        if heard_owner[i] >= 0 and j is not None:
-            spans[heard_owner[i]].append(j)
+        if heard_on.owner[i] >= 0 and j is not None:
+            spans[heard_on.owner[i]].append(j)
     for k, (result, (judged, others)) in enumerate(zip(words, readings)):
         js = spans.get(k)
         result.heard = "".join(hyp[min(js) : max(js) + 1]) if js else ""
         result.clean = not far
-        lo, hi = rc.neighbours(heard_owner, pairs, k, len(hyp))
+        lo, hi = rc.neighbours(heard_on.owner, pairs, k, len(hyp), heard_on.starts[k])
         w = result.word
         result.verdicts = hears(judged, hyp, lo, hi)
         result.op_verdicts = rc.hears_choices(rc.choices(w["sudachi"], others), hyp, lo, hi)
@@ -192,7 +192,7 @@ def score_card(
             if not fa.KANJI_RE.search(w["sudachi"]):
                 said["draft"] = w["sudachi"]
             result.verdicts["label"] = hears(said, hyp, lo, hi)["label"]
-    return words, cost, len(ref)
+    return words, cost, len(lines.morae)
 
 
 def judged_readings(

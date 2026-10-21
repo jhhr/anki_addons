@@ -228,20 +228,33 @@ class Span(NamedTuple):
     reading: str
 
 
+class Reference(NamedTuple):
+    """Lines as said, their words' morae marked (`reference`)."""
+
+    morae: list[str]
+    # Which word each mora belongs to, as a place in `placed`; -1 for none
+    owner: list[int]
+    # The indices into the spans of the words found in their lines, in order
+    placed: list[int]
+    # Where each placed word's morae start: a word whose reading has no kana (each kanji of it
+    # unread, 療所) has none, and is found by this (`neighbours`)
+    starts: list[int]
+
+
 def reference(
     texts: Sequence[str], spans: Sequence[Span], tokenize: Callable[[str], Sequence]
-) -> tuple[list[str], list[int], list[int]]:
-    """The lines' morae as said; which word each mora belongs to, as a place in `placed` (-1
-    for none); and `placed`, the indices into `spans` of the words found in their lines, in
-    order. A word is read as its span's reading from the morpheme it starts at; one that does
-    not start at a morpheme is not found. The rest of a line is read as Sudachi reads it,
-    particles as pronounced, and digits no word took as a number (175), not digit by digit.
-    A morpheme of no text is skipped and a word placed once: Sudachi reads … as ... and puts the
-    two dots it adds where the next word starts, which placed the word three times.
-    `texts` are the lines without their inline readings."""
+) -> Reference:
+    """The lines' morae as said, and where each word's are. A word is read as its span's
+    reading from the morpheme it starts at; one that does not start at a morpheme is not found.
+    The rest of a line is read as Sudachi reads it, particles as pronounced, and digits no word
+    took as a number (175), not digit by digit. A morpheme of no text is skipped and a word
+    placed once: Sudachi reads … as ... and puts the two dots it adds where the next word
+    starts, which placed the word three times. `texts` are the lines without their inline
+    readings."""
     ref: list[str] = []
     owner: list[int] = []
     placed: list[int] = []
+    starts: list[int] = []
     by_line: dict[int, list[int]] = defaultdict(list)
     for k, span in enumerate(spans):
         by_line[span.line].append(k)
@@ -256,6 +269,7 @@ def reference(
             if i < len(mine) and spans[mine[i]].start <= mo.begin() < spans[mine[i]].end:
                 if mo.begin() == spans[mine[i]].start and placed[-1:] != [mine[i]]:
                     placed.append(mine[i])
+                    starts.append(len(ref))
                     got = morae(spans[mine[i]].reading)
                     ref.extend(got)
                     owner.extend([len(placed) - 1] * len(got))
@@ -267,20 +281,29 @@ def reference(
             )
             ref.extend(got)
             owner.extend([-1] * len(got))
-    return ref, owner, placed
+    return Reference(ref, owner, placed, starts)
 
 
 def neighbours(
-    owner: Sequence[int], pairs: Sequence[Optional[int]], k: int, n: int
+    owner: Sequence[int],
+    pairs: Sequence[Optional[int]],
+    k: int,
+    n: int,
+    start: Optional[int] = None,
 ) -> tuple[int, int]:
     """The stretch of the transcript between the last mora aligned before word `k` and the
-    first aligned after it."""
+    first aligned after it. A word with no morae is found by `start`, where they would start
+    (`Reference.starts`); without it, it has no stretch, (0, 0)."""
     mine = [i for i, o in enumerate(owner) if o == k]
-    if not mine:
+    if mine:
+        first, last = mine[0], mine[-1]
+    elif start is not None:
+        first, last = start, start - 1
+    else:
         return 0, 0
     aligned = [(i, j) for i, j in enumerate(pairs) if j is not None]
-    before = [j for i, j in aligned if i < mine[0]]
-    after = [j for i, j in aligned if i > mine[-1]]
+    before = [j for i, j in aligned if i < first]
+    after = [j for i, j in aligned if i > last]
     lo = before[-1] + 1 if before else 0
     hi = after[0] if after else n
     return lo, max(lo, hi)
@@ -329,16 +352,14 @@ def over_limit(cost: float, ref: Sequence[str]) -> bool:
 def line_up(
     texts: Sequence[str],
     spans: Sequence[Span],
-    ref: Sequence[str],
-    owner: Sequence[int],
-    placed: Sequence[int],
+    lines: Reference,
     hyp: Sequence[str],
     options: Mapping[int, Mapping[str, str]],
     tokenize: Callable[[str], Sequence],
-) -> tuple[list[int], list[Optional[int]], bool]:
-    """How a transcript lines up with its lines (`reference`: `ref`, `owner`, `placed`): the
-    owner of each mora and the transcript's mora aligned to it, which each word is heard by
-    (`neighbours`), and whether the transcript is far from the lines (MISMATCH).
+) -> tuple[Reference, list[Optional[int]], bool]:
+    """How a transcript lines up with its `lines` (`reference` of `spans`): the lines as read
+    and the transcript's mora aligned to each of their morae, which each word is heard by
+    (`neighbours`), and whether the transcript is far from them (MISMATCH).
 
     The lines are read with Sudachi's drafts, which the op is there to correct, and on a short
     line one wrong draft is enough to put a transcript over the limit (何時に起きた heard
@@ -346,21 +367,21 @@ def line_up(
     as it hears it, of the word's `choices` (`options`, by index into `spans`; none for a word
     the captions read): it is far only if it is still over, and otherwise its words are heard
     on the second alignment, where a word read wrong no longer pulls its neighbours' morae."""
-    cost, pairs = align(ref, hyp)
-    if not over_limit(cost, ref):
-        return list(owner), pairs, False
+    cost, pairs = align(lines.morae, hyp)
+    if not over_limit(cost, lines.morae):
+        return lines, pairs, False
     refit = list(spans)
-    for k, i in enumerate(placed):
+    for k, i in enumerate(lines.placed):
         if i in options:
-            lo, hi = neighbours(owner, pairs, k, len(hyp))
+            lo, hi = neighbours(lines.owner, pairs, k, len(hyp), lines.starts[k])
             reading = heard_reading(options[i], hears_choices(options[i], hyp, lo, hi))
             if reading is not None:
                 refit[i] = refit[i]._replace(reading=reading)
-    again, again_owner, _ = reference(texts, refit, tokenize)
-    again_cost, again_pairs = align(again, hyp)
-    if over_limit(again_cost, again):
-        return list(owner), pairs, True
-    return again_owner, again_pairs, False
+    again = reference(texts, refit, tokenize)
+    again_cost, again_pairs = align(again.morae, hyp)
+    if over_limit(again_cost, again.morae):
+        return lines, pairs, True
+    return again, again_pairs, False
 
 
 def length_sibling(reading: str, readings: Iterable[str]) -> bool:

@@ -231,7 +231,14 @@ class ReviewTest(unittest.TestCase):
         # 𠮟, of a supplementary plane, was taken for punctuation: no furigana and no mark
         heard = "しかられたのわどこなのかしら"
         result = furigana("𠮟られたのはどこなのかしら", heard, heard)
-        self.assertEqual(result.text, "𠮟[？]られたのはどこなのかしら")
+        self.assertEqual(result.text, "𠮟[しか？]られたのはどこなのかしら")
+
+    def test_a_word_sudachi_cannot_read_at_all_is_offered_what_was_heard_there(self):
+        # 迂迂 has no kana to line up with the clip: found by its place in the line
+        heard = "ほかのううわどこにいるの"
+        result = furigana("他の迂迂はどこにいるの", heard, heard)
+        self.assertEqual(result.review[0].heard, ["ウウ", "ウウ"])
+        self.assertEqual(result.text, "他[ほか]の 迂迂[うう？]はどこにいるの")
 
     def test_a_spelling_the_captions_read_in_hiragana_somewhere_is_no_name(self):
         # The show's list reads 薬師 as a name, but the captions read it in hiragana elsewhere:
