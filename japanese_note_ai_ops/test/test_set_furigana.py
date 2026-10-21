@@ -254,6 +254,39 @@ class OpTest(OpHarness):
         self.assertTrue(report.endswith("search: nid:1,2"))
 
 
+class ShowSearchFindingNothingTest(OpHarness):
+    """A show whose search finds none of its notes (self.captions has no "show")."""
+
+    # A name read in katakana once and said again unread, in one caption
+    LATER_LINE = "猫猫(マオマオ)！　猫猫がいたのはどこなのかしら"
+    LATER_HEARD = heard(*["まおまおまおまおがいたのわどこなのかしら"] * 2)
+
+    def notes(self):
+        first = Note({"Sentence": LINE, "Heard": heard(*["ほかのひとわどこにいるの"] * 2)}, ["ep::show::01"])
+        later = Note({"Sentence": self.LATER_LINE, "Heard": self.LATER_HEARD}, ["ep::show::02"])
+        return first, later
+
+    def test_each_note_is_read_by_its_own_caption_not_the_first_notes(self):
+        first, later = self.notes()
+        self.run_op(first, later)
+        alone = Note({"Sentence": self.LATER_LINE, "Heard": self.LATER_HEARD})
+        self.run_op(alone)
+        self.assertEqual(alone["Furigana"], "猫猫[まおまお]！　 猫猫[まおまお]がいたのはどこなのかしら")
+        self.assertEqual(later["Furigana"], alone["Furigana"])
+        self.assertEqual(later.tags, ["ep::show::02"])
+
+    def test_the_search_is_made_once_all_the_same(self):
+        self.run_op(*self.notes())
+        self.assertEqual(self.asked, [("show", SENTENCE, "Sentence")])
+
+    def test_the_names_file_still_names_the_shows_names(self):
+        self.user_names = {"show": {"猫猫": "まおまお"}}
+        first, _ = self.notes()
+        named = Note({"Sentence": NAME_LINE, "Heard": NAME_HEARD}, tags=["ep::show::02"])
+        self.run_op(first, named)
+        self.assertEqual(named["Furigana"], "猫猫[まおまお]がいたのはどこなのかしら")
+
+
 def answer(reading, sure=True):
     return {"words": [{"n": 1, "why": "", "reading": reading, "sure": sure}]}
 

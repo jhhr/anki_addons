@@ -189,7 +189,8 @@ class Shows:
         self.captions_of = captions_of
         self.dictionary = dictionary
         self.user_names = user_names
-        self._read: dict[tuple[str, str, str], Show] = {}
+        # None for a show whose search found none of its notes
+        self._read: dict[tuple[str, str, str], Optional[Show]] = {}
         self._lock = threading.Lock()
         # The notes read with no show, for the run's report (no_show_report)
         self.showless: list[NoteId] = []
@@ -206,11 +207,16 @@ class Shows:
         if show is None:
             return self._make([caption], {})
         key = (show, note_type_name, field)
+        names = self.user_names.get(show, {})
         with self._lock:
             if key not in self._read:
-                texts = self.captions_of(show, note_type_name, field) or [caption]
-                self._read[key] = self._make(texts, self.user_names.get(show, {}))
-            return self._read[key]
+                texts = self.captions_of(show, note_type_name, field)
+                self._read[key] = self._make(texts, names) if texts else None
+            read = self._read[key]
+        # A search that found nothing, not even this note: each of the show's notes is read by
+        # its own caption, as a note of no show is, with the names file's names for the show.
+        # Kept as the show's, the first note's caption read every later one, by thread order
+        return read if read is not None else self._make([caption], names)
 
     def _make(self, texts: Iterable[str], user_names: Mapping[str, str]) -> Show:
         texts = list(texts)
