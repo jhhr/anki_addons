@@ -27,7 +27,9 @@ from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
+import requests  # type: ignore
 from anki.collection import Collection
 from anki.notes import Note, NoteId
 from aqt import mw
@@ -204,15 +206,30 @@ def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
     if not local:
         return None
     url = transcribe_url(config)
-    try:
-        response = get_session("local").get(f"{url}/health", timeout=10)
-        loaded = json.loads(response.text)["models"]
-    except Exception as e:
+
+    def no_answer(error: Exception) -> str:
         return (
-            f"The transcription server at {url} does not answer ({type(e).__name__}): start"
+            f"The transcription server at {url} does not answer ({type(error).__name__}): start"
             f" it as {SERVER_SOURCE} says (the released add-on leaves it out), or set"
             " transcribe_url to where it runs."
         )
+
+    try:
+        response = get_session("local").get(f"{url}/health", timeout=10)
+    except requests.exceptions.ProxyError as e:
+        logger.warning("The server's health check went to a proxy: %s", e)
+        return proxy_problem(url, proxy_for(url), "could not pass the request on")
+    except Exception as e:
+        return no_answer(e)
+    try:
+        loaded = json.loads(response.text)["models"]
+    except (ValueError, KeyError, TypeError) as e:
+        # Not the server's JSON: a proxy's error page, when one carries the request
+        proxy = proxy_for(url)
+        if proxy is None:
+            return no_answer(e)
+        what = f"answered HTTP {response.status_code} instead of the server"
+        return proxy_problem(url, proxy, what)
     missing = [name for name in local if name not in loaded]
     if missing:
         return (
@@ -220,6 +237,31 @@ def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
             f" with --models {' '.join(local)}."
         )
     return None
+
+
+def proxy_for(url: str) -> Optional[str]:
+    """The proxy the local session sends a request for `url` through, None for none: the one
+    HTTP_PROXY or ALL_PROXY names unless NO_PROXY lists the host, or on Windows with neither
+    set the system's, unless its exceptions do. requests reads them so for every session that
+    trusts the environment, as `api_client.get_session`'s do; browsers leave 127.0.0.1 out of
+    any proxy by themselves, so nothing else shows it."""
+    try:
+        return requests.utils.select_proxy(url, requests.utils.get_environ_proxies(url))
+    except Exception:
+        return None
+
+
+def proxy_problem(url: str, proxy: Optional[str], what: str) -> str:
+    """What to change when a proxy stands between Anki and the server, which it cannot reach."""
+    host = urlparse(url).hostname or url
+    through = f"the proxy {proxy}" if proxy else "a proxy"
+    # Windows' "<local>" exception covers the names without a dot only
+    local = f', where "<local>" covers localhost but not {host}' if "." in host else ""
+    return (
+        f"The transcription server at {url} was asked through {through}, which {what}: a proxy"
+        f" seems to be in the way. Add {host} to the NO_PROXY environment variable (then"
+        f" restart Anki), or on Windows to the exceptions of the system's proxy settings{local}."
+    )
 
 
 async def bulk_transcribe_notes_op(

@@ -8,10 +8,16 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import socket
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+
+import requests
 
 from addon_modules import load_ops_module
 
@@ -172,8 +178,9 @@ class TranscribeNoteTest(unittest.TestCase):
 
 
 class Response:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, status_code: int = 200) -> None:
         self.text = text
+        self.status_code = status_code
 
 
 class Session:
@@ -185,7 +192,19 @@ class Session:
         self.urls.append(url)
         if isinstance(self.answer, BaseException):
             raise self.answer
+        if isinstance(self.answer, Response):
+            return self.answer
         return Response(json.dumps(self.answer))
+
+
+PROXY = "http://proxy.example:3128"
+
+
+def proxy_env(**proxies: str):
+    """The environment with these proxy settings in place of the machine's own (any `*_proxy`
+    variable), the rest of it kept."""
+    env = {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+    return mock.patch.dict(os.environ, {**env, **proxies}, clear=True)
 
 
 class ServerCheckTest(unittest.TestCase):
@@ -207,6 +226,47 @@ class ServerCheckTest(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8792", problem)
         # Where the server is, which the released add-on leaves out with dev/
         self.assertIn("dev/transcribe_server.py of https://github.com/jhhr/anki_addons", problem)
+
+    def test_a_proxy_that_cannot_reach_the_server(self):
+        # HTTP_PROXY set and its proxy down, or refusing 127.0.0.1: requests raises ProxyError
+        with mock.patch.object(op, "proxy_for", return_value=PROXY):
+            problem, _ = self.check(requests.exceptions.ProxyError("Unable to connect to proxy"))
+        self.assertIn(f"was asked through the proxy {PROXY}, which could not pass", problem)
+        self.assertIn("a proxy seems to be in the way", problem)
+        self.assertIn("Add 127.0.0.1 to the NO_PROXY environment variable", problem)
+        self.assertIn('settings, where "<local>" covers localhost but not 127.0.0.1.', problem)
+        with mock.patch.object(op, "proxy_for", return_value=PROXY):
+            problem, _ = self.check(
+                requests.exceptions.ProxyError("refused"),
+                config={"transcribe_url": "http://localhost:8792"},
+            )
+        self.assertTrue(problem.endswith("exceptions of the system's proxy settings."))
+
+    def test_a_proxys_error_page_in_the_servers_place(self):
+        # A Squid-like proxy answers a request for 127.0.0.1 with a page of its own
+        page = Response("<html><body><h1>ERROR</h1>Access Denied.</body></html>", 403)
+        with mock.patch.object(op, "proxy_for", return_value=PROXY):
+            problem, _ = self.check(page)
+        self.assertIn(f"through the proxy {PROXY}, which answered HTTP 403 instead", problem)
+        self.assertIn("NO_PROXY", problem)
+
+    def test_an_answer_not_the_servers_with_no_proxy_is_not_put_on_one(self):
+        with mock.patch.object(op, "proxy_for", return_value=None):
+            problem, _ = self.check(Response("<html>Not Found</html>", 404))
+        self.assertIn("does not answer (JSONDecodeError)", problem)
+        self.assertNotIn("proxy", problem)
+
+    def test_the_proxy_a_local_request_goes_through(self):
+        url = "http://127.0.0.1:8792"
+        with proxy_env(HTTP_PROXY=PROXY):
+            self.assertEqual(op.proxy_for(url), PROXY)
+        with proxy_env(HTTP_PROXY=PROXY, NO_PROXY="localhost,127.0.0.1"):
+            self.assertIsNone(op.proxy_for(url))
+        # localhost alone does not cover 127.0.0.1, nor HTTPS_PROXY a request over http
+        with proxy_env(HTTP_PROXY=PROXY, NO_PROXY="localhost"):
+            self.assertEqual(op.proxy_for(url), PROXY)
+        with proxy_env(HTTPS_PROXY=PROXY):
+            self.assertIsNone(op.proxy_for(url))
 
     def test_a_server_without_a_model(self):
         problem, _ = self.check({"models": {"ruby-mora": {}}})
@@ -246,6 +306,46 @@ class SameFieldTest(unittest.TestCase):
     def test_two_fields_or_none_configured_are_no_such_error(self):
         self.assertIsNone(op.same_field_error(CONFIG, SENTENCE))
         self.assertIsNone(op.same_field_error({SENTENCE: {}}, SENTENCE))
+
+
+class ProxyInTheWayTest(unittest.TestCase):
+    """The real session, sent through stand-in proxies on 127.0.0.1 by HTTP_PROXY: what a proxy
+    in the way makes of the check, as requests reports it."""
+
+    def problem(self, proxy: str) -> str:
+        with proxy_env(HTTP_PROXY=proxy):
+            config = {"transcribe_url": "http://127.0.0.1:9"}
+            return op.server_problem(config, CONFIG["transcribe_models"])
+
+    def test_a_proxy_that_is_down(self):
+        # Nothing listens on the port once it is closed
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        problem = self.problem(f"http://127.0.0.1:{port}")
+        self.assertIn(f"through the proxy http://127.0.0.1:{port}, which could not pass", problem)
+
+    def test_a_proxy_that_refuses_local_requests(self):
+        class Denying(BaseHTTPRequestHandler):
+            """As Squid's default configuration answers a request for 127.0.0.1."""
+
+            def do_GET(self):
+                body = b"<html><body><h1>ERROR</h1>Access Denied.</body></html>"
+                self.send_response(403)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Denying)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        problem = self.problem(f"http://127.0.0.1:{server.server_address[1]}")
+        self.assertIn("which answered HTTP 403 instead of the server", problem)
 
 
 class BulkServerCheckTest(unittest.TestCase):

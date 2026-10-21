@@ -208,7 +208,10 @@ loads Ruby-ASR. A run that cannot reach the server stops at once and says so.
   one the furigana audio eval picked: on 400 clips checked by ear, the furigana check wrote one
   wrong reading among 846. A note is only asked for the models its field has no line for, so
   a model added here later is asked for its own line alone.
-- `transcribe_url`: Default `"http://127.0.0.1:8792"`. Where the server listens.
+- `transcribe_url`: Default `"http://127.0.0.1:8792"`. Where the server listens. Anki sends
+  to it as to the online services, through the proxy `HTTP_PROXY` or Windows' proxy settings
+  name, unless `NO_PROXY` or the proxy's exceptions list 127.0.0.1 (Windows' `<local>` covers
+  localhost only); a run that meets a proxy in the way says so.
 
 Notes are transcribed one after another, since the server hears one clip at a time: about
 seven seconds a clip on the CPU alone in the eval, less with the GPU (not measured yet).
