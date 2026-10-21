@@ -205,6 +205,8 @@ class ServerCheckTest(unittest.TestCase):
         problem, _ = self.check(ConnectionError("refused"))
         self.assertIn("does not answer", problem)
         self.assertIn("http://127.0.0.1:8792", problem)
+        # Where the server is, which the released add-on leaves out with dev/
+        self.assertIn("dev/transcribe_server.py of https://github.com/jhhr/anki_addons", problem)
 
     def test_a_server_without_a_model(self):
         problem, _ = self.check({"models": {"ruby-mora": {}}})

@@ -193,10 +193,13 @@ that field to the sentence note type first. "Set furigana from audio" then check
 sentence's readings against those lines. A model hears the clip alone, never the sentence: an
 audio model shown text writes the text back, and what it hears by itself is the point.
 
-The models run in a program of their own on your PC, `dev/transcribe_server.py` in this
-add-on's folder, since Anki cannot load them. Set it up once and start it before a run, as the
-top of that file says: a Python environment with PyTorch (the CUDA 12.6 build for a GTX 970
-and other Maxwell cards), then `python dev/transcribe_server.py --device cuda`. Its first start
+The models run in a program of their own on your PC, since Anki cannot load them: the file
+`japanese_note_ai_ops/dev/transcribe_server.py` of https://github.com/jhhr/anki_addons, with
+`transcribe_server_requirements.txt` beside it. `dev/` is left out of the released add-on, so
+take both from there. Set it up once and start it before a run, as the top of that file says:
+a Python environment with PyTorch (the CUDA 12.6 build for a GTX 970 and other Maxwell cards),
+made outside the add-on's folder, which an update of the add-on replaces, then, from
+`japanese_note_ai_ops/`, `python dev/transcribe_server.py --device cuda`. Its first start
 downloads the two models, about 5.5 GB, and for a moment takes about 7 GB of memory while it
 loads Ruby-ASR. A run that cannot reach the server stops at once and says so.
 

@@ -53,6 +53,10 @@ from .run_errors import report_error
 logger = logging.getLogger(__name__)
 
 TRANSCRIBE_KIND = "transcribe.audio"
+# Where the server is: the released add-on leaves dev/ out (build.json)
+SERVER_SOURCE = (
+    "japanese_note_ai_ops/dev/transcribe_server.py of https://github.com/jhhr/anki_addons"
+)
 DEFAULT_MODELS = ("local-kana-anime-whisper", "local-ruby-mora")
 SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
 LINE_RE = re.compile(r"^\s*([^:]+?)\s*:\s*(.*?)\s*$")
@@ -206,7 +210,8 @@ def server_problem(config: dict, models: Sequence[str]) -> Optional[str]:
     except Exception as e:
         return (
             f"The transcription server at {url} does not answer ({type(e).__name__}): start"
-            " it as dev/transcribe_server.py says, or set transcribe_url to where it runs."
+            f" it as {SERVER_SOURCE} says (the released add-on leaves it out), or set"
+            " transcribe_url to where it runs."
         )
     missing = [name for name in local if name not in loaded]
     if missing:
