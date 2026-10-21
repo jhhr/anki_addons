@@ -66,6 +66,7 @@ from ..note_roles import (
     LayoutError,
     copy_example,
     link_id_field,
+    named_field,
     sentence_type_of,
 )
 from .sentence_migration import (
@@ -96,11 +97,6 @@ _LINK_ID = "link ID"
 class PreflightError(Exception):
     """The settings or the collection do not allow the migration; the message, for the user,
     says why. Raised by the run before it writes anything."""
-
-
-def _named(block: Mapping[str, Any], key: str) -> str:
-    value = block.get(key)
-    return value if isinstance(value, str) else ""
 
 
 def _selected_types(col: Collection, nids: Sequence[NoteId]) -> list[str]:
@@ -194,13 +190,13 @@ def read_records(
     sentence_id_field = link_id_field(config, sentence_type)
     assert vocab_id_field and sentence_id_field
     sentence_names = {
-        key: _named(sentence_block, key)
+        key: named_field(sentence_block, key)
         for key in (*SENTENCE_KEYS, WORD_LIST_KEY)
-        if _named(sentence_block, key)
+        if named_field(sentence_block, key)
     }
     vocab_names = {
         **sentence_names,
-        **{key: _named(vocab_block, key) for key in (EXAMPLE_ID_KEY, *WORD_KEYS)},
+        **{key: named_field(vocab_block, key) for key in (EXAMPLE_ID_KEY, *WORD_KEYS)},
         _LINK_ID: vocab_id_field,
     }
     vocab_notetype = col.models.by_name(vocab_type)
@@ -331,7 +327,7 @@ class SentenceMigration:
             vocab,
             sentences,
             nids,
-            count_seen=bool(_named(sentence_block, SEEN_COUNT_KEY)),
+            count_seen=bool(named_field(sentence_block, SEEN_COUNT_KEY)),
             move_tags=sentence_block.get(MOVE_TAGS_KEY, []),
             copy_tags=sentence_block.get(COPY_TAGS_KEY, []),
         )

@@ -36,7 +36,7 @@ from typing import Any, Optional
 from ..html_stripping import strip_context_sentences
 from ..kana_conv import to_hiragana
 from ..link_ids import LinkIndex, link_id, parse_link_id, placeholder_holders
-from ..note_roles import SENTENCE_KEYS, is_vocab_type, layout_error, sentence_type_of
+from ..note_roles import SENTENCE_KEYS, is_vocab_type, layout_error, named_field, sentence_type_of
 from ..word_array import match_flags, match_targets, merge
 from ..word_array.match_flags import MatchState
 
@@ -733,7 +733,7 @@ def _combine_into(target: _Target, source: _Vocab) -> None:
         _combine_level(combined, aligned.array, events)
         # As merge_arrays checks its own result: only a bug can fail this, and the check is
         # what keeps such a bug out of the field
-        if _raw(combined) != _raw(base):
+        if merge.raw_text(combined) != merge.raw_text(base):
             raise ValueError("the combined array does not reconstruct the sentence")
     except ValueError as e:
         target.pending.append(("combine_failed", source.id, f"{e} ({target.label})"))
@@ -759,10 +759,6 @@ def _placeholders_copied(target: _Target, source: _Vocab) -> None:
     # its placeholders resolved for nothing
     for case, detail in source.placeholder_lines:
         target.pending.append((case, source.id, f"{detail} ({target.label})"))
-
-
-def _raw(arr: list) -> str:
-    return "".join(elem[0] for elem in arr)
 
 
 def _combine_level(base: list, other: list, events: list[tuple[str, str]]) -> None:
@@ -1149,7 +1145,7 @@ def _plan(
 
 def _named_fields(block: Mapping[str, Any], keys: Iterable[str]) -> list[tuple[str, str]]:
     """(key, field name) for each of `keys` the block names a field for."""
-    return [(key, block[key]) for key in keys if isinstance(block.get(key), str) and block[key]]
+    return [(key, named_field(block, key)) for key in keys if named_field(block, key)]
 
 
 def _missing(wanted: Iterable[tuple[str, str]], fields: Collection[str]) -> list[str]:

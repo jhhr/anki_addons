@@ -80,7 +80,7 @@ def merge_arrays(old: list, new: list) -> Merge:
             result.array += _carry(old[i1:i2], new[j1:j2], result)
             result.changed += j2 - j1
 
-    if _raw(result.array) != _raw(new):
+    if raw_text(result.array) != raw_text(new):
         raise ValueError("the merged array does not reconstruct the sentence")
     return result
 
@@ -93,7 +93,8 @@ def _key(elem: list) -> Key:
     return (elem[0], elem[1], elem[2], elem[3], tuple(_key(sub) for sub in elem[5]))
 
 
-def _raw(arr: list) -> str:
+def raw_text(arr: list) -> str:
+    """The text the top-level elements spell (word_array/README.md), `<b>` tags left out."""
     return "".join(elem[0] for elem in arr)
 
 

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Mapping
 from typing import (
     Any,
     Callable,
@@ -52,6 +53,7 @@ from ..note_roles import (
     copy_example,
     example_id_field,
     link_id_field,
+    named_field,
     note_type_search,
     sentence_type_of,
     vocab_type_of,
@@ -964,10 +966,10 @@ def _sentence_type_fields(config: dict, sentence_type_name: str) -> list[str]:
     layout the vocab type keeps fields of these names, holding the sentence and array a vocab
     note had before the split, until the user deletes them."""
     block = config.get(sentence_type_name)
-    if not isinstance(block, dict):
+    if not isinstance(block, Mapping):
         return []
-    names = [block.get(key) for key in ("word_list_field", *SENTENCE_KEYS)]
-    return [name for name in names if isinstance(name, str) and name]
+    names = [named_field(block, key) for key in ("word_list_field", *SENTENCE_KEYS)]
+    return [name for name in names if name]
 
 
 def _own_sentence(config: dict, match_op_args: MatchOpArgs) -> EnAndJPSentence:
