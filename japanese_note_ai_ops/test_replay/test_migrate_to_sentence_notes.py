@@ -384,10 +384,10 @@ def test_a_run_moves_the_sentences_and_one_undo_takes_it_all_back(col, tmp_path)
 
 
 def test_the_add_hook_runs_nothing_on_the_sentence_notes_the_run_adds(col, tmp_path):
-    """The add hook (__init__.run_op_on_add_note) asks call_logging.in_bulk_op whether an op is
-    adding the note: the migration's sentence notes are added in its cleanup, some with an
-    empty array, and must get no extract (a request each). A sentence note added by hand
-    after the run gets its words extracted."""
+    """The add hook (__init__.run_op_on_add_note) first asks note_hooks.skips_added_note, with
+    call_logging.in_bulk_op, whether an op is adding the note: the migration's sentence notes
+    are added in its cleanup, some with an empty array, and must get no extract (a request
+    each). A sentence note added by hand after the run gets its words extracted."""
     ids = build(col)
     config = real_anki.install().addonManager.configs[PACKAGE]
     seen: list[tuple[str, bool, tuple]] = []
@@ -395,7 +395,8 @@ def test_the_add_hook_runs_nothing_on_the_sentence_notes_the_run_adds(col, tmp_p
     def on_add(_col: Any, note: Any, _deck_id: Any) -> None:
         name = note.note_type()["name"]
         op_adding = call_logging.in_bulk_op()
-        ops = note_hooks.ops_on_added_note(config, name, note.tags, op_adding=op_adding)
+        skipped = note_hooks.skips_added_note(note.tags, op_adding)
+        ops = () if skipped else note_hooks.ops_on_added_note(config, name)
         seen.append((name, op_adding, ops))
 
     hooks.note_will_be_added.append(on_add)

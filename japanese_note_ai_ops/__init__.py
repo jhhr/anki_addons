@@ -46,8 +46,8 @@ try:
     from .note_hooks import (  # noqa: E402
         CLEAN_MEANING,
         EXTRACT_WORDS,
-        NEW_MATCHED_TAG,
         ops_on_added_note,
+        skips_added_note,
         suspends_added_cards,
         translates_on_unfocus,
     )
@@ -186,15 +186,11 @@ def run_op_on_add_note(note: Note):
     # reading the config twice. Measured over one run: 1,512 notes x ~1.0s = 25.8 minutes,
     # 98.9% of the note-adding phase, to conclude there was nothing to do. Nothing above this
     # line may need the note type or the config.
-    if note.has_tag(NEW_MATCHED_TAG):
-        # Happening within match_words_to_notes, which causes some problems
-        return
-
-    # A note an op adds in its cleanup is added on the run's thread, inside its bulk op.
-    # Nothing runs on it (ops_on_added_note), and the sentence migration adds thousands: this
-    # answers before the note type and the config are read.
-    op_adding = in_bulk_op()
-    if op_adding:
+    #
+    # Nor has it anything to do for a note an op adds in its cleanup, on the run's thread inside
+    # its bulk op (in_bulk_op): the sentence migration adds thousands, untagged. note_hooks
+    # decides both from the tags and that thread-local alone, so that the skip is tested.
+    if skips_added_note(note.tags, in_bulk_op()):
         return
 
     logger = logging.getLogger(__name__)
@@ -212,7 +208,7 @@ def run_op_on_add_note(note: Note):
         logger.error("Error: Missing addon configuration")
         return
     try:
-        ops = ops_on_added_note(config, note_type_name, note.tags, op_adding=op_adding)
+        ops = ops_on_added_note(config, note_type_name)
     except LayoutError as e:
         logger.error(f"Nothing run on the added note: {e}")
         return

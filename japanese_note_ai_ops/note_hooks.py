@@ -21,7 +21,8 @@ from typing import Any, Optional
 from .note_roles import LayoutError, is_sentence_type, sentence_type_of
 
 VOCAB_NOTE_TYPE = "Japanese vocab note"
-# The match op tags every note it makes; `__init__.run_op_on_add_note` checks it before anything
+# The match op tags every note it makes; the add hook skips such a note before anything else
+# (skips_added_note)
 NEW_MATCHED_TAG = "new_matched_jp_word"
 
 CLEAN_MEANING = "clean_meaning"
@@ -38,24 +39,29 @@ def two_type_sentence_type(config: Mapping[str, Any]) -> Optional[str]:
     return None if sentence_type == VOCAB_NOTE_TYPE else sentence_type
 
 
-def ops_on_added_note(
-    config: Mapping[str, Any], note_type_name: str, tags: Iterable[str], *, op_adding: bool
-) -> tuple[str, ...]:
-    """The ops `note_will_be_added` runs on a note, in order (CLEAN_MEANING, EXTRACT_WORDS).
+def skips_added_note(tags: Iterable[str], op_adding: bool) -> bool:
+    """Whether `note_will_be_added` leaves the note alone: a note the match op made
+    (`new_matched_jp_word`, in any case, as Anki's `has_tag` compares), or any note an op adds
+    in its cleanup (`op_adding`, call_logging.in_bulk_op). The migration adds thousands of
+    sentence notes, some with an empty array, and a hook's extract would be a request per note
+    in the middle of the run's writes; in the one-type layout every note an op adds carries the
+    tag anyway.
 
-    None for a note the match op made (`new_matched_jp_word`) or any note an op adds in its
-    cleanup (`op_adding`, call_logging.in_bulk_op): the migration adds thousands of sentence
-    notes, some with an empty array, and a hook's extract would be a request per note in the
-    middle of the run's writes. In the one-type layout every note an op adds carries the tag
-    anyway. A note added by a person: a vocab note of the one-type layout gets its meaning
-    cleaned and its words extracted, as always; in the two-type layout a sentence note gets its
-    words extracted and a vocab note nothing.
+    The hook asks this first, before it opens a log file or reads the note type or the config,
+    so it is given only the tags and a thread-local's answer: deciding it later is what made
+    the hook cost a bulk run minutes (the hook's comment)."""
+    return op_adding or any(tag.casefold() == NEW_MATCHED_TAG.casefold() for tag in tags)
+
+
+def ops_on_added_note(config: Mapping[str, Any], note_type_name: str) -> tuple[str, ...]:
+    """The ops `note_will_be_added` runs on a note a person added, one `skips_added_note` does
+    not skip, in order (CLEAN_MEANING, EXTRACT_WORDS): a vocab note of the one-type layout gets
+    its meaning cleaned and its words extracted, as always; in the two-type layout a sentence
+    note gets its words extracted and a vocab note nothing.
 
     Raises note_roles.LayoutError when the note may be of a broken two-type layout, for the
     hook to log.
     """
-    if op_adding or any(tag.casefold() == NEW_MATCHED_TAG.casefold() for tag in tags):
-        return ()
     # Any other type is none of the layout's: no need to read it
     if note_type_name != VOCAB_NOTE_TYPE and not is_sentence_type(config, note_type_name):
         return ()
