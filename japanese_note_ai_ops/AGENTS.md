@@ -740,7 +740,7 @@ labels, sound descriptions and readings of their own (`猫猫(マオマオ)`), w
 modules, so the eval reads a line as the op will. `furigana_audio_run.py` runs one
 transcriber over the clips into `runs/` with the models and loaders of the op's transcription
 server (`dev/transcribe_server.py`, below), in an environment of its own (PyTorch,
-transformers, Ruby-ASR's package: none of them is a dev dependency here, and the scripts
+transformers, Ruby-ASR's package, PyAV: none of them is a dev dependency here, and the scripts
 import them only when they run); `furigana_audio_score.py` scores the runs against the readings the captions
 give and the labels by ear, through the op's own check (`word_array/reading_check.py`: the
 morae, the alignment, what a word is heard as). With `--combine` it writes what the op's rule
@@ -821,7 +821,8 @@ against the labels.
   `test_transcribe_audio.py` (the transcription field, which transcribers
   a note is asked for, the server check before a run), `test_capture_calls.py`'s
   `TranscriptTests` (the request, its record without the audio, a replay answering it) and
-  `test_transcribe_server.py` (the server's HTTP side, with stand-in models).
+  `test_transcribe_server.py` (the server's HTTP side, with stand-in models, and the add-on's
+  client against it; its decoder only where PyAV is installed, the server's environment).
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
   `python -m pytest`. Most research scripts are tested in `test/` instead (`test_vocab_*.py`,
   `test_kanjify_*.py`), and `vocab_morphology` in both, so a change under

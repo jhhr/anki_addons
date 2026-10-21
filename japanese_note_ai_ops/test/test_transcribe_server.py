@@ -1,6 +1,7 @@
 """dev/transcribe_server.py: what /transcribe and /health answer, over real HTTP, with stand-ins
-for the models and the decoder, so neither PyTorch nor ffmpeg is needed; and how the add-on's own
-client (base_ops.get_transcript_from_local_server) takes those answers."""
+for the models and the decoder, so neither PyTorch nor PyAV is needed; and how the add-on's own
+client (base_ops.get_transcript_from_local_server) takes those answers. The decoder itself is
+tested where PyAV is installed, the server's environment, and skipped elsewhere."""
 
 from __future__ import annotations
 
@@ -10,11 +11,15 @@ import http.client
 import importlib.util
 import io
 import json
+import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from types import ModuleType
+from typing import Any
 from unittest import mock
 
 from addon_modules import ADDON_ROOT, FakeClock, load_ops_module
@@ -42,7 +47,7 @@ class OutOfMemoryError(RuntimeError):
 
 
 def fails_to_decode(data: bytes):
-    raise subprocess.CalledProcessError(1, ["ffmpeg"], stderr=b"Invalid data found")
+    raise ts.ClipError("Invalid data found when processing input")
 
 
 def fails_with(error: Exception):
@@ -86,7 +91,7 @@ class ServiceTest(unittest.TestCase):
     def test_no_audio_is_refused(self):
         self.assertEqual(self.service.transcribe(b"")[0], 400)
 
-    def test_a_clip_ffmpeg_cannot_read(self):
+    def test_a_clip_that_cannot_be_decoded(self):
         service = ts.Service({"ruby-mora": lambda wav: ""}, {}, decoder=fails_to_decode)
         status, answer = service.transcribe(b"junk")
         self.assertEqual(status, 400)
@@ -268,6 +273,91 @@ class ClientTest(unittest.TestCase):
         config = self.serve(OutOfMemoryError("CUDA out of memory"), "ネコ")
         self.assertEqual(self.transcribe(config), {"text": "ネコ"})
         self.assertEqual((self.asked, self.reports), (2, []))
+
+
+def importable(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
+
+@unittest.skipUnless(importable("av") and importable("numpy"), "PyAV: the server's environment")
+class DecodeTest(unittest.TestCase):
+    """The server's decoder on clips in the formats subs2srs writes, Ogg Opus, MP3 and an M4A
+    with its index at the end, each 1.5 s of a tone at 48 kHz in each channel of two."""
+
+    av: Any
+    np: Any
+    clips: dict[str, bytes]
+
+    @classmethod
+    def setUpClass(cls):
+        # By name, as the server does: the add-on's environment (and its type check) has neither
+        cls.av, cls.np = ts.module("av"), ts.module("numpy")
+        formats = {"opus": ("ogg", "libopus"), "mp3": ("mp3", "libmp3lame"), "m4a": ("ipod", "aac")}
+        cls.clips = {name: cls.encode(*format) for name, format in formats.items()}
+
+    @classmethod
+    def encode(cls, container_format: str, codec: str) -> bytes:
+        np, rate = cls.np, 48000
+        t = np.arange(int(1.5 * rate)) / rate
+        tones = np.stack([0.3 * np.sin(2 * np.pi * 440 * t), 0.2 * np.sin(2 * np.pi * 660 * t)])
+        frame = cls.av.AudioFrame.from_ndarray(tones.astype(np.float32), "fltp", "stereo")
+        frame.sample_rate = rate
+        out = io.BytesIO()
+        with cls.av.open(out, "w", format=container_format) as container:
+            stream = container.add_stream(codec, rate=rate, layout="stereo")
+            for packet in [*stream.encode(frame), *stream.encode(None)]:
+                container.mux(packet)
+        return out.getvalue()
+
+    def test_each_clip_as_16khz_mono_float32(self):
+        m4a = self.clips["m4a"]
+        self.assertLess(m4a.find(b"mdat"), m4a.find(b"moov"), "an M4A a pipe could not decode")
+        np = self.np
+        for name, clip in self.clips.items():
+            wav = ts.decode(clip)
+            self.assertEqual((wav.dtype, wav.ndim), (np.float32, 1), name)
+            # 1.5 s, give or take what the encoder pads
+            self.assertAlmostEqual(len(wav) / ts.SAMPLE_RATE, 1.5, delta=0.05, msg=name)
+            # Each channel mixed in at -3 dB, as ffmpeg's -ac 1 does it, measured over the middle
+            # second: whole periods of both tones
+            middle = wav[4000:20000]
+            t = np.arange(len(middle)) / ts.SAMPLE_RATE
+            for hz, amplitude in ((440, 0.3), (660, 0.2)):
+                heard = 2 * abs(np.mean(middle * np.exp(-2j * np.pi * hz * t)))
+                expected = amplitude / np.sqrt(2)
+                self.assertAlmostEqual(heard, expected, delta=expected / 10, msg=f"{name} {hz}")
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "no ffmpeg on PATH to compare with")
+    def test_the_samples_of_the_ffmpeg_command_it_replaced(self):
+        np = self.np
+        for name, clip in self.clips.items():
+            with tempfile.TemporaryDirectory() as d:
+                path = Path(d) / f"clip.{name}"
+                path.write_bytes(clip)
+                command = ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-f", "f32le"]
+                command += ["-ac", "1", "-ar", str(ts.SAMPLE_RATE), "-"]
+                raw = subprocess.run(command, check=True, capture_output=True).stdout
+            before, now = np.frombuffer(raw, dtype=np.float32), ts.decode(clip)
+            self.assertLessEqual(abs(len(now) - len(before)), 4, name)
+            n = min(len(now), len(before))
+            self.assertLess(float(np.max(np.abs(now[:n] - before[:n]))), 1e-3, name)
+
+    def test_a_clip_file_as_the_eval_reads_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "clip.opus"
+            path.write_bytes(self.clips["opus"])
+            from_file = ts.load_clip(path)
+        self.assertTrue(self.np.array_equal(from_file, ts.decode(self.clips["opus"])))
+
+    def test_what_is_no_clip_is_refused(self):
+        subtitles = b"1\n00:00:00,000 --> 00:00:01,000\nhello\n\n"
+        for data in (b"no audio at all", subtitles):
+            with self.assertRaises(ts.ClipError, msg=data):
+                ts.decode(data)
+        service = ts.Service({"ruby-mora": lambda wav: "ネコ"}, {})
+        status, answer = service.transcribe(subtitles)
+        self.assertEqual(status, 400)
+        self.assertEqual(answer["error"], "the clip could not be decoded: no audio in the clip")
 
 
 class PortTest(unittest.TestCase):

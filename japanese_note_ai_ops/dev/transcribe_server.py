@@ -34,9 +34,9 @@ Setup, once, in an environment of its own (the add-on's Python has none of these
     pip install -r dev/transcribe_server_requirements.txt
 
 The CUDA 12.6 wheels are the newest that still run on a Maxwell card such as the GTX 970;
-without an NVIDIA card take https://download.pytorch.org/whl/cpu instead. ffmpeg must be on
-PATH: it decodes the clips. Then, from the add-on's folder, leave this running while Anki
-transcribes:
+without an NVIDIA card take https://download.pytorch.org/whl/cpu instead. The clips are decoded
+by PyAV, with the FFmpeg its wheel brings: no ffmpeg on PATH is needed. Then, from the add-on's
+folder, leave this running while Anki transcribes:
 
     python dev/transcribe_server.py [--models kana-anime-whisper ruby-mora] [--device cuda]
         [--port 8792]
@@ -49,7 +49,7 @@ kana-anime-whisper; ruby-mora stays on the CPU, where it took 0.4 s a clip in th
 since Ruby-ASR's package loads the whole model first.
 
     GET  /health      the models loaded: repo, revision, device
-    POST /transcribe  {"audio": the clip in base64, any format ffmpeg reads, "models": some of
+    POST /transcribe  {"audio": the clip in base64, any format FFmpeg reads, "models": some of
                       the loaded ones, all by default}
                       -> {"transcripts": {model: kana}, "seconds": {model: s}}
 
@@ -68,11 +68,10 @@ import argparse
 import base64
 import gc
 import importlib
+import io
 import json
 import os
-import subprocess
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -146,28 +145,35 @@ def module(name: str) -> Any:
     return importlib.import_module(name)
 
 
-def load_clip(path: Path) -> Any:
-    """The clip as 16 kHz mono float32 samples."""
-    raw = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "1"]
-        + ["-ar", str(SAMPLE_RATE), "-"],
-        check=True,
-        capture_output=True,
-    ).stdout
-    np = module("numpy")
-    return np.frombuffer(raw, dtype=np.float32)
+class ClipError(ValueError):
+    """A clip that cannot be decoded: the request's fault, which sending it again cannot mend."""
 
 
 def decode(data: bytes) -> Any:
-    """A clip sent as bytes, as `load_clip` reads one from a file. Through a file rather than a
-    pipe: an MP4 or M4A clip keeps its index at the end, which ffmpeg cannot reach in a pipe."""
-    handle, name = tempfile.mkstemp(suffix=".clip")
+    """A clip sent as bytes, as 16 kHz mono float32 samples: the samples
+    `ffmpeg -i CLIP -f f32le -ac 1 -ar 16000 -` writes (the same on every clip of the eval),
+    decoded in this process by PyAV rather than by an ffmpeg started for each request. From
+    memory, where the demuxer can seek: an MP4 or M4A clip keeps its index at the end."""
+    av, np = module("av"), module("numpy")
+    chunks = []
     try:
-        with os.fdopen(handle, "wb") as f:
-            f.write(data)
-        return load_clip(Path(name))
-    finally:
-        os.unlink(name)
+        with av.open(io.BytesIO(data)) as container:
+            if not container.streams.audio:
+                raise ClipError("no audio in the clip")
+            resampler = av.AudioResampler(format="flt", layout="mono", rate=SAMPLE_RATE)
+            for frame in container.decode(container.streams.audio[0]):
+                chunks += [part.to_ndarray() for part in resampler.resample(frame)]
+            chunks += [part.to_ndarray() for part in resampler.resample(None)]
+    except av.FFmpegError as e:
+        raise ClipError(e.strerror or str(e)) from e
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(chunks, axis=1)[0]
+
+
+def load_clip(path: Path) -> Any:
+    """A clip file's samples, decoded as the server decodes a clip sent to it."""
+    return decode(path.read_bytes())
 
 
 def snapshot(model: Model, *patterns: str) -> Path:
@@ -289,9 +295,8 @@ class Service:
             return 400, {"error": "no audio in the request"}
         try:
             wav = self.decoder(data)
-        except subprocess.CalledProcessError as e:
-            detail = e.stderr.decode("utf-8", "replace").strip() if e.stderr else str(e)
-            return 400, {"error": f"ffmpeg could not decode the clip: {detail}"}
+        except ClipError as e:
+            return 400, {"error": f"the clip could not be decoded: {e}"}
         transcripts: dict[str, str] = {}
         seconds: dict[str, float] = {}
         with self.lock:
@@ -391,6 +396,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=PORT)
     args = ap.parse_args(argv)
+    # PyAV, which the decoder imports only once a clip comes: missing, it stops the start here
+    module("av")
     torch = module("torch")
     torch.set_num_threads(os.cpu_count() or 1)
     transcribers: dict[str, Transcriber] = {}
