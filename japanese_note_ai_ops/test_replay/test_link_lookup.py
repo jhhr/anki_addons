@@ -2,7 +2,7 @@
 by ID (async_api_ops/link_lookup.py) answering alike.
 
 The rules themselves are test/test_link_ids.py's. These pin what only Anki can say: that the
-anchored term finds exactly the IDs it names and an escaped field name exactly its field, that
+field term finds exactly the ID it names and an escaped field name exactly its field, that
 the field names Anki reads as a search of its own are still `link_ids.SEARCH_KEYWORDS`, and
 that a lookup by search answers as the index read by SQL does, through collection_access as a
 run's worker threads read and with a collection as a sync op or a hook does.
@@ -87,12 +87,9 @@ def test_the_search_terms_find_exactly_the_ids_they_name(col: Any) -> None:
         ids[value] = real_anki.add_note(col, "Terms", {"Front": "x", "Link_ID": value}).id
     decoy = real_anki.add_note(col, "Terms", {"Front": "x", "LinkXID": "123"}).id
 
-    anchored = link_ids.link_ids_search("Link_ID", [123, 456])
-    assert found(col, f'"note:Terms" {anchored}') == {ids["123"], ids["456"]}
     exact = link_ids.field_search("Link_ID", "123")
     assert found(col, f'"note:Terms" {exact}') == {ids["123"]}
-    # What the anchoring and the escaping are for
-    assert ids["91234"] in found(col, '"note:Terms" "Link\\_ID:re:123"')
+    # What the escaping is for
     assert decoy in found(col, '"note:Terms" "Link_ID:123"')
 
 
@@ -222,7 +219,6 @@ def test_numbers_no_note_can_hold_find_nothing(col: Any) -> None:
     vocab(col, "-5")
     for number in [0, -5, LIMIT, GENERATED]:
         assert link_lookup.find_note_id(CONFIG, VOCAB, number, col=col) is None
-    assert link_lookup.find_note_ids(CONFIG, VOCAB, [], col=col) == {}
 
 
 def test_the_lookups_answer_as_the_index_does(col: Any) -> None:
@@ -234,14 +230,10 @@ def test_the_lookups_answer_as_the_index_does(col: Any) -> None:
     assert len(expected) == 7
 
     # With the collection, as a sync op or a hook; through collection_access, as a run's
-    # worker threads; a search per ID; a regex of several IDs per search
-    assert link_lookup.find_note_ids(CONFIG, VOCAB, asked, col=col) == expected
-    assert link_lookup.find_note_ids(CONFIG, VOCAB, asked) == expected
-    one_by_one = {n: link_lookup.find_note_id(CONFIG, VOCAB, n, col=col) for n in asked}
-    assert {n: note_id for n, note_id in one_by_one.items() if note_id is not None} == expected
-    with mock.patch.object(link_lookup, "_IDS_PER_SEARCH", 2):
-        assert link_lookup.find_note_ids(CONFIG, VOCAB, asked, col=col) == expected
-    assert link_lookup.link_index(CONFIG, VOCAB).note_ids(asked) == expected
+    # worker threads
+    for col_given in (col, None):
+        one_by_one = {n: link_lookup.find_note_id(CONFIG, VOCAB, n, col=col_given) for n in asked}
+        assert {n: nid for n, nid in one_by_one.items() if nid is not None} == expected
 
 
 def test_a_type_naming_no_link_id_field_holds_its_note_ids(col: Any) -> None:
@@ -267,7 +259,7 @@ def test_settings_the_collection_cannot_answer_raise_layout_errors(col: Any) -> 
         with pytest.raises(LayoutError, match=f'"{note_type}"'):
             link_lookup.find_note_id(config, note_type, GENERATED, col=col)
         with pytest.raises(LayoutError):
-            link_lookup.link_index(config, note_type)
+            link_lookup.find_note_id(config, note_type, GENERATED)
 
 
 def test_a_runs_cache_reads_each_type_once(col: Any) -> None:
@@ -291,8 +283,9 @@ def test_every_note_an_answer_names_is_noted_for_the_capture(col: Any) -> None:
     holder = vocab(col, str(GENERATED))
     plain = vocab(col, "")
     with mock.patch.object(link_lookup.capture_notes, "found") as noted:
-        link_lookup.find_note_ids(CONFIG, VOCAB, [GENERATED, plain, OTHER_GENERATED], col=col)
-        assert sorted(noted.call_args.args[0]) == [holder, plain]
+        for held in (GENERATED, plain, OTHER_GENERATED):
+            link_lookup.find_note_id(CONFIG, VOCAB, held, col=col)
+        assert sorted(n for call in noted.call_args_list for n in call.args[0]) == [holder, plain]
         index = link_lookup.link_index(CONFIG, VOCAB, col=col)
         noted.reset_mock()
         index.note_id(GENERATED)

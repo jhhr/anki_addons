@@ -535,28 +535,5 @@ class FieldSearchTests(unittest.TestCase):
                 self.assertEqual(link_ids.field_search(name, "1"), f'"{name}:1"')
 
 
-class LinkIdsSearchTests(unittest.TestCase):
-    def test_an_anchored_regex_of_the_ids_in_order(self):
-        self.assertEqual(
-            link_ids.link_ids_search("Word ID", [GENERATED, A, A]),
-            f'"Word ID:re:^(?:{A}|{GENERATED})$"',
-        )
-
-    def test_one_id(self):
-        self.assertEqual(link_ids.link_ids_search("ID", [7]), '"ID:re:^(?:7)$"')
-
-    def test_the_field_name_is_escaped(self):
-        self.assertEqual(link_ids.link_ids_search("a_b", [7]), '"a\\_b:re:^(?:7)$"')
-
-    def test_no_ids_raise_rather_than_find_every_empty_field(self):
-        with self.assertRaises(ValueError):
-            link_ids.link_ids_search("ID", [])
-
-    def test_numbers_no_note_can_hold_raise(self):
-        for numbers in ([0], [-5, 7], [LIMIT]):
-            with self.subTest(numbers), self.assertRaises(ValueError):
-                link_ids.link_ids_search("ID", numbers)
-
-
 if __name__ == "__main__":
     unittest.main()

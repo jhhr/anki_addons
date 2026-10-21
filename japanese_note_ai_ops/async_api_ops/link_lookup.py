@@ -1,4 +1,4 @@
-"""Link IDs read from the collection: a note type's index, and the notes holding given IDs.
+"""Link IDs read from the collection: a note type's index, and the note holding one ID.
 
 A note holds its link ID field's value, or its note id when the field holds none
 (link_ids.py), so no one search finds the note holding an ID: a field search finds the notes
@@ -10,8 +10,8 @@ back says which of them do. Two ways to ask, for two kinds of caller:
   the collection before its cleanup, so the index holds for the whole run, as word_index's
   does. Notes the run creates are not in it: it hands out their IDs (`LinkIndex.new_link_id`),
   one for the whole run per type, so no two get one.
-- `find_note_ids` and `find_note_id`, a search and a read of the notes found, in one turn with
-  the collection, for a few IDs.
+- `find_note_id`, a search and a read of the notes found, in one turn with the collection, for
+  one ID.
 
 Both answer as `link_ids.LinkIndex`: of two notes holding one ID, the one keeping it. On a
 run's worker threads the collection is read through collection_access, which a cancel abandons;
@@ -25,13 +25,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, cast
 
 from anki.utils import ids2str
 from aqt import mw
 
-from ..link_ids import SEARCH_KEYWORDS, LinkIndex, field_search, is_link_id, link_ids_search
+from ..link_ids import SEARCH_KEYWORDS, LinkIndex, field_search, is_link_id
 from ..note_roles import LayoutError, link_id_field, note_type_search
 from . import capture_notes
 from .collection_access import run_on_collection, run_on_collection_async
@@ -122,20 +122,11 @@ def _built(note_type_name: str, rows: list[tuple[int, str]], started: float) -> 
     return index
 
 
-def link_index(
-    config: Mapping[str, Any], note_type_name: str, col: Optional[Collection] = None
-) -> LinkIndex:
+def link_index(config: Mapping[str, Any], note_type_name: str, col: Collection) -> LinkIndex:
     """Every link ID of the type's notes, read now: for a sync op over many notes, built once
-    before them. Through collection_access without `col`."""
+    before them. A run's tasks share a LinkIndexCache instead."""
     started = time.perf_counter()
-    if col is not None:
-        rows = _index_rows(col, config, note_type_name)
-    else:
-        rows = run_on_collection(
-            f"link_lookup: index of {note_type_name}",
-            lambda: _index_rows(mw.col, config, note_type_name),
-        )
-    return _built(note_type_name, rows, started)
+    return _built(note_type_name, _index_rows(col, config, note_type_name), started)
 
 
 class LinkIndexCache:
@@ -173,36 +164,23 @@ class LinkIndexCache:
             return index
 
 
-# The most IDs one search looks for. Each search reads every note of the type once, whatever it
-# asks; a cap keeps one regex, and the `nid:` list beside it, a size Anki takes in its stride
-# (3000 sixteen-digit IDs took 0.1s against Anki 26.09). Past a few hundred IDs the index is
-# the better way anyway.
-_IDS_PER_SEARCH = 500
-
-
 def _find(
-    col: Collection, config: Mapping[str, Any], note_type_name: str, wanted: list[int]
-) -> dict[int, int]:
+    col: Collection, config: Mapping[str, Any], note_type_name: str, wanted: int
+) -> Optional[int]:
     field = _link_field(col, config, note_type_name)
-    type_term = note_type_search(note_type_name)
-    candidates: set[int] = set()
-    for start in range(0, len(wanted), _IDS_PER_SEARCH):
-        chunk = wanted[start : start + _IDS_PER_SEARCH]
-        nid_term = "nid:" + ",".join(str(number) for number in chunk)
-        if field.name is None:
-            query = f"{type_term} {nid_term}"
-        else:
-            if len(chunk) == 1:
-                field_term = field_search(field.name, str(chunk[0]))
-            else:
-                field_term = link_ids_search(field.name, chunk)
-            query = f"{type_term} ({field_term} OR {nid_term})"
-        candidates.update(col.find_notes(query))
+    nid_term = f"nid:{wanted}"
+    if field.name is None:
+        query = f"{note_type_search(note_type_name)} {nid_term}"
+    else:
+        field_term = field_search(field.name, str(wanted))
+        query = f"{note_type_search(note_type_name)} ({field_term} OR {nid_term})"
+    candidates = col.find_notes(query)
     if not candidates:
-        return {}
-    # The notes found, their fields read back: the searches find every note holding a wanted
-    # ID, and also a note found by `nid:` whose field holds another ID. An index of just these
-    # answers for the wanted IDs exactly as one of the whole type does.
+        return None
+    # The notes found, their fields read back: the search finds every note holding the ID,
+    # and also a note found by `nid:` whose field holds another ID. An index of just these
+    # answers for the ID exactly as one of the whole type does.
+    rows: list[tuple[int, str]]
     if field.ord is None:
         rows = [(note_id, "") for note_id in candidates]
     else:
@@ -213,33 +191,7 @@ def _find(
                 field.ord,
             ),
         )
-    return LinkIndex.from_rows(rows).note_ids(wanted)
-
-
-def find_note_ids(
-    config: Mapping[str, Any],
-    note_type_name: str,
-    link_ids: Iterable[int],
-    col: Optional[Collection] = None,
-) -> dict[int, NoteId]:
-    """The note of the type holding each of these link IDs, the one keeping it when several do
-    (link_ids.LinkIndex); an ID no note holds, or a number no note can hold (0, a legacy
-    negative placeholder), is left out. One turn with the collection, through
-    collection_access without `col`."""
-    wanted = sorted({number for number in link_ids if is_link_id(number)})
-    if not wanted:
-        return {}
-    if col is not None:
-        found = _find(col, config, note_type_name, wanted)
-    else:
-        found = run_on_collection(
-            f"link_lookup: {len(wanted)} link IDs of {note_type_name}",
-            lambda: _find(mw.col, config, note_type_name, wanted),
-        )
-    # On the calling thread, which has the run's capture context; the collection's worker has
-    # none
-    capture_notes.found(found.values())
-    return {number: cast("NoteId", note_id) for number, note_id in found.items()}
+    return LinkIndex.from_rows(rows).note_id(wanted)
 
 
 def find_note_id(
@@ -248,5 +200,22 @@ def find_note_id(
     held: int,
     col: Optional[Collection] = None,
 ) -> Optional[NoteId]:
-    """The note of the type holding this link ID, as `find_note_ids`; None when none does."""
-    return find_note_ids(config, note_type_name, [held], col=col).get(held)
+    """The note of the type holding this link ID, the one keeping it when several do
+    (link_ids.LinkIndex); None when no note holds it, or it is a number no note can hold (0, a
+    legacy negative placeholder). One turn with the collection, through collection_access
+    without `col`."""
+    if not is_link_id(held):
+        return None
+    if col is not None:
+        found = _find(col, config, note_type_name, held)
+    else:
+        found = run_on_collection(
+            f"link_lookup: link ID {held} of {note_type_name}",
+            lambda: _find(mw.col, config, note_type_name, held),
+        )
+    if found is None:
+        return None
+    # On the calling thread, which has the run's capture context; the collection's worker has
+    # none
+    capture_notes.found([found])
+    return cast("NoteId", found)
