@@ -510,6 +510,13 @@ above.
 
        "note:Sentence note" ("Sentence ID:{{trigger.Example sentence id}}" OR nid:{{trigger.Example sentence id}})
 
+   Put the Query Notes stage with that search, and the stages reading what it finds, inside a
+   Condition whose predicate is the text `{{trigger.Example sentence id}}`: text counts as true
+   when it is not empty, so a vocab note with no example is passed over. Its id field is empty
+   when the move gave it none, when "Refresh example sentences" emptied it, finding no example,
+   and when the note was added by hand. For such a note the search holds a bare `nid:`, which
+   is no search Anki can run, and CopyAnywhere stops the whole run at the first one.
+
    In its array the word is the element linked to the vocab note's link ID: the number in its
    `new_note_id_field` field, its note id while that holds none. A search on a tag the run moved
    (a filtered deck, a CopyAnywhere or related_card_disperse search) finds sentence notes now,
