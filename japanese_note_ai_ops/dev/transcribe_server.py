@@ -26,10 +26,13 @@ reading among the 846 it wrote with a known answer. The others are here for the 
 pinned to the revision the eval measured (`Model.revision`): rose3 retrains kana-anime-whisper
 now and then.
 
-Setup, once, in an environment of its own (the add-on's Python has none of these packages):
+Setup, once, in an environment of its own (the add-on's Python has none of these packages),
+made outside the add-on's folder: an update of the add-on replaces that folder, `build.py dist`
+would pack an environment left in it, and git does not ignore one there. ENV below is such a
+folder, transcribe-env in the home folder say; from the add-on's folder:
 
-    python -m venv transcribe-env
-    transcribe-env\\Scripts\\activate          (macOS and Linux: source transcribe-env/bin/activate)
+    python -m venv ENV
+    ENV\\Scripts\\activate          (macOS and Linux: source ENV/bin/activate)
     pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu126
     pip install -r dev/transcribe_server_requirements.txt
 
