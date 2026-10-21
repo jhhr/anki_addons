@@ -718,8 +718,8 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
 
     def test_nothing_is_rewritten_after_the_add(self):
         """A new note holds its link ID from the moment it is made, so neither entry point
-        hands the cleanup a new_notes_op: what swapped placeholders for note ids is gone
-        (SPEC D18). The notes not added are unlinked, the duplicates merged."""
+        hands the cleanup a new_notes_op: what swapped placeholders for note ids is gone. The
+        notes not added are unlinked, the duplicates merged."""
         self.assertIsNone(self.mwtn.match_words_spec().new_notes_op)
         config = {**self.config, "replace_existing_matched_words": False}
         for start in (
@@ -765,9 +765,9 @@ def run_plan(mwtn, plan, match_word):
 
 
 class TwoTypeMatchFieldsTests(unittest.TestCase):
-    """The processed note is a sentence note and its words are notes of its vocab type
-    (SPEC 6 P4). Every field name is its block's own, so a key read from the wrong block names a
-    field the other type does not have."""
+    """The processed note is a sentence note and its words are notes of its vocab type. Every
+    field name is its block's own, so a key read from the wrong block names a field the other
+    type does not have."""
 
     def plan(self, note, arr, updates, edited_nids, config=None):
         return self.mwtn.plan_word_array_matching(
@@ -1113,9 +1113,9 @@ class CancelledMatchRunTests(unittest.TestCase):
 
 
 class DuplicateLinkIdsRefusalTests(unittest.TestCase):
-    """While two notes of the vocab type hold one link ID, the run refuses before any request
-    (the lead's decision after P11): a word matched to the newer would be linked by an ID that
-    names the older, and its new notes' IDs handed out beside them."""
+    """While two notes of the vocab type hold one link ID, the run refuses before any request:
+    a word matched to the newer would be linked by an ID that names the older, and its new
+    notes' IDs handed out beside them."""
 
     HELD_TWICE = 4000000000000001
 

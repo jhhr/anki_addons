@@ -397,7 +397,7 @@ def copy_example(
     field, and write `sentence_id` into the `example_id_field` when there is one.
 
     The id comes as an argument rather than off the note so that a test's note can be a dict;
-    it is the sentence note's link ID (link_ids.py, D14), its note id only while its ID field
+    it is the sentence note's link ID (link_ids.py), its note id only while its ID field
     holds none, and must be one: 0, a sentence note not added yet holding no ID, leads nowhere.
     The notes are keyword-only because both are the same shape: swapped, the copy would
     overwrite the sentence note without a word.

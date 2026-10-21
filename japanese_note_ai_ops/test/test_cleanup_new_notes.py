@@ -9,8 +9,8 @@ collection.
 
 A new note holds its link ID (link_ids.py) from the moment the match op makes it, in its
 new_note_id_field, and the arrays link it by that before and after the add: nothing is
-rewritten once it is added (SPEC D18), and a note not added, cancelled or failed, has its ID
-taken out of the arrays again.
+rewritten once it is added, and a note not added, cancelled or failed, has its ID taken out of
+the arrays again.
 """
 
 import contextlib
@@ -777,7 +777,7 @@ def meaning_note(sort: str, meaning: str, held: int) -> FakeNote:
 
 
 class CancelledAddingTests(unittest.TestCase):
-    """The cleanup's own cancel, pressed during the adding or the dedupe before it (SPEC D11).
+    """The cleanup's own cancel, pressed during the adding or the dedupe before it.
 
     Added notes keep the link IDs the arrays link them by; the failed ones and the ones never
     tried are unlinked: their words go back to be matched again.
@@ -1475,9 +1475,9 @@ def array_match_data(note: FakeNote) -> list:
 
 
 class TwoTypeLayoutCleanupTests(unittest.TestCase):
-    """The new notes are vocab notes and the arrays linking them are the sentence notes'
-    (SPEC 6 P4): every search names the sentence type and its field, so a vocab note's old
-    array is never rewritten, and a sentence note, which has no new_note_id_field, is."""
+    """The new notes are vocab notes and the arrays linking them are the sentence notes': every
+    search names the sentence type and its field, so a vocab note's old array is never
+    rewritten, and a sentence note, which has no new_note_id_field, is."""
 
     def setUp(self):
         self.updater = FakeUpdater()
@@ -2005,9 +2005,9 @@ class SiblingMarkersTests(NewNoteHarness):
 
 
 class OneTypeNewNoteTests(NewNoteHarness):
-    """The one-type layout makes its new notes as it always has (SPEC D7): the four sentence
-    fields copied from the processed note, its translation not though the block names one, and
-    no own sentence handed to the cleaning, whose prompts would change with it."""
+    """The one-type layout makes its new notes as it always has: the four sentence fields
+    copied from the processed note, its translation not though the block names one, and no own
+    sentence handed to the cleaning, whose prompts would change with it."""
 
     CONFIG = {"Word": {**CONFIG["Word"], "translated_sentence_field": "translation"}}
 
@@ -2059,8 +2059,9 @@ class OneTypeNewNoteTests(NewNoteHarness):
         self.assertEqual(new["word_list_field"], "")
 
     def test_the_processed_note_names_no_example_and_its_id_field_is_left_empty(self):
-        """Nothing names an example in the one-type layout, so nothing is filled (SPEC D17 is
-        the two-type layout's): the note is as before but for the new note's link ID."""
+        """Nothing names an example in the one-type layout, so nothing is filled (the two-type
+        layout fills it, so that the ID travels with the note): the note is as before but for
+        the new note's link ID."""
         args = {**self.args(index=FakeMarkerIndex()), "word_path": [1]}
         with FakeSearch().patched():
             self.assertTrue(mwtn.create_new_note_without_matching(self.CONFIG, "", args))
@@ -2073,8 +2074,8 @@ class OneTypeNewNoteTests(NewNoteHarness):
 
 
 class NewNoteLinkIdTests(NewNoteHarness):
-    """A new note's link ID (SPEC D16, D18): generated when the note is made, from the processed
-    note's link ID, the word's place in its array, the word and its reading; in the note's
+    """A new note's link ID: generated when the note is made, from the processed note's link
+    ID, the word's place in its array, the word and its reading; in the note's
     new_note_id_field and in its word's result from then on, and kept once added."""
 
     def made(self, reading: str = "げんご", word_path=(2,), run=None) -> FakeNote:
@@ -2220,10 +2221,10 @@ def processed_sentence_note() -> TypedNote:
 
 
 class TwoTypeNewNoteTests(unittest.TestCase):
-    """New notes in the two-type layout (SPEC 6 P6): of the vocab type, holding no sentence but
-    their example's translation, audio and id, the example being the sentence note processed;
-    and cleaned with the target's own sentence, which clean_meaning cannot read off a note
-    that is not added yet."""
+    """New notes in the two-type layout: of the vocab type, holding no sentence but their
+    example's translation, audio and id, the example being the sentence note processed; and
+    cleaned with the target's own sentence, which clean_meaning cannot read off a note that is
+    not added yet."""
 
     WORD = "言葉"
 
@@ -2385,9 +2386,9 @@ class TwoTypeNewNoteTests(unittest.TestCase):
                 self.assertEqual(new["new_note_id_field"], str(link_ids.new_link_id(key, ())))
 
     def test_the_sentence_note_s_empty_id_field_is_filled_with_its_note_id(self):
-        """The new note names it by that, the ID it has anyway (SPEC D15), now written so that
-        it travels with the note (D17): the note is saved by the run in any case, its array
-        linking the new note."""
+        """The new note names it by that, the ID it has anyway, now written so that it travels
+        with the note: the note is saved by the run in any case, its array linking the new
+        note."""
         self.with_sentence_id_field("")
 
         new = self.made_without_a_match()

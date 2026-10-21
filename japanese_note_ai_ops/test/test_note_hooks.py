@@ -114,7 +114,7 @@ class AddedNoteTests(unittest.TestCase):
         self.assertEqual(added(two_type_config(), SENTENCE), (hooks.EXTRACT_WORDS,))
 
     def test_two_type_a_vocab_note_gets_nothing(self):
-        # Vocab notes come from the match op only (D3); one added by hand is not cleaned either
+        # Vocab notes come from the match op only; one added by hand is not cleaned either
         self.assertEqual(added(two_type_config(), VOCAB), ())
         self.assertEqual(added(two_type_config(), "Kanji draw"), ())
 

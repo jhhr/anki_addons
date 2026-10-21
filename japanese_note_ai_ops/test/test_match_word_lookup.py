@@ -331,8 +331,8 @@ TWO_TYPE = {
 class WordArraySearchTests(unittest.TestCase):
     """The other way round: from a selected vocab note to the arrays holding its word, which
     the single-word rematch and the matched-status tags search. They are its sentence type's
-    notes, searched by that type's array field (SPEC 6 P4); a vocab note's old array field of
-    the same name is not one of them."""
+    notes, searched by that type's array field; a vocab note's old array field of the same name
+    is not one of them."""
 
     def setUp(self):
         self.queries: "list[str]" = []

@@ -287,7 +287,7 @@ class LinkIndexTests(unittest.TestCase):
 
 class IndexNewLinkIdTests(unittest.TestCase):
     """The IDs a run hands its new notes, from its index of their type: none a note held when
-    the index was read, none handed out twice (SPEC 10, "Uniqueness")."""
+    the index was read, none handed out twice."""
 
     def test_a_free_key_gets_its_plain_id(self):
         index = link_ids.LinkIndex.from_rows([(A, "")])
@@ -405,7 +405,7 @@ def as_written(rows: list, plan) -> list:
 
 
 class PlanIdFillsTests(unittest.TestCase):
-    """What Fill link IDs writes into one type's link ID fields (SPEC D17)."""
+    """What Fill link IDs writes into one type's link ID fields."""
 
     def test_a_field_holding_no_id_gets_the_note_id_and_one_holding_an_id_of_its_own_nothing(self):
         rows = [(A, ""), (B, "0"), (C, "-1700000000123"), (D, str(GENERATED)), (E, str(E))]

@@ -2968,8 +2968,8 @@ def link_id_kept(config: dict, note: Note) -> Iterator[KeptLinkId]:
     ID: the field is what makes the ID the note's. `col.add_note` first runs every addon's
     note_will_be_added hook on the note, and a hook can write that field: a CopyAnywhere
     definition filling it with the note's id writes "0", the id of a note not added yet, and
-    the note's link ID would then be its note id, which no array links (SPEC D18: the user is
-    to remove such a definition; this keeps the IDs right meanwhile).
+    the note's link ID would then be its note id, which no array links (config.md has the user
+    remove such a definition; this keeps the IDs right meanwhile).
 
     The add writes the note to the collection as the hook left it, so putting the field back
     in the note in memory is not enough: `restored` says the note has to be saved again, which

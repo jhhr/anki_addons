@@ -214,9 +214,9 @@ class _ArrayLinks(NamedTuple):
 
     # Put before a search's terms. In the two-type layout the sentence type's `note:` term:
     # the vocab notes keep their old array field until the user deletes it, under the same
-    # name, and it is never read as an array (SPEC D8). Empty in the one-type layout, whose
-    # searches have never named a type: a new note copied from a candidate of another
-    # configured type is of that type, and the arrays linking it are of the processed note's
+    # name, and it is never read as an array. Empty in the one-type layout, whose searches
+    # have never named a type: a new note copied from a candidate of another configured type
+    # is of that type, and the arrays linking it are of the processed note's
     type_term: str
     word_list_field: str
 
@@ -561,7 +561,8 @@ def deduplicate_notes_list(
         english_meaning_field = get_field_config(config, "english_meaning_field", note_type)
         jp_meaning_field = get_field_config(config, "meaning_field", note_type)
         new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
-        # The vocab block's new_note_id_field is its link ID field (SPEC D14)
+        # The vocab block's new_note_id_field is its link ID field: sentence_id_field would take
+        # its place, but layout_error refuses it on a vocab block (MatchFields.new_note_id_field)
         reference_field = link_id_field(config, note_type["name"]) or new_note_id_field
         links = _array_links(config, note_type["name"])
         if (
@@ -723,7 +724,7 @@ def deduplicate_notes_list(
         word_list_field = links.word_list_field
         # The notes filtered hold arrays of their own only in the one-type layout. A vocab
         # note of the two-type layout has none, though it can keep its old array field under
-        # the sentence type's field name: not rewritten, as it is not read (SPEC D8)
+        # the sentence type's field name: not rewritten, as it is not read
         own_arrays = filtered_notes if links.one_type else []
         for ref_note in own_arrays:
             if repointed(ref_note, word_list_field, dup_ref, keep_ref) and ref_note.id > 0:
@@ -906,10 +907,10 @@ def _sentence_link_id(config: dict, match_op_args: MatchOpArgs) -> int:
     the two-type layout, the new vocab note names its example by (note_roles.copy_example).
 
     There, an empty link ID field of the sentence note is first filled with its note id, the
-    ID it has anyway (D15), so that it travels with the note when it is exported (D17): the
-    note is saved by this run in any case, since its array gets the new note's ID. A field
-    holding anything else is left as it is. In the one-type layout nothing names an example,
-    and the note is left as it was."""
+    ID it has anyway, so that it travels with the note when it is exported: the note is saved
+    by this run in any case, since its array gets the new note's ID. A field holding anything
+    else is left as it is. In the one-type layout nothing names an example, and the note is
+    left as it was."""
     current_note = match_op_args["current_note"]
     field = link_id_field(config, match_op_args["note_type"]["name"])
     if (
@@ -928,11 +929,11 @@ def _sentence_link_id(config: dict, match_op_args: MatchOpArgs) -> int:
 def _new_link_id(match_op_args: MatchOpArgs, sentence_link_id: int) -> int:
     """The link ID of the vocab note made for the target, generated (link_ids.py) before it is
     added, so that the array links it while it is prepared and nothing is rewritten after the
-    add (SPEC D18). Keyed `vocab|<sentence link ID>|<word path>|<word>|<reading>` (D16): the
-    sentence and the word's place in its array tell apart every note a run makes, so the same
-    sentence makes the same IDs on a rerun or a replay. Handed out by the run's index of the
-    vocab type (`vocab_link_index`): an ID no vocab note holds, and that no other note of the
-    run got. A caller naming no word path (only tests do) keys by none."""
+    add. Keyed `vocab|<sentence link ID>|<word path>|<word>|<reading>`: the sentence and the
+    word's place in its array tell apart every note a run makes, so the same sentence makes the
+    same IDs on a rerun or a replay. Handed out by the run's index of the vocab type
+    (`vocab_link_index`): an ID no vocab note holds, and that no other note of the run got. A
+    caller naming no word path (only tests do) keys by none."""
     path = ".".join(str(index) for index in match_op_args.get("word_path") or ())
     key = "|".join(
         ("vocab", str(sentence_link_id), path, match_op_args["word"], match_op_args["reading"])
@@ -1044,7 +1045,8 @@ def _sentence_note_example(
     """A two-type candidate's example sentence in the main prompt: its example sentence note's,
     made from that note's array as a one-type note's is made from its own, so a migrated note
     shows the text it showed before. "" when it has none, as a generated meaning has: no note,
-    or one holding no array, which leaves nothing to mark the word in (D5: no <b> is stored).
+    or one holding no array, which leaves nothing to mark the word in (a sentence note stores no
+    <b>: which of its words is bold depends on the vocab note showing it).
     `word_link_id` is the candidate's link ID, which the array's element of its word holds."""
     sentence_field = fields["furigana_sentence_field"]
     word_list_field = fields["word_list_field"]
@@ -3111,7 +3113,7 @@ def match_words_spec() -> NotesRunSpec:
     """The match op's run, as the menu starts it and as a script does (`NotesRunSpec`). Built
     when called, so that it takes the module's functions as they are then. No new_notes_op:
     a new note holds its link ID from the moment it is made, so nothing is rewritten after it
-    is added (SPEC D18)."""
+    is added."""
     return NotesRunSpec(
         done_text="Matched words to notes",
         title="Async AI op: Matching words to notes",

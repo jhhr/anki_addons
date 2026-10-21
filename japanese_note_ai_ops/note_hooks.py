@@ -8,7 +8,7 @@ The vocab type is hardcoded, as the hooks always had it: "Japanese vocab note" (
 in `__init__.py`'s story hook). In the two-type layout its sentence type is the one its config
 block names (note_roles): sentences are added as notes of that type and vocab notes are made
 only by the match op, so a sentence note added by a person gets its words extracted, and an
-added vocab note nothing (D3).
+added vocab note nothing.
 
 Free of anki and aqt, like note_roles.
 """
@@ -75,7 +75,7 @@ def translates_on_unfocus(config: Mapping[str, Any], note_type_name: str) -> boo
     """Whether leaving an empty translation field of this type's note translates its sentence:
     the hardcoded vocab type's in the one-type layout, as always; in the two-type layout its
     sentence type's instead. A two-type vocab note's translation is a copy of its example
-    sentence's (D1) and its type names no sentence to translate: translating there only logged
+    sentence's and its type names no sentence to translate: translating there only logged
     an error. A broken layout keeps the vocab type translating, as before roles existed, and
     its sentence type not, whose error the add hook and the ops name."""
     if note_type_name == VOCAB_NOTE_TYPE:
@@ -88,7 +88,7 @@ def translates_on_unfocus(config: Mapping[str, Any], note_type_name: str) -> boo
 
 def suspends_added_cards(config: Mapping[str, Any], note_type_name: str) -> bool:
     """Whether a note the Add dialog has just added gets its cards suspended: a sentence note
-    of the two-type layout, which is never studied (D6). False for a broken layout."""
+    of the two-type layout, which is never studied. False for a broken layout."""
     return _is_two_type_sentence_type(config, note_type_name)
 
 

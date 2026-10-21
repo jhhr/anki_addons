@@ -24,7 +24,7 @@ step_failure = load_ops_module("step_failure")
 api = load_ops_module("api_client")
 match_flags = load_ops_module("match_flags", subdir="word_array")
 
-# The ops D7 of the spec lists, in the menu's order
+# The ops, in the menu's order
 OP_LABELS = [
     "Clean dictionary meaning",
     "Translate sentence",

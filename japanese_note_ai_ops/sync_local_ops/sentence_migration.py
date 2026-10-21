@@ -62,7 +62,7 @@ VOCAB_ID_KEY = "new_note_id_field"
 SENTENCE_ID_KEY = "sentence_id_field"
 # The vocab block's keys naming the word the link check compares elements with
 WORD_KEYS = ("word_kanjified_field", "word_normal_field", "word_reading_field")
-# The sentence block's lists of the user's tags (D13), read by the migration only
+# The sentence block's lists of the user's own tags (config.md), read by the migration only
 MOVE_TAGS_KEY = "migration_move_tags"
 COPY_TAGS_KEY = "migration_copy_tags"
 _EXTRACTION_KEY = "word_extraction_sentence_field"
@@ -240,7 +240,7 @@ class MigrationPlan:
     # Per note the plan changes (a vocab note above, or an existing sentence note whose array or
     # tags change) whose link ID field holds no link ID, empty or not: what the run writes there
     # along with its change, its note id. That is its link ID already (link_ids.link_id); in
-    # the field it travels with the note (D17)
+    # the field it travels with the note
     link_id_fills: dict[int, str]
     report: Report
 
