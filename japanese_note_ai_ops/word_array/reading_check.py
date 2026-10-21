@@ -236,6 +236,8 @@ def reference(
     order. A word is read as its span's reading from the morpheme it starts at; one that does
     not start at a morpheme is not found. The rest of a line is read as Sudachi reads it,
     particles as pronounced, and digits no word took as a number (175), not digit by digit.
+    A morpheme of no text is skipped and a word placed once: Sudachi reads … as ... and puts the
+    two dots it adds where the next word starts, which placed the word three times.
     `texts` are the lines without their inline readings."""
     ref: list[str] = []
     owner: list[int] = []
@@ -247,10 +249,12 @@ def reference(
         mine = sorted(by_line.get(n, []), key=lambda k: spans[k].start)
         i = 0
         for mo in tokenize(text):
+            if mo.end() <= mo.begin():
+                continue
             while i < len(mine) and spans[mine[i]].end <= mo.begin():
                 i += 1
             if i < len(mine) and spans[mine[i]].start <= mo.begin() < spans[mine[i]].end:
-                if mo.begin() == spans[mine[i]].start:
+                if mo.begin() == spans[mine[i]].start and placed[-1:] != [mine[i]]:
                     placed.append(mine[i])
                     got = morae(spans[mine[i]].reading)
                     ref.extend(got)

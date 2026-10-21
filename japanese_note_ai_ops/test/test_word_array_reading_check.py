@@ -14,6 +14,7 @@ NOUN = ("名詞", "普通名詞", "一般", "*", "*", "*")
 PARTICLE = ("助詞", "係助詞", "*", "*", "*", "*")
 NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
 SPACE = ("空白", "*", "*", "*", "*", "*")
+STOP = ("補助記号", "句点", "*", "*", "*", "*")
 
 
 class Morpheme:
@@ -149,6 +150,22 @@ class ReferenceTest(unittest.TestCase):
         _, owner, placed = check.reference(["175"], spans, tokenize)
         self.assertEqual(placed, [])
         self.assertNotIn(0, owner)
+
+    def test_a_morpheme_of_no_text_places_no_word_again(self):
+        # Sudachi reads … as ... and puts the two dots it adds where the next word starts
+        def tokenize_ellipsis(text):
+            out = []
+            for mo in tokenize(text):
+                out.append(mo)
+                if mo.surface() == "…":
+                    out += [Morpheme("", "．", STOP, mo.end()) for _ in range(2)]
+            return out
+
+        spans = [check.Span(0, 2, 4, "まおまお")]
+        ref, owner, placed = check.reference(["ん…猫猫"], spans, tokenize_ellipsis)
+        self.assertEqual("".join(ref), "ンマオマオ")
+        self.assertEqual(owner, [-1, 0, 0, 0, 0])
+        self.assertEqual(placed, [0])
 
     def test_words_are_placed_in_line_order(self):
         spans = [check.Span(1, 0, 1, "くすり"), check.Span(0, 0, 1, "ねこ")]

@@ -176,6 +176,18 @@ def test_a_captions_line_breaks_are_written_br_and_its_text_escaped(col):
     assert col.get_note(lines.id).tags == col.get_note(escaped.id).tags == []
 
 
+def test_a_word_after_an_ellipsis_is_read_once(col):
+    # Sudachi reads … as ... and puts the two dots it adds where 猫猫 starts: the word was read
+    # three times there, so a short line said as written was one its clip did not match
+    heard = "あまおまおがきた"
+    note = sentence(col, "あ…猫猫(マオマオ)が来た", heard, heard)
+
+    run(col, [note])
+
+    assert furigana(col, note) == "あ… 猫猫[まおまお]が 来[き]た"
+    assert col.get_note(note.id).tags == []
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))
