@@ -19,7 +19,7 @@ from .collection_access import (
     get_notes as col_get_notes,
 )
 from .role_gate import notes_of_role
-from ..link_ids import field_search, link_id
+from ..link_ids import field_search, note_link_id
 from ..note_roles import (
     SENTENCE_ROLE,
     example_field_pairs,
@@ -80,9 +80,11 @@ def copy_translation_to_vocab_notes(
     vocab_field = dict(example_field_pairs(config, vocab_type)).get(translated_sentence_field)
     if not id_field or not vocab_field or sentence_note.id <= 0:
         return
-    held_field = link_id_field(config, sentence_type_of(config, vocab_type))
-    held = sentence_note[held_field] if held_field and held_field in sentence_note else ""
-    sentence_link_id = link_id(held, sentence_note.id)
+    sentence_link_id = note_link_id(
+        sentence_note, link_id_field(config, sentence_type_of(config, vocab_type))
+    )
+    # None only for a note not added yet, which has returned above
+    assert sentence_link_id is not None
     translation = sentence_note[translated_sentence_field]
     naming_it = field_search(id_field, str(sentence_link_id))
     nids = col_find_notes(f"{note_type_search(vocab_type)} {naming_it}")

@@ -36,7 +36,7 @@ from ..async_api_ops.base_ops import (
 from ..async_api_ops.chain_types import ChainStep, fail_step
 from ..async_api_ops.link_lookup import link_index
 from ..async_api_ops.role_gate import notes_passing
-from ..link_ids import LinkIndex, link_id, parse_link_id
+from ..link_ids import LinkIndex, note_link_id, parse_link_id
 from ..note_roles import (
     VOCAB_ROLE,
     copy_example,
@@ -100,8 +100,10 @@ def refresh_preflight_error(
 def _link_id_of(config: Mapping[str, Any], note: Note, note_type_name: str) -> int:
     """The link ID (link_ids.py) of a note of the collection, which links to it hold: its type's
     link ID field's ID, else its note id."""
-    field = link_id_field(config, note_type_name)
-    return link_id(note[field] if field and field in note else "", note.id)
+    held = note_link_id(note, link_id_field(config, note_type_name))
+    # None only for a note not added yet, and these are read from the collection
+    assert held is not None
+    return held
 
 
 def _example_note(id_text: str, sentence_index: LinkIndex) -> Optional[Note]:

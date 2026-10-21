@@ -920,7 +920,10 @@ def _sentence_link_id(config: dict, match_op_args: MatchOpArgs) -> int:
         and not current_note[field].strip()
     ):
         current_note[field] = str(current_note.id)
-    return link_id(current_note[field] if field and field in current_note else "", current_note.id)
+    held = note_link_id(current_note, field)
+    # None only for a note not added yet; the processed note is read from the collection
+    assert held is not None
+    return held
 
 
 def _new_link_id(config: dict, match_op_args: MatchOpArgs, sentence_link_id: int) -> int:
