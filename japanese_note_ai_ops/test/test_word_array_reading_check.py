@@ -186,6 +186,8 @@ class RuleTest(unittest.TestCase):
 
     def test_a_draft_holding_a_kanji_sudachi_could_not_read_is_no_choice(self):
         self.assertEqual(check.choices("すい苓", ["すいれい"]), {"すいれい": "すいれい"})
+        # Nor does it rule out a reading that sounds like it, a long vowel away
+        self.assertEqual(check.choices("ちょう迂", ["ちょうう"]), {"ちょうう": "ちょうう"})
 
     def test_a_transcript_hears_the_choices_the_others_held_to_a_corrections_limits(self):
         options = check.choices("ほか", ["た"])

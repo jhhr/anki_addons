@@ -120,6 +120,13 @@ class WrittenTest(unittest.TestCase):
         self.assertEqual(result.text, "響迂[きょうう]はどこにいるのかしら")
         self.assertEqual(why(result), {"響迂": "correction"})
 
+    def test_a_listed_name_that_sounds_like_a_draft_sudachi_could_not_read(self):
+        # Sudachi cannot read 迂, so 響迂's draft ひびき迂 is no choice, and no reason either to
+        # drop the list's ひびきい, its kana and a long vowel
+        heard = "ひびきいわどこにいるのかしら"
+        result = furigana("響迂はどこにいるのかしら", heard, heard, names={"響迂": "ひびきい"})
+        self.assertEqual(result.text, "響迂[ひびきい]はどこにいるのかしら")
+
     def test_a_number_is_read_as_its_kanji_numerals_are(self):
         line = "10日にはどこにいるのかしら"
         result = furigana(line, "とおかにわどこにいるのかしら", "トーカニワドコニイルノカシラ")

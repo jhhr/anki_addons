@@ -292,14 +292,14 @@ def choices(draft: str, others: Iterable[str]) -> dict[str, str]:
     caption reading, which needs no audio) by its kana. An other counts only where it is not
     the draft's own sound, a long vowel or a dropped っ away, which would be the draft heard;
     the draft does not count where Sudachi had no reading for one of its kanji (苓 of 翠苓),
-    however well its kana fit."""
+    however well its kana fit, and then rules out no other: 趙迂 drafted ちょう迂 sounds like
+    the ちょうう the show's list has for it, which is no reason to drop that."""
+    if KANJI_RE.search(draft):
+        return {other: other for other in others}
     options = {"draft": draft}
     for other in others:
         options.setdefault(other, other)
-    options = {key: r for key, r in options.items() if key == "draft" or not agrees(r, draft)}
-    if KANJI_RE.search(draft):
-        del options["draft"]
-    return options
+    return {key: r for key, r in options.items() if key == "draft" or not agrees(r, draft)}
 
 
 def hears_choices(
