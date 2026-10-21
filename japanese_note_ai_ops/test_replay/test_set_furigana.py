@@ -314,6 +314,15 @@ def test_a_responder_hears_the_clips_with_no_server(col, reported, monkeypatch):
     assert reported == []
 
 
+def test_a_clip_is_the_file_anki_plays_for_its_sound_tag(col):
+    # Anki's editor writes a name HTML-escaped, and its player reads the file unescaped
+    for name in ("Spice &amp; Wolf_01.opus", "a&nbsp;b.opus", "a&lt;b&gt;.opus", "a&amp;lt;b.opus",
+                 "Tom&Jerry.opus", "a&copy.opus"):
+        field = f"[sound:{name}]"
+        [played] = col._backend.extract_av_tags(text=field, question_side=True).av_tags
+        assert transcribe_audio.audio_file(field) == played.sound_or_video, field
+
+
 def test_a_note_without_its_transcripts_is_left_and_reported(col, reported):
     note = sentence(col, "他の人は", "たのひとわ")
 

@@ -75,6 +75,19 @@ class FieldTest(unittest.TestCase):
         self.assertEqual(op.audio_file("[sound:a b.opus][sound:c.mp3]"), "a b.opus")
         self.assertIsNone(op.audio_file(""))
 
+    def test_the_clip_a_field_names_as_anki_plays_it(self):
+        # Anki's editor writes the name HTML-escaped, and its player reads it unescaped
+        # (test_replay/test_set_furigana.py asks the player); a raw & is the name's own
+        cases = {
+            "[sound:Spice &amp; Wolf_01.opus]": "Spice & Wolf_01.opus",
+            "[sound:a&nbsp;b.opus]": "a b.opus",
+            "[sound:a&lt;b&gt;.opus]": "a<b>.opus",
+            "[sound:a&amp;lt;b.opus]": "a&lt;b.opus",
+            "[sound:Tom&Jerry.opus]": "Tom&Jerry.opus",
+            "[sound:a&copy.opus]": "a&copy.opus",
+        }
+        self.assertEqual({field: op.audio_file(field) for field in cases}, cases)
+
     def test_the_transcribers_whose_line_a_field_lacks(self):
         heard = op.parse_transcripts("ruby-mora: ネコ<br>old-model: ねこ")
         models = ["local-kana-anime-whisper", "local-ruby-mora", "gemini-x"]
@@ -163,6 +176,14 @@ class TranscribeNoteTest(unittest.TestCase):
     def test_a_note_without_a_clip_is_left_alone(self):
         self.assertEqual(self.transcribe(Note({"Audio": "", "Heard": ""})), (False, {}))
         self.assertEqual((self.asked, self.reports), ([], []))
+
+    def test_a_clip_named_with_an_escaped_ampersand_is_found(self):
+        (self.media / "Spice & Wolf_01.opus").write_bytes(CLIP)
+        note = Note({"Audio": "[sound:Spice &amp; Wolf_01.opus]", "Heard": ""})
+        self.assertTrue(self.transcribe(note)[0])
+        asked = [inputs["audio"] for *_, inputs in self.asked]
+        self.assertEqual(asked, ["Spice & Wolf_01.opus"] * 2)
+        self.assertEqual(self.reports, [])
 
     def test_a_clip_missing_from_the_media_folder_is_reported(self):
         note = Note({"Audio": "[sound:gone.opus]", "Heard": ""})

@@ -61,6 +61,11 @@ SERVER_SOURCE = (
 )
 DEFAULT_MODELS = ("local-kana-anime-whisper", "local-ruby-mora")
 SOUND_RE = re.compile(r"\[sound:([^\]]+)\]")
+# What Anki's editor escapes in a [sound:] tag's name, which is field HTML (html.escape, quote
+# off), and its web view writes for a space: Anki's player reads the name with them decoded.
+# &amp; last, so that &amp;lt; is the &lt; written. Not html.unescape: a raw name such as
+# a&copy.opus is the file's own, and Anki plays it as it is
+SOUND_NAME_ESCAPES = (("&lt;", "<"), ("&gt;", ">"), ("&nbsp;", " "), ("&amp;", "&"))
 LINE_RE = re.compile(r"^\s*([^:]+?)\s*:\s*(.*?)\s*$")
 
 
@@ -79,9 +84,15 @@ def label(model: str) -> str:
 
 
 def audio_file(field: str) -> Optional[str]:
-    """The clip a field names, [sound:clip.opus] -> clip.opus; the first, if it names more."""
+    """The clip a field names, [sound:clip.opus] -> clip.opus; the first, if it names more.
+    Read as Anki plays it: [sound:A &amp; B.opus], as Anki's editor writes it, is A & B.opus."""
     m = SOUND_RE.search(field)
-    return m.group(1) if m else None
+    if m is None:
+        return None
+    name = m.group(1)
+    for escaped, char in SOUND_NAME_ESCAPES:
+        name = name.replace(escaped, char)
+    return name
 
 
 def parse_transcripts(field: str) -> dict[str, str]:
