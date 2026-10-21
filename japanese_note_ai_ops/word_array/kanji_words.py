@@ -19,7 +19,9 @@ them apart would be wrong:
   not read (響|迂): a name, mostly, which the captions never read. Kanji by kanji its parts get
   readings of their own (神 かみ), and an unread one has no sound, so the audio of the whole
   would go to its neighbour. A run cut into longer pieces stays cut (物置|小屋, 柘榴|宮): the
-  dictionary knows those pieces.
+  dictionary knows those pieces. So do words of a kanji each that only meet because the
+  particle between them was dropped (誰|来た, 今|私が): a pronoun, a verb and a noun of time
+  stand alone (`joined`).
 
 Each rule came from the furigana audio eval (`research/furigana_audio*.py`), whose labelling
 asked for a reading piece by piece until the words were taken whole. The morphemes are
@@ -46,6 +48,8 @@ from .captions import (
 NUMERAL = ("名詞", "数詞")
 # The kanji a number is spelt with, as `captions.kanji_number` writes it
 NUMERAL_KANJI = frozenset(KANJI_DIGITS + "十百千万億兆")
+# Sudachi's part of speech for a noun that can be used as an adverb, of time mostly (今, 時)
+ADVERBIAL_NOUN = ("名詞", "普通名詞", "副詞可能")
 
 
 @dataclass
@@ -234,15 +238,36 @@ def number_spans(morphemes: Sequence) -> list[tuple[int, int]]:
     return spans
 
 
+def joined(a, b) -> bool:
+    """Whether kanji morphemes `a` and `b`, in a row, can be pieces of one word Sudachi cut.
+    Not where one of them is a word that stands alone in the line, a kanji each because the
+    particle between them was dropped (誰|来た, 今|私が, 間|机の): a pronoun, which takes a
+    suffix at most (何|様); a verb, which only a prefix comes before (片|喰) or a suffix after
+    (出|方) in a word; a noun of time used as an adverb (今, 時, 間, 晩), which nothing
+    follows in a word Sudachi would cut (父|上 is Sudachi's うえ after it)."""
+    pa, pb = a.part_of_speech(), b.part_of_speech()
+    if pb[0] == "代名詞" or (pa[0] == "代名詞" and pb[0] != "接尾辞"):
+        return False
+    if (pb[0] == "動詞" and pa[0] != "接頭辞") or (pa[0] == "動詞" and pb[0] != "接尾辞"):
+        return False
+    return tuple(pa[:3]) != ADVERBIAL_NOUN
+
+
 def split_runs(morphemes: Sequence, used: set[int]) -> list[tuple[int, int]]:
     """[i, j) morpheme ranges of the kanji runs that are one word though Sudachi cut them: two
     morphemes of kanji only or more in a row, not taken by another word, each a single kanji
     or one of them unread (its reading still the kanji, which is how Sudachi reads one it
-    does not know)."""
+    does not know). Such a run is cut where a piece is not `joined` to the one before it, and
+    each part of two pieces or more that is such a run by itself is one word."""
 
     def kanji_only(k: int) -> bool:
         surface = morphemes[k].surface()
         return k not in used and bool(surface) and all(KANJI_RE.match(c) for c in surface)
+
+    def cut_wrongly(run: Sequence) -> bool:
+        single = all(len(m.surface()) == 1 for m in run)
+        unread = any(KANJI_RE.search(m.reading_form()) for m in run)
+        return len(run) > 1 and (single or unread)
 
     spans = []
     i = 0
@@ -253,11 +278,13 @@ def split_runs(morphemes: Sequence, used: set[int]) -> list[tuple[int, int]]:
         j = i + 1
         while j < len(morphemes) and kanji_only(j):
             j += 1
-        run = morphemes[i:j]
-        single = all(len(m.surface()) == 1 for m in run)
-        unread = any(KANJI_RE.search(m.reading_form()) for m in run)
-        if len(run) > 1 and (single or unread):
-            spans.append((i, j))
+        if cut_wrongly(morphemes[i:j]):
+            start = i
+            for k in range(i + 1, j + 1):
+                if k == j or not joined(morphemes[k - 1], morphemes[k]):
+                    if cut_wrongly(morphemes[start:k]):
+                        spans.append((start, k))
+                    start = k
         i = j
     return spans
 

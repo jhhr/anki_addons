@@ -256,6 +256,25 @@ def test_a_long_vowel_is_spelt_as_jmdict_spells_it(col):
     assert furigana(col, note) == "十日[とおか]に 来[き]た"
 
 
+def test_words_side_by_side_without_a_particle_keep_their_own_furigana(col):
+    came = sentence(col, "誰来たの？", "だれきたの", "だれきたの")
+    looking = sentence(col, "何見てるの？", "なにみてるの", "なにみてるの")
+    slept = sentence(col, "一晩中寝た", "ひとばんじゅうねた", "ひとばんじゅうねた")
+    # What the rule is for, kept: a name Sudachi cut into single kanji
+    name = sentence(col, "羅半が来た", "らはんがきた", "らはんがきた")
+
+    run(col, [came, looking, slept, name])
+
+    got = {n: (furigana(col, n), col.get_note(n.id).tags) for n in (came, looking, slept, name)}
+    assert got == {
+        came: ("誰[だれ] 来[き]たの？", []),
+        # 何 is Sudachi's なん; JMdict's なに is written once it is a word of its own
+        looking: ("何[なに] 見[み]てるの？", []),
+        slept: ("一[ひと] 晩[ばん] 中[じゅう] 寝[ね]た", []),
+        name: ("羅半[らはん]が 来[き]た", []),
+    }
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))

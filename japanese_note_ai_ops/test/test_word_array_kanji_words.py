@@ -18,6 +18,11 @@ NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
 COUNTER = ("接尾辞", "名詞的", "助数詞", "*", "*", "*")
 COUNTER_NOUN = ("名詞", "普通名詞", "助数詞可能", "*", "*", "*")
 ADVERB = ("副詞", "*", "*", "*", "*", "*")
+PRONOUN = ("代名詞", "*", "*", "*", "*", "*")
+VERB = ("動詞", "非自立可能", "*", "*", "カ行変格", "連用形-一般")
+AUXILIARY = ("助動詞", "*", "*", "*", "助動詞-タ", "終止形-一般")
+TIME_NOUN = ("名詞", "普通名詞", "副詞可能", "*", "*", "*")
+SUFFIX = ("接尾辞", "名詞的", "一般", "*", "*", "*")
 
 
 class Morpheme:
@@ -62,6 +67,15 @@ LEXICON = {
     "美": ("ビ", NOUN),
     "物置": ("モノオキ", NOUN),
     "小屋": ("コヤ", NOUN),
+    "誰": ("ダレ", PRONOUN),
+    "来": ("キ", VERB),
+    "た": ("タ", AUXILIARY),
+    "今": ("イマ", TIME_NOUN),
+    "私": ("ワタクシ", PRONOUN),
+    "何": ("ナン", PRONOUN),
+    "様": ("サマ", SUFFIX),
+    "母": ("ハハ", NOUN),
+    "足": ("アシ", NOUN),
 }
 
 
@@ -110,6 +124,20 @@ class KanjiWordsTest(unittest.TestCase):
                 ("小屋", "こや", []),
             ],
         )
+
+    def test_a_pronoun_verb_or_noun_of_time_in_a_run_is_a_word_of_its_own(self):
+        # They meet a kanji each because the particle between them was dropped
+        def words(line):
+            return [(w.surface, w.kinds) for w in self.words(line)]
+
+        self.assertEqual(words("誰来た"), [("誰", []), ("来", [])])
+        self.assertEqual(words("母来た"), [("母", []), ("来", [])])
+        self.assertEqual(words("今私"), [("今", []), ("私", [])])
+        self.assertEqual(words("今足"), [("今", []), ("足", [])])
+        # A name cut into single kanji is still one word, a suffix after it too
+        self.assertEqual(words("何様"), [("何様", ["split"])])
+        self.assertEqual(words("神美様"), [("神美様", ["split"])])
+        self.assertEqual(words("今神美"), [("今", []), ("神美", ["split"])])
 
     def test_a_number_sudachi_cut_into_a_numeral_and_a_word_is_read_by_itself(self):
         # In a line Sudachi cuts 三十分 into 三|十分 and reads 十分 as "enough"
