@@ -142,9 +142,11 @@ def no_show_report(note_ids: Sequence[int]) -> Optional[str]:
 
 def read_names_file(path: str) -> dict[str, dict[str, str]]:
     """The names file's names by show, each surface's reading in hiragana: {} when there is no
-    file. One that is not such JSON is reported and read as none."""
+    file. One that is not such JSON is reported and read as none. Read past a byte-order mark,
+    which Notepad's "UTF-8 with BOM" and PowerShell 5's Out-File write, and which plain utf-8
+    reads as no JSON, every name of the file ignored."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except FileNotFoundError:
         return {}

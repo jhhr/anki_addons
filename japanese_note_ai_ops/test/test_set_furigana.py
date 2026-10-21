@@ -437,6 +437,13 @@ class NamesFileTest(unittest.TestCase):
             {"show": {"響迂": "きょうう", "高順": "がおしゅん"}},
         )
 
+    def test_a_file_saved_with_a_byte_order_mark_is_read(self):
+        names = {"show": {"響迂": "きょうう"}}
+        self.path.write_text(json.dumps(names, ensure_ascii=False), encoding="utf-8-sig")
+        self.assertTrue(self.path.read_bytes().startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(op.read_names_file(str(self.path)), names)
+        self.assertEqual(self.reports, [])
+
     def test_no_file_is_no_names(self):
         self.assertEqual(op.read_names_file(str(self.path)), {})
         self.assertEqual(self.reports, [])
