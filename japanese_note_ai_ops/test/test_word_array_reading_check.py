@@ -215,6 +215,14 @@ class RuleTest(unittest.TestCase):
         self.assertEqual(check.hears_choices(options, hyp, 0, 1), {"draft": False, "た": True})
         self.assertEqual(check.hears_choices({}, hyp, 0, 1), {"draft": False})
 
+    def test_a_long_vowel_spelt_as_the_one_other_reading_that_spells_it_otherwise(self):
+        self.assertEqual(check.spelt_as("とうか", ["じゅうにち", "とおか"]), "とおか")
+        self.assertEqual(check.spelt_as("せんせい", ["せんせえ"]), "せんせえ")
+        # The same spelling, another sound, or another than a long vowel's spelling
+        self.assertEqual(check.spelt_as("とおか", ["とおか"]), "とおか")
+        self.assertEqual(check.spelt_as("とうか", ["とか", "とうが"]), "とうか")
+        self.assertEqual(check.spelt_as("もんじゃく", ["もんぢゃく"]), "もんじゃく")
+
     def test_the_reading_a_transcript_hears_a_word_as(self):
         options = {"draft": "ほか", "た": "た", "あ": "あ"}
         self.assertEqual(check.heard_reading(options, {"draft": True, "た": True}), "ほか")

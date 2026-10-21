@@ -52,6 +52,7 @@ LEXICON = {
     "日": ("ニチ", COUNTER_NOUN),
     "十日": ("トオカ", NOUN),
     "十": ("ジュウ", NUMERAL),
+    "遠": ("トウ", NOUN),
     "Ｂ型": ("ビーガタ", NOUN),
     "Ｗ杯": ("ワールドカップ", PROPER),
 }
@@ -62,6 +63,7 @@ DICTIONARY = {
     "人": {"ひと", "にん", "じん"},
     "婆": {"ばば", "ばばあ"},
     "十日": {"とおか", "じゅうにち"},
+    "遠": {"とお"},
 }
 
 
@@ -146,6 +148,13 @@ class WrittenTest(unittest.TestCase):
         result = furigana("[？？？]" + LINE, heard, heard)
         self.assertEqual(result.text, "他[ほか]の 人[ひと]はどこにいるの")
         self.assertFalse(af.has_doubt(result.text))
+
+    def test_a_long_vowel_is_spelt_as_the_dictionary_spells_it(self):
+        # The stand-in spells 遠 とう and the dictionary とお, as Sudachi and JMdict do 十日
+        heard = "とおわどこにいるのかしら"
+        result = furigana("遠はどこにいるのかしら", heard, heard)
+        self.assertEqual(result.text, "遠[とお]はどこにいるのかしら")
+        self.assertEqual(why(result), {"遠": "draft"})
 
     def test_a_number_in_digits_alone_gets_furigana_too(self):
         heard = "じゅうにわどこにいるのかしら"

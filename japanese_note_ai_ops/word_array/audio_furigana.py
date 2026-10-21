@@ -59,6 +59,7 @@ from .reading_check import (
     morae,
     neighbours,
     reference,
+    spelt_as,
 )
 
 # A spelling's readings in the dictionary
@@ -203,6 +204,8 @@ def audio_furigana(
         else:
             written = decide(hearings[i], w.sudachi, quorum, licensed[i])
             why = "review" if written is None else "draft" if written == w.sudachi else "correction"
+            if written is not None:
+                written = spelt_as(written, licensed[i])
         if written is not None and not writable(w.surface, written):
             # Latin letters a reading does not read by their names (Ｗ杯, わーるどかっぷ): no
             # furigana leaves them out of its brackets, so a person writes the word

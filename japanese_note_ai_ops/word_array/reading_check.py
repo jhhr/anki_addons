@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Callable, Iterable, Mapping, NamedTuple, Optional, Sequence
 
-from ..kana_conv import to_katakana
+from ..kana_conv import to_hiragana, to_katakana
 from .captions import DIGITS_RE, KANJI_RE, LATIN_RE, letter_names
 from .kanji_words import is_numeral, numeral_reading
 
@@ -393,6 +393,30 @@ def line_up(
     if over_limit(again_cost, again.morae):
         return lines, pairs, True
     return again, again_pairs, False
+
+
+# A long vowel's spellings after the vowel it lengthens: とう and とお, せい and せえ
+LONG_SPELLINGS = {("ウ", "o"), ("オ", "o"), ("イ", "e"), ("エ", "e")}
+
+
+def spelt_as(reading: str, others: Iterable[str]) -> str:
+    """`reading` as the one of `others` that spells its long vowels otherwise (う or お after an
+    o, い or え after an e), mora for mora, if exactly one does: Sudachi spells 十日 とうか,
+    which JMdict and the speakers have as とおか. Else `reading` itself. Only a long vowel's
+    spelling: a dictionary spelling of the same sound may differ otherwise (悶着 もんぢゃく)."""
+    said = morae(reading)
+
+    def respelt(other: str) -> bool:
+        theirs = morae(other)
+        if other != to_hiragana(other) or len(theirs) != len(said) or theirs == said:
+            return False
+        return all(
+            a == b or {(a, vowel(before)), (b, vowel(before))} <= LONG_SPELLINGS
+            for a, b, before in zip(said, theirs, [""] + said[:-1])
+        )
+
+    fits = {other for other in others if respelt(other)}
+    return fits.pop() if len(fits) == 1 else reading
 
 
 def length_sibling(reading: str, readings: Iterable[str]) -> bool:

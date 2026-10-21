@@ -247,6 +247,15 @@ def test_a_reading_jmdict_gives_another_spelling_is_not_written(col):
     ]
 
 
+def test_a_long_vowel_is_spelt_as_jmdict_spells_it(col):
+    # Sudachi spells 十日 とうか; JMdict, like the speakers, とおか
+    note = sentence(col, "十日に来た", "とおかにきた", "とおかにきた")
+
+    run(col, [note])
+
+    assert furigana(col, note) == "十日[とおか]に 来[き]た"
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))
