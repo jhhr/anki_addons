@@ -6,7 +6,7 @@ Sudachi does, so the suite runs without SudachiPy or the downloaded dictionaries
 
 import unittest
 
-from addon_modules import load_ops_module
+from addon_modules import load_ops_module, stand_in_tokenizer
 
 captions = load_ops_module("captions", subdir="word_array")
 kanji_words = load_ops_module("kanji_words", subdir="word_array")
@@ -23,26 +23,6 @@ VERB = ("動詞", "非自立可能", "*", "*", "カ行変格", "連用形-一般
 AUXILIARY = ("助動詞", "*", "*", "*", "助動詞-タ", "終止形-一般")
 TIME_NOUN = ("名詞", "普通名詞", "副詞可能", "*", "*", "*")
 SUFFIX = ("接尾辞", "名詞的", "一般", "*", "*", "*")
-
-
-class Morpheme:
-    def __init__(self, surface, reading, pos, begin):
-        self._surface, self._reading, self._pos, self._begin = surface, reading, pos, begin
-
-    def surface(self):
-        return self._surface
-
-    def reading_form(self):
-        return self._reading
-
-    def part_of_speech(self):
-        return self._pos
-
-    def begin(self):
-        return self._begin
-
-    def end(self):
-        return self._begin + len(self._surface)
 
 
 # Sudachi's take on the lines below: names cut up and read as common words, digits read one by
@@ -79,22 +59,7 @@ LEXICON = {
 }
 
 
-def tokenize(text):
-    """Longest match over LEXICON; any other character is a morpheme of its own, read as
-    itself (Sudachi reads a kanji it does not know so)."""
-    out, i = [], 0
-    while i < len(text):
-        for n in range(len(text) - i, 0, -1):
-            piece = text[i : i + n]
-            if piece in LEXICON:
-                reading, pos = LEXICON[piece]
-                out.append(Morpheme(piece, reading, pos, i))
-                i += n
-                break
-        else:
-            out.append(Morpheme(text[i], text[i], PARTICLE, i))
-            i += 1
-    return out
+tokenize = stand_in_tokenizer(LEXICON, PARTICLE)
 
 
 class KanjiWordsTest(unittest.TestCase):

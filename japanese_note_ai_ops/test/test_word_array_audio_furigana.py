@@ -8,7 +8,7 @@ transcripts are written as the kana models write them, particles as pronounced (
 
 import unittest
 
-from addon_modules import load_ops_module
+from addon_modules import load_ops_module, stand_in_tokenizer
 
 af = load_ops_module("audio_furigana", subdir="word_array")
 
@@ -17,26 +17,6 @@ PROPER = ("名詞", "固有名詞", "人名", "一般", "*", "*")
 PARTICLE = ("助詞", "格助詞", "*", "*", "*", "*")
 NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
 COUNTER_NOUN = ("名詞", "普通名詞", "助数詞可能", "*", "*", "*")
-
-
-class Morpheme:
-    def __init__(self, surface, reading, pos, begin):
-        self._surface, self._reading, self._pos, self._begin = surface, reading, pos, begin
-
-    def surface(self):
-        return self._surface
-
-    def reading_form(self):
-        return self._reading
-
-    def part_of_speech(self):
-        return self._pos
-
-    def begin(self):
-        return self._begin
-
-    def end(self):
-        return self._begin + len(self._surface)
 
 
 # Sudachi's take on the lines below: a name cut up and read as common words or not at all,
@@ -67,22 +47,7 @@ DICTIONARY = {
 }
 
 
-def tokenize(text):
-    """Longest match over LEXICON; any other character is a morpheme of its own, read as
-    itself (Sudachi reads a kanji it does not know so) and a particle (は read ワ)."""
-    out, i = [], 0
-    while i < len(text):
-        for n in range(len(text) - i, 0, -1):
-            piece = text[i : i + n]
-            if piece in LEXICON:
-                reading, pos = LEXICON[piece]
-                out.append(Morpheme(piece, reading, pos, i))
-                i += n
-                break
-        else:
-            out.append(Morpheme(text[i], text[i], PARTICLE, i))
-            i += 1
-    return out
+tokenize = stand_in_tokenizer(LEXICON, PARTICLE)
 
 
 def dictionary(form):

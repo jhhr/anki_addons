@@ -6,7 +6,7 @@ Sudachi does, so the suite runs without SudachiPy or the downloaded dictionaries
 
 import unittest
 
-from addon_modules import load_ops_module
+from addon_modules import Morpheme, load_ops_module, stand_in_tokenizer
 
 check = load_ops_module("reading_check", subdir="word_array")
 
@@ -15,26 +15,6 @@ PARTICLE = ("助詞", "係助詞", "*", "*", "*", "*")
 NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
 SPACE = ("空白", "*", "*", "*", "*", "*")
 STOP = ("補助記号", "句点", "*", "*", "*", "*")
-
-
-class Morpheme:
-    def __init__(self, surface, reading, pos, begin):
-        self._surface, self._reading, self._pos, self._begin = surface, reading, pos, begin
-
-    def surface(self):
-        return self._surface
-
-    def reading_form(self):
-        return self._reading
-
-    def part_of_speech(self):
-        return self._pos
-
-    def begin(self):
-        return self._begin
-
-    def end(self):
-        return self._begin + len(self._surface)
 
 
 LEXICON = {
@@ -53,21 +33,7 @@ LEXICON = {
 }
 
 
-def tokenize(text):
-    """Longest match over LEXICON; any other character is a morpheme of its own."""
-    out, i = [], 0
-    while i < len(text):
-        for n in range(len(text) - i, 0, -1):
-            piece = text[i : i + n]
-            if piece in LEXICON:
-                reading, pos = LEXICON[piece]
-                out.append(Morpheme(piece, reading, pos, i))
-                i += n
-                break
-        else:
-            out.append(Morpheme(text[i], text[i], NOUN, i))
-            i += 1
-    return out
+tokenize = stand_in_tokenizer(LEXICON, NOUN)
 
 
 class MoraeTest(unittest.TestCase):
