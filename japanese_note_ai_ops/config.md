@@ -248,9 +248,9 @@ off. A sentence whose furigana still holds a `？` is left alone too, tag or no 
 
 - `furigana_models`: Default `[]` (none). The models that settle the words the audio leaves in
   review; a reading is written only where all of them give it. On the eval's 400 cards the
-  audio left 360 words in review on 155 cards. `["terminal-claude-haiku-5-5",
-  "terminal-claude-sonnet-5-5"]` settled 165 of them, leaving 107 cards to check, and got none
-  of the 66 checked by ear wrong. One model alone was wrong too often: Haiku on 1 of 73, Sonnet
+  audio leaves 315 words in review on 150 cards. Measured when it left 360 on 155,
+  `["terminal-claude-haiku-5-5", "terminal-claude-sonnet-5-5"]` settled 165 of them, leaving 107
+  cards to check, and got none of the 66 checked by ear wrong. One model alone was wrong too often: Haiku on 1 of 73, Sonnet
   on 3 of 74, Opus on 1 of 80. A model names a provider as the `*_model` keys do; other models
   than these were not measured.
 
