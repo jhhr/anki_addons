@@ -153,6 +153,11 @@ class KanjiWordsTest(unittest.TestCase):
             [(w.surface, w.sudachi, w.kinds) for w in words], [("猫猫", "ねこねこ", ["name"])]
         )
 
+    def test_of_two_names_as_long_that_overlap_the_same_one_is_taken_every_time(self):
+        for names in (["李白", "白鈴"], ["白鈴", "李白"]):
+            words = self.words("李白鈴が", names=names)
+            self.assertEqual([w.surface for w in words if "name" in w.kinds], ["李白"], names)
+
     def test_an_empty_name_is_no_name(self):
         # Found at every place, it hung the search for the next one
         words = self.words("あら 猫猫", names={"", "猫猫"})

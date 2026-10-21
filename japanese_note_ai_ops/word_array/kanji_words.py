@@ -101,8 +101,10 @@ def kanji_words(
     for s, e, _, _ in spans:
         taken[s:e] = [True] * (e - s)
     proper = {(m.begin(), m.end()) for m in morphemes if is_proper_noun(m)}
-    # An empty name is found everywhere, and never past where it was found: skipped
-    for name in sorted(set(names) - {""}, key=len, reverse=True):
+    # The longest first, and of two as long the first in code point order, whatever order the
+    # set gives, which changes from one session to the next (李白鈴 is 李白 and 鈴, never 李 and
+    # 白鈴). An empty name is found everywhere, and never past where it was found: skipped
+    for name in sorted(set(names) - {""}, key=lambda name: (-len(name), name)):
         start = text.find(name)
         while start >= 0:
             end = start + len(name)
