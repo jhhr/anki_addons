@@ -49,13 +49,7 @@ from anki.notes import Note, NoteId
 from aqt import mw
 from aqt.browser import Browser
 
-from ..configuration import (
-    ADDON_USER_FILES_DIR,
-    EPISODE_TAG_PREFIX,
-    FURIGANA_DOUBT_LEFT,
-    FURIGANA_REVIEW_LEFT,
-    FURIGANA_REVIEW_TAG,
-)
+from ..configuration import ADDON_USER_FILES_DIR, EPISODE_TAG_PREFIX, FURIGANA_REVIEW_TAG
 from ..generator_resources import with_generator_resources
 from ..kana_conv import to_hiragana
 from ..note_roles import (
@@ -67,7 +61,7 @@ from ..note_roles import (
 )
 from ..utils import get_field_config
 from ..word_array import furigana_arbiter, jmdict_index
-from ..word_array.audio_furigana import Furigana, Reading, audio_furigana, has_doubt
+from ..word_array.audio_furigana import Furigana, Reading, audio_furigana
 from ..word_array.captions import BaseFinder, ReadingBase, show_readings
 from . import collection_access
 from .base_ops import (
@@ -294,18 +288,6 @@ def wants_audio_furigana(config: dict, note: Note) -> bool:
         and bool(note[sentence].strip())
         and audio_file(note[audio]) is not None
     )
-
-
-def unchecked_furigana(config: dict, note: Note) -> Optional[str]:
-    """Why a sentence note's furigana is not to be read yet, as kanjify and word extraction say
-    it when they leave the note alone: its review tag, or a word still marked for review."""
-    if note.has_tag(FURIGANA_REVIEW_TAG):
-        return FURIGANA_REVIEW_LEFT
-    note_type = note.note_type()
-    name = note_type["name"] if note_type else ""
-    if has_doubt(configured_value(config, name, note, "furigana_sentence_field")):
-        return FURIGANA_DOUBT_LEFT
-    return None
 
 
 def set_furigana_in_note(

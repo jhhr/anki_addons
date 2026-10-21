@@ -184,6 +184,39 @@ class ExtractWordsInNoteTests(unittest.TestCase):
         self.assertTrue(changed)
         generate.assert_called_once()
 
+    def test_a_note_in_review_that_holds_an_array_is_skipped_without_a_word(self):
+        # A re-run does nothing to such a note: reported, it made an error pane and a warning
+        # box of a run with nothing to do
+        config = {"Sentence": {"furigana_sentence_field": "furigana"}}
+        for tags, furigana in ((["furigana-review"], ""), ([], " 本[ほん？]を 読[よ]む。")):
+            note = FakeNote(
+                {"sentence": "本を読む。", "furigana": furigana, "words": '[["本"]]'}, tags=tags
+            )
+            with mock.patch.object(extract_words, "report_error") as report:
+                changed, generate, _ = run(note, {}, config=config)
+            self.assertFalse(changed)
+            generate.assert_not_called()
+            report.assert_not_called()
+            self.assertEqual(note["words"], '[["本"]]')
+
+    def test_regenerating_a_note_in_review_is_refused_and_said(self):
+        # overwrite=True generates from the furigana, so the check stands for it
+        config = {"Sentence": {"furigana_sentence_field": "furigana"}}
+        for tags, furigana, said in (
+            (["furigana-review"], "", 'tagged "furigana-review"'),
+            ([], " 本[ほん？]を 読[よ]む。", '"？"'),
+        ):
+            note = FakeNote(
+                {"sentence": "本を読む。", "furigana": furigana, "words": '[["本"]]'}, tags=tags
+            )
+            updates: dict = {}
+            with mock.patch.object(extract_words, "report_error") as report:
+                changed, generate, _ = run(note, updates, overwrite=True, config=config)
+            self.assertFalse(changed)
+            generate.assert_not_called()
+            self.assertIn(said, report.call_args.args[0])
+            self.assertEqual((note["words"], updates), ('[["本"]]', {}))
+
     def test_a_note_with_no_sentence_gets_nothing(self):
         note = FakeNote({"sentence": "", "words": ""})
 

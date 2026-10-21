@@ -38,7 +38,8 @@ from .make_all_meanings import (
 )
 from .role_gate import note_type_name, notes_of_role, notes_passing
 from .run_errors import report_error
-from .set_furigana import bulk_set_furigana_op, unchecked_furigana, wants_audio_furigana
+from .furigana_review import unchecked_furigana
+from .set_furigana import bulk_set_furigana_op, wants_audio_furigana
 from .transcribe_audio import bulk_transcribe_notes_op, lacks_transcript
 from .word_matching_judge import make_bulk_op as make_judge_bulk_op
 
@@ -60,7 +61,7 @@ def new_note_all_ops_in_note(
     """The steps of `roles` (note_roles.roles_of the note's type): meanings and their
     cleaning for a vocab note, kanjify and extract for a sentence note. Outside the two-type
     layout a type has both roles, and its notes get all four, as before roles existed. A
-    sentence note whose furigana awaits a person's check (`set_furigana.unchecked_furigana`)
+    sentence note whose furigana awaits a person's check (`furigana_review.unchecked_furigana`)
     gets neither kanjify nor extract: each would leave it alone and say so, and it is said
     once."""
     changed = False

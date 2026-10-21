@@ -382,16 +382,6 @@ class NewNotesTest(unittest.TestCase):
             config = {SENTENCE: {**self.config[SENTENCE], key: ["Heard"]}}
             with self.subTest(key):
                 self.assertFalse(op.wants_audio_furigana(config, note))
-        config = {SENTENCE: {**self.config[SENTENCE], "furigana_sentence_field": ["Furigana"]}}
-        self.assertIsNone(op.unchecked_furigana(config, note))
-
-    def test_furigana_awaiting_a_check_by_tag_or_by_a_word_still_marked(self):
-        checked = Note({"Furigana": "他[ほか]の 人[ひと]は？"})
-        tagged = Note({"Furigana": "他[ほか]の"}, tags=[op.FURIGANA_REVIEW_TAG])
-        marked = Note({"Furigana": "他[ほか？た]の"})
-        self.assertIsNone(op.unchecked_furigana(CONFIG, checked))
-        self.assertIn("furigana-review", op.unchecked_furigana(CONFIG, tagged))
-        self.assertIn('"？"', op.unchecked_furigana(CONFIG, marked))
 
 
 class ShowTest(unittest.TestCase):

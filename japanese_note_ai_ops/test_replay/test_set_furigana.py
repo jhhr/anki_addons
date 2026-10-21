@@ -23,9 +23,17 @@ from anki.notes import NoteId
 
 import replay
 from anki_shared.testing import real_anki
-from japanese_note_ai_ops.async_api_ops import base_ops, run_errors, set_furigana, transcribe_audio
+from japanese_note_ai_ops.async_api_ops import (
+    base_ops,
+    extract_words,
+    run_errors,
+    set_furigana,
+    transcribe_audio,
+)
+from japanese_note_ai_ops.async_api_ops.base_ops import NotesRunSpec
 from japanese_note_ai_ops.async_api_ops.new_note_all_ops import new_note_all_ops_spec
 from japanese_note_ai_ops.configuration import (
+    FURIGANA_DOUBT_LEFT,
     FURIGANA_REVIEW_LEFT,
     FURIGANA_REVIEW_TAG,
     REGENERATE_TAG,
@@ -386,6 +394,65 @@ def test_the_runs_undo_name_counts_the_selection_whichever_phase_is_first(col, t
     run(col, notes, spec=new_note_all_ops_spec(), answer=answer)
 
     assert col.undo_status().undo == "Running new note all ops for 2 notes."
+
+
+EXTRACT = NotesRunSpec(
+    "Extracted words", "Extracting words", extract_words.bulk_extract_from_notes_op
+)
+
+
+def extracted_then_set_again(col: Any) -> list:
+    """Two notes holding word arrays extracted from their kanjified furigana, then their
+    furigana emptied and set again from audio that leaves 他 in review: one keeps its tag, the
+    other's was taken off before its ？ word was fixed."""
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(NEW_NOTES_CONFIG))
+    notes = [
+        sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+        for _ in range(2)
+    ]
+    for note in notes:
+        held = col.get_note(note.id)
+        held["Kanjified"] = "他[ほか]の 人[ひと]はどこにいるの"
+        col.update_note(held)
+    run(col, notes, spec=EXTRACT, answer=lambda request: {"proper_nouns": []})
+    run(col, notes)
+    untagged = col.get_note(notes[1].id)
+    untagged.remove_tag(FURIGANA_REVIEW_TAG)
+    col.update_note(untagged)
+    for note in notes:
+        assert col.get_note(note.id)["Words"].startswith("[")
+        assert "？" in col.get_note(note.id)["Sentence furigana"]
+    return notes
+
+
+def test_extracting_again_says_nothing_of_notes_in_review_that_hold_arrays(col, reported):
+    # A re-run does nothing to a note holding an array: reported, it made an error pane and a
+    # warning box of a run with nothing to do
+    notes = extracted_then_set_again(col)
+    reported.clear()
+    arrays = [col.get_note(note.id)["Words"] for note in notes]
+
+    result = run(col, notes, spec=EXTRACT, answer=lambda request: {"proper_nouns": []})
+
+    assert result.edited_nids == []
+    assert [col.get_note(note.id)["Words"] for note in notes] == arrays
+    assert reported == []
+
+
+def test_regenerating_notes_in_review_is_refused_and_said(col, reported):
+    # Regenerating would read the furigana in doubt
+    notes = extracted_then_set_again(col)
+    reported.clear()
+    regenerate = NotesRunSpec(
+        "Regenerated word arrays", "Regenerating", extract_words.bulk_regenerate_from_notes_op
+    )
+
+    result = run(col, notes, spec=regenerate, answer=lambda request: {"proper_nouns": []})
+
+    assert result.edited_nids == []
+    said = sorted(text for _, text in reported)
+    assert said == sorted([FURIGANA_DOUBT_LEFT, FURIGANA_REVIEW_LEFT])
 
 
 def test_a_note_without_its_transcripts_is_left_and_reported(col, reported):
