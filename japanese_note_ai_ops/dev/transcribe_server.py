@@ -73,6 +73,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional, Sequence
@@ -294,9 +295,36 @@ class Service:
         with self.lock:
             for name in names:
                 start = time.perf_counter()
-                transcripts[name] = self.transcribers[name](wav)
+                try:
+                    transcripts[name] = self.transcribers[name](wav)
+                except Exception as e:  # whatever a model raises, answered by what it says
+                    return model_failure(name, e)
                 seconds[name] = round(time.perf_counter() - start, 2)
         return 200, {"transcripts": transcripts, "seconds": seconds}
+
+
+def model_failure(name: str, error: Exception) -> tuple[int, dict]:
+    """(HTTP status, answer) when a model fails on a clip; its traceback goes to the console.
+    The add-on sends a request again on a 429 or a 500, 502, 503 or 504 and takes any other
+    status as final (api_client.classify_response). A failure that recurs on the same clip is
+    422, final: a 500 had the clip sent five more times, half a minute of backoff, to fail the
+    same way on every run. Running out of memory may pass, so it is 503, sent again."""
+    status = 503 if out_of_memory(error) else 422
+    print(f"{name} failed on a clip, answered {status}:", file=sys.stderr, flush=True)
+    traceback.print_exception(type(error), error, error.__traceback__)
+    return status, {"error": f"{name} failed on the clip: {type(error).__name__}: {error}"}
+
+
+def out_of_memory(error: Exception) -> bool:
+    """Whether a model ran out of memory, which other users of the GPU (or of the machine's
+    memory) may have given back by the time the clip comes again."""
+    # torch.cuda.OutOfMemoryError by its name, as torch is only in the models' environment;
+    # older versions raised a RuntimeError saying "CUDA out of memory"
+    return (
+        isinstance(error, MemoryError)
+        or type(error).__name__ == "OutOfMemoryError"
+        or "out of memory" in str(error).lower()
+    )
 
 
 def make_handler(service: Service):
@@ -334,7 +362,7 @@ def make_handler(service: Service):
                 return
             try:
                 status, payload = service.transcribe(data, wanted)
-            except Exception as e:  # a model failing on one clip must not take the server down
+            except Exception as e:  # a fault of the server's own still answers the request
                 status, payload = 500, {"error": f"{type(e).__name__}: {e}"}
             self._send(status, payload)
 

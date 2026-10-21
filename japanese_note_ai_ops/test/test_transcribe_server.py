@@ -1,10 +1,13 @@
 """dev/transcribe_server.py: what /transcribe and /health answer, over real HTTP, with stand-ins
-for the models and the decoder, so neither PyTorch nor ffmpeg is needed."""
+for the models and the decoder, so neither PyTorch nor ffmpeg is needed; and how the add-on's own
+client (base_ops.get_transcript_from_local_server) takes those answers."""
 
 from __future__ import annotations
 
 import base64
+import contextlib
 import importlib.util
+import io
 import json
 import socket
 import subprocess
@@ -13,8 +16,9 @@ import unittest
 import urllib.error
 import urllib.request
 from types import ModuleType
+from unittest import mock
 
-from addon_modules import ADDON_ROOT
+from addon_modules import ADDON_ROOT, FakeClock, load_ops_module
 
 
 def load_server() -> ModuleType:
@@ -29,10 +33,26 @@ def load_server() -> ModuleType:
 
 
 ts = load_server()
+api = load_ops_module("api_client")
+base_ops = load_ops_module("base_ops")
+run_errors = load_ops_module("run_errors")
+
+
+class OutOfMemoryError(RuntimeError):
+    """torch.cuda.OutOfMemoryError's stand-in: the server knows it by its name."""
 
 
 def fails_to_decode(data: bytes):
     raise subprocess.CalledProcessError(1, ["ffmpeg"], stderr=b"Invalid data found")
+
+
+def fails_with(error: Exception):
+    """A model that raises `error` on every clip."""
+
+    def transcribe(wav):
+        raise error
+
+    return transcribe
 
 
 class ServiceTest(unittest.TestCase):
@@ -73,6 +93,27 @@ class ServiceTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("Invalid data found", answer["error"])
 
+    def failing(self, error: Exception):
+        """A service whose one model raises `error` on every clip."""
+        return ts.Service({"ruby-mora": fails_with(error)}, {}, decoder=lambda data: data)
+
+    def test_a_model_failing_on_a_clip_is_a_final_answer(self):
+        with contextlib.redirect_stderr(io.StringIO()) as console:
+            status, answer = self.failing(RuntimeError("no frames")).transcribe(b"clip")
+        self.assertEqual(status, 422)
+        self.assertEqual(answer["error"], "ruby-mora failed on the clip: RuntimeError: no frames")
+        self.assertIn("ruby-mora failed on a clip", console.getvalue())
+        self.assertIn("RuntimeError: no frames", console.getvalue(), "the traceback")
+
+    def test_a_model_out_of_memory_may_be_asked_again(self):
+        for error in (
+            OutOfMemoryError("CUDA out of memory. Tried to allocate 20.00 MiB"),
+            RuntimeError("CUDA error: out of memory"),
+            MemoryError(),
+        ):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(self.failing(error).transcribe(b"clip")[0], 503, repr(error))
+
     def test_health_names_each_models_revision_and_device(self):
         models = self.service.health()["models"]
         self.assertEqual(
@@ -88,9 +129,7 @@ class ServiceTest(unittest.TestCase):
 
 class HttpTest(unittest.TestCase):
     def setUp(self):
-        def broken(wav):
-            raise RuntimeError("out of memory")
-
+        broken = fails_with(RuntimeError("no frames"))
         transcribers = {"kana-anime-whisper": lambda wav: f"き{len(wav)}", "ruby-mora": broken}
         service = ts.Service(transcribers, {}, decoder=lambda data: data)
         self.server = ts.Server(("127.0.0.1", 0), ts.make_handler(service))
@@ -124,9 +163,10 @@ class HttpTest(unittest.TestCase):
             self.assertIn("base64", answer["error"])
 
     def test_a_model_failing_answers_with_its_error_and_the_server_goes_on(self):
-        status, answer = self.request("/transcribe", self.clip(b"12345", "ruby-mora"))
-        self.assertEqual(status, 500)
-        self.assertIn("out of memory", answer["error"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            status, answer = self.request("/transcribe", self.clip(b"12345", "ruby-mora"))
+        self.assertEqual(status, 422)
+        self.assertIn("no frames", answer["error"])
         self.assertEqual(self.request("/health")[0], 200)
 
     def test_health_and_unknown_paths(self):
@@ -135,6 +175,68 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(sorted(answer["models"]), ["kana-anime-whisper", "ruby-mora"])
         self.assertEqual(self.request("/nothing")[0], 404)
         self.assertEqual(self.request("/nothing", b"x")[0], 404)
+
+
+class ClientTest(unittest.TestCase):
+    """The add-on's client against the server: which answers it sends a clip again for."""
+
+    def setUp(self):
+        # The client's sessions and cooldowns are the module's; this test's are its own
+        sessions = dict(api._sessions)
+        api._sessions.clear()
+        self.addCleanup(self.restore_sessions, sessions)
+        api.rate_limit_tracker.reset()
+        self.addCleanup(api.rate_limit_tracker.reset)
+        patcher = mock.patch.object(api, "time", FakeClock())  # no backoff waited out
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.reports: list[str] = []
+        deliver = run_errors.deliver_with(lambda _title, text: self.reports.append(text))
+        self.addCleanup(run_errors.deliver_with, deliver)
+        self.asked = 0
+
+    @staticmethod
+    def restore_sessions(sessions) -> None:
+        for session in api._sessions.values():
+            session.close()
+        api._sessions.clear()
+        api._sessions.update(sessions)
+
+    def serve(self, *outcomes) -> dict:
+        """A server whose ruby-mora gives each outcome in turn, an answer or an error to raise;
+        the client's config for it."""
+
+        def transcribe(wav):
+            outcome = outcomes[self.asked]
+            self.asked += 1
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        service = ts.Service({"ruby-mora": transcribe}, {}, decoder=lambda data: data)
+        server = ts.Server(("127.0.0.1", 0), ts.make_handler(service))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        url = f"http://127.0.0.1:{server.server_address[1]}"
+        return {"transcribe_url": url, "max_request_retries": 5, "request_timeout": 10}
+
+    def transcribe(self, config: dict):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return base_ops.get_transcript_from_local_server("local-ruby-mora", b"OggS", config)
+
+    def test_a_clip_a_model_fails_on_is_sent_once_and_the_error_reported(self):
+        config = self.serve(*[RuntimeError("no frames")] * 6)
+        self.assertIsNone(self.transcribe(config))
+        self.assertEqual(self.asked, 1)
+        self.assertEqual(len(self.reports), 1)
+        self.assertIn("local-ruby-mora: HTTP 422", self.reports[0])
+        self.assertIn("ruby-mora failed on the clip: RuntimeError: no frames", self.reports[0])
+
+    def test_a_model_out_of_memory_is_asked_again(self):
+        config = self.serve(OutOfMemoryError("CUDA out of memory"), "ネコ")
+        self.assertEqual(self.transcribe(config), {"text": "ネコ"})
+        self.assertEqual((self.asked, self.reports), (2, []))
 
 
 class PortTest(unittest.TestCase):
