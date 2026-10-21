@@ -8,9 +8,10 @@ them apart would be wrong:
   mention in an episode only, so most mentions have no reading, and Sudachi reads them as
   common words (猫猫 ねこねこ, 高順 たかのぶ). A one-kanji name is matched only where Sudachi
   also takes it for a proper noun: 馬 is a family name read まー and also the horse;
-- a number with the counter after it, or one with a kanji in it, its digits too (10日, 七日,
-  一匹, １万): its reading belongs to the whole and seldom divides by kanji (とおか, なのか,
-  いっぴき). A number with digits is read as Sudachi reads it spelt in kanji numerals
+- a number with the counter after it, in kanji or in digits (10日, 七日, 一匹, １万, 3つ, 175):
+  its reading belongs to the whole and seldom divides by kanji (とおか, なのか, いっぴき). One
+  in digits is a word as one in kanji is, so that its furigana says how it is read, which word
+  extraction goes by. A number with digits is read as Sudachi reads it spelt in kanji numerals
   (`captions.kanji_numerals`): it reads 10 digit by digit. A number Sudachi cut into a numeral
   and another word (三|十分, さん|じゅうぶん, enough) is read by itself, where Sudachi reads
   三十|分;
@@ -42,8 +43,9 @@ NUMERAL_KANJI = frozenset(KANJI_DIGITS + "十百千万億兆")
 
 @dataclass
 class Word:
-    """A kanji word of a spoken line: a Sudachi morpheme, or several where a name or an inline
-    reading spans them. `start` and `end` are offsets in the line without its inline readings."""
+    """A kanji word of a spoken line, or a number in digits: a Sudachi morpheme, or several
+    where a name, an inline reading or a number spans them. `start` and `end` are offsets in
+    the line without its inline readings."""
 
     line: int
     start: int
@@ -193,10 +195,10 @@ def is_numeral(m) -> bool:
 
 def number_spans(morphemes: Sequence) -> list[tuple[int, int]]:
     """[i, j) morpheme ranges of the numbers that are one word: a run of numerals and the
-    counter after it, if any, where a kanji is among them (10日, 十月, １万). With none, as in
-    175 or 3つ, the number has no kanji to give furigana to. A word right after the numerals
-    that starts with a numeral kanji is the number's too, with the counter after it if any: in
-    a line Sudachi cuts 三十分 into 三|十分, which it reads じゅうぶん, enough."""
+    counter after it, if any, where a kanji or a digit is among them (10日, 十月, １万, 175,
+    3つ); a number in kana needs no furigana. A word right after the numerals that starts
+    with a numeral kanji is the number's too, with the counter after it if any: in a line
+    Sudachi cuts 三十分 into 三|十分, which it reads じゅうぶん, enough."""
     spans = []
     i = 0
     while i < len(morphemes):
@@ -209,7 +211,8 @@ def number_spans(morphemes: Sequence) -> list[tuple[int, int]]:
         if j < len(morphemes) and morphemes[j].surface()[:1] in NUMERAL_KANJI:
             j += 1
         end = j + 1 if j < len(morphemes) and is_counter(morphemes[j]) else j
-        if any(KANJI_RE.search(m.surface()) for m in morphemes[i:end]):
+        surfaces = "".join(m.surface() for m in morphemes[i:end])
+        if KANJI_RE.search(surfaces) or DIGITS_RE.search(surfaces):
             spans.append((i, end))
         i = j
     return spans

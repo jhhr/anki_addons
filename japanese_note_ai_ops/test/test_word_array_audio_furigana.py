@@ -51,6 +51,7 @@ LEXICON = {
     "10": ("イチレイ", NUMERAL),
     "日": ("ニチ", COUNTER_NOUN),
     "十日": ("トオカ", NOUN),
+    "十": ("ジュウ", NUMERAL),
 }
 
 # JMdict's readings of the spellings the lines hold
@@ -143,6 +144,12 @@ class WrittenTest(unittest.TestCase):
         result = furigana("[？？？]" + LINE, heard, heard)
         self.assertEqual(result.text, "他[ほか]の 人[ひと]はどこにいるの")
         self.assertFalse(af.has_doubt(result.text))
+
+    def test_a_number_in_digits_alone_gets_furigana_too(self):
+        heard = "じゅうにわどこにいるのかしら"
+        result = furigana("10にはどこにいるのかしら", heard, heard)
+        self.assertEqual(result.text, "10[じゅう]にはどこにいるのかしら")
+        self.assertEqual(why(result), {"10": "draft"})
 
     def test_lines_are_joined_and_what_is_not_spoken_left_out(self):
         caption = "（赤ん坊の泣き声）<br>（猫猫）他の人は<br>猫猫(マオマオ)"

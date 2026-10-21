@@ -205,6 +205,18 @@ def test_a_short_line_with_a_wrong_draft_is_no_mismatch(col, reported):
     assert col.get_note(other.id).tags == [set_furigana.REVIEW_TAG]
 
 
+def test_a_number_in_digits_gets_furigana(col):
+    # Sudachi reads 2つ ニツ digit by digit, which put this short line too far from its clip
+    pair = sentence(col, "2つ持って", "ふたつもって", "ふたつもって")
+    hundred = sentence(col, "175センチだ", "ひゃくななじゅうごせんちだ", "ひゃくななじゅうごせんちだ")
+
+    run(col, [pair, hundred])
+
+    assert furigana(col, pair) == "2[ふた]つ 持[も]って"
+    assert furigana(col, hundred) == "175[ひゃくななじゅうご]センチだ"
+    assert col.get_note(pair.id).tags == col.get_note(hundred.id).tags == []
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))

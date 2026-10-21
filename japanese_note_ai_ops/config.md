@@ -213,9 +213,9 @@ seven seconds a clip on the CPU alone in the eval, less with the GPU (not measur
 ### setting furigana from audio
 
 "Set furigana from audio" writes a sentence note's furigana into `furigana_sentence_field`,
-reading each kanji word of `sentence_field` as the clip says it: the reading a model's line in
-`sentence_transcription_field` hears, where that is Sudachi's reading, one JMdict has for the
-word or the show's for a name. A reading the captions give themselves, `猫猫(マオマオ)`, is
+reading each kanji word of `sentence_field`, and each number in digits (` 3[みっ]つ`), as the
+clip says it: the reading a model's line in `sentence_transcription_field` hears, where that is
+Sudachi's reading, one JMdict has for the word or the show's for a name. A reading the captions give themselves, `猫猫(マオマオ)`, is
 written as they give it. Speaker labels and sound descriptions, `（猫猫）`, `（足音）` or
 `[？？？]`, are not said and are left out, as is the caption's formatting but its line breaks
 (HTML such as an SRT's `<font>` colors or the editor's `<span style>`, and ASS tags such as
