@@ -610,7 +610,7 @@ class RerunTests(unittest.TestCase):
         self.assertEqual(result.new_sentences, [])
         (update,) = result.updates
         self.assertEqual(json.loads(update.word_list), cat_fish_array(cat=[101], fish=[1]))
-        self.assertEqual((update.source_ids, update.vocab_ids, update.tags_to_add), ([1], [1], []))
+        self.assertEqual((update.vocab_ids, update.tags_to_add), ([1], []))
         self.assertEqual(result.examples, {1: sm.Example(note_id=500)})
 
     def test_a_conflict_on_joining_keeps_the_existing_link_and_tags_the_note(self):

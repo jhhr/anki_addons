@@ -339,16 +339,15 @@ def _by_type(notes: Sequence[Note]) -> dict[str, list[Note]]:
 
 
 class LinkIdFill:
-    """One run of the op: the plan and the writes the bulk op and the per-note op share.
-    `fill_spec` makes one per run, so each run writes a report of its own (`report_path`,
-    fixed when the run is made so that the end message can name it)."""
+    """One run of the op: the bulk op plans, and the per-note op makes the plan's writes, which
+    the two share. `fill_spec` makes one per run, so each run writes a report of its own
+    (`report_path`, fixed when the run is made so that the end message can name it)."""
 
     def __init__(self, report_dir: Optional[str] = None) -> None:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.report_path = os.path.join(
             report_dir or ADDON_USER_FILES_DIR, f"fill_link_ids_{stamp}.txt"
         )
-        self.plan: Optional[FillPlan] = None
         # Per note the run writes, each field and the text written there
         self._writes: dict[int, dict[str, str]] = {}
 
@@ -385,7 +384,7 @@ class LinkIdFill:
             for read in _types_read(config, name):
                 if read not in indexes:
                     indexes[read] = link_index(config, read, col=col)
-        plan = self.plan = plan_fill(config, notes_by_type, indexes)
+        plan = plan_fill(config, notes_by_type, indexes)
         self._writes = plan.writes()
         self._write_report(plan)
         # The notes whose arrays change first: a cancel between notes saves those done, and a

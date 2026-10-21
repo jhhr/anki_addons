@@ -147,7 +147,6 @@ class SentenceUpdate:
     link_id: int
     word_list: Optional[str]
     tags_to_add: list[str]
-    source_ids: list[int]
     vocab_ids: list[int]
 
 
@@ -548,10 +547,6 @@ class _Target:
             return f"sentence note {self.existing.note_id}"
         assert self.origin is not None
         return f"the sentence of {self.origin.id}"
-
-    @property
-    def report_id(self) -> int:
-        return self.existing.note_id if self.existing is not None else self.age_id
 
 
 def plan_migration(
@@ -1089,7 +1084,6 @@ def _plan(
                 link_id=target.link_id,
                 word_list=word_list,
                 tags_to_add=tags_to_add,
-                source_ids=[s.id for s in target.sources],
                 vocab_ids=list(target.vocab_ids),
             )
         )
