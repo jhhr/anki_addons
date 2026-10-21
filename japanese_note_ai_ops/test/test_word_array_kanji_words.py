@@ -153,6 +153,11 @@ class KanjiWordsTest(unittest.TestCase):
             [(w.surface, w.sudachi, w.kinds) for w in words], [("猫猫", "ねこねこ", ["name"])]
         )
 
+    def test_an_empty_name_is_no_name(self):
+        # Found at every place, it hung the search for the next one
+        words = self.words("あら 猫猫", names={"", "猫猫"})
+        self.assertEqual([(w.surface, w.kinds) for w in words], [("猫猫", ["name"])])
+
     def test_an_inline_reading_is_the_words_caption(self):
         words = self.words("猫猫(マオマオ)")
         self.assertEqual(

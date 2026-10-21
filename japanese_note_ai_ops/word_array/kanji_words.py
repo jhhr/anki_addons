@@ -101,7 +101,8 @@ def kanji_words(
     for s, e, _, _ in spans:
         taken[s:e] = [True] * (e - s)
     proper = {(m.begin(), m.end()) for m in morphemes if is_proper_noun(m)}
-    for name in sorted(set(names), key=len, reverse=True):
+    # An empty name is found everywhere, and never past where it was found: skipped
+    for name in sorted(set(names) - {""}, key=len, reverse=True):
         start = text.find(name)
         while start >= 0:
             end = start + len(name)
