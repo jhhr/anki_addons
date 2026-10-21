@@ -6,12 +6,12 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
+import socket
 import subprocess
 import threading
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from types import ModuleType
 
 from addon_modules import ADDON_ROOT
@@ -93,7 +93,7 @@ class HttpTest(unittest.TestCase):
 
         transcribers = {"kana-anime-whisper": lambda wav: f"き{len(wav)}", "ruby-mora": broken}
         service = ts.Service(transcribers, {}, decoder=lambda data: data)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), ts.make_handler(service))
+        self.server = ts.Server(("127.0.0.1", 0), ts.make_handler(service))
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -135,6 +135,19 @@ class HttpTest(unittest.TestCase):
         self.assertEqual(sorted(answer["models"]), ["kana-anime-whisper", "ruby-mora"])
         self.assertEqual(self.request("/nothing")[0], 404)
         self.assertEqual(self.request("/nothing", b"x")[0], 404)
+
+
+class PortTest(unittest.TestCase):
+    def test_a_second_server_cannot_take_the_port(self):
+        """On Windows a socket may bind a port another holds when both ask to reuse the
+        address, and requests then reach either: the server does not ask, so a second one
+        started on its port fails to start."""
+        handler = ts.make_handler(ts.Service({}, {}))
+        first = ts.Server(("127.0.0.1", 0), handler)
+        self.addCleanup(first.server_close)
+        self.assertEqual(first.socket.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR), 0)
+        with self.assertRaises(OSError):
+            ts.Server(("127.0.0.1", first.server_address[1]), handler).server_close()
 
 
 if __name__ == "__main__":

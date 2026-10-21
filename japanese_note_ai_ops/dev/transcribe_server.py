@@ -341,6 +341,13 @@ def make_handler(service: Service):
     return Handler
 
 
+class Server(ThreadingHTTPServer):
+    # HTTPServer sets SO_REUSEADDR, which on Windows lets it bind a port another server holds
+    # without error (one left running, say), and Anki's requests then reach that server
+    # instead. Off, as in word_array/research/hand_judge.py and furigana_audio_label.py.
+    allow_reuse_address = False
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--models", nargs="+", default=list(OP_MODELS), choices=sorted(MODELS))
@@ -359,7 +366,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         transcribers[name] = load(name, device)
         devices[name] = device
     handler = make_handler(Service(transcribers, devices))
-    server = ThreadingHTTPServer((args.host, args.port), handler)
+    server = Server((args.host, args.port), handler)
     url = f"http://{args.host}:{args.port}"
     print(f"transcribing on {url} with {', '.join(args.models)}", flush=True)
     try:
