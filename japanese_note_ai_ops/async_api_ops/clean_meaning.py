@@ -308,8 +308,11 @@ def get_other_meaning_notes(
         )
         return []
 
+    # Each field term quoted, the sort field's too: a field's name may hold spaces, which split
+    # an unquoted term in several, and the search then found no other meaning. A quoted `re:`
+    # term's backslashes reach the regex as written, so `\d` is still a digit.
     meaning_notes_query = (
-        f"{word_sort_field}:re:m\\d+ -{word_sort_field}:re:x\\d+"
+        f'"{word_sort_field}:re:m\\d+" -"{word_sort_field}:re:x\\d+"'
         f' -nid:{note.id} "{word_reading_field}:{note[word_reading_field]}"'
         f' ("{word_normal_field}:{note[word_normal_field]}" OR'
         f' "{word_field}:{note[word_field]}")'
