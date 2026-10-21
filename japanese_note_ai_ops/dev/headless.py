@@ -115,9 +115,11 @@ from japanese_note_ai_ops.word_array import match_targets  # noqa: E402
 
 def user_config(overrides: Optional[Mapping[str, Any]] = None, model: Optional[str] = None) -> dict:
     """The config a run uses: config.json under meta.json's config, secrets removed, then
-    `overrides`; with `model`, every model key set to it. Raises ValueError when a model key
-    would reach an API provider rather than the claude CLI: a headless run is meant to cost
-    nothing but the subscription."""
+    `overrides`; with `model`, every model key set to it, after the overrides, and a list of
+    models that names any made that one model alone: the arbiter (`furigana_models`) of a run
+    with `model` is one model whatever `overrides` says, and it settles words a pair would
+    leave in review. Raises ValueError when a model key would reach an API provider rather
+    than the claude CLI: a headless run is meant to cost nothing but the subscription."""
     config: dict = json.loads((ADDON_DIR / "config.json").read_text(encoding="utf-8"))
     meta_path = ADDON_DIR / "meta.json"
     if meta_path.exists():
@@ -447,13 +449,11 @@ def capture_summary(capture_path: Path, run_id: int) -> dict[str, Any]:
 
 
 def op_specs() -> dict[str, Callable[[], NotesRunSpec]]:
-    """The ops a script can run, by their op_registry key: those with a NotesRunSpec."""
+    """The ops a script can run, by their op_registry key: those with a NotesRunSpec, but for
+    "Set furigana from audio". capture_run picks notes whose word array has a word to match,
+    whose furigana is there already, and that op never replaces furigana: its capture would
+    write nothing. test_replay/test_set_furigana.py runs its spec over notes it makes."""
     from japanese_note_ai_ops.async_api_ops.match_words_to_notes import match_words_spec
     from japanese_note_ai_ops.sync_local_ops.migrate_to_sentence_notes import migrate_spec
-    from japanese_note_ai_ops.async_api_ops.set_furigana import set_furigana_spec
 
-    return {
-        "match_words": match_words_spec,
-        "migrate_to_sentence_notes": migrate_spec,
-        "set_furigana": set_furigana_spec,
-    }
+    return {"match_words": match_words_spec, "migrate_to_sentence_notes": migrate_spec}

@@ -2,6 +2,7 @@
 rule makes of the scored runs, the session that keeps the labels, and the server the page talks
 to. The scorer's use of the labels is tested with the rest of it, in test_furigana_audio.py."""
 
+import http.client
 import json
 import sys
 import tempfile
@@ -281,19 +282,46 @@ class SessionTest(unittest.TestCase):
 class ServerTest(unittest.TestCase):
     """The page, the clips with their byte ranges, and the API, over a socket on localhost."""
 
+    JSON = {"Content-Type": "application/json"}
+
     def setUp(self):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         self.audio = Path(d.name)
         (self.audio / "c1.opus").write_bytes(b"0123456789")
         (self.audio / "secret.txt").write_bytes(b"no")
+        self.server = self.start("127.0.0.1")
+        self.port = self.server.server_address[1]
+        self.url = f"http://127.0.0.1:{self.port}"
+
+    def start(self, address, hosts=()):
         session = label.Session(queue(), self.audio / "labels.jsonl")
-        handler = label.make_handler(session, self.audio)
-        self.server = label.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.addCleanup(self.server.server_close)
-        self.addCleanup(self.server.shutdown)
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        handler = label.make_handler(session, self.audio, hosts)
+        server = label.ThreadingHTTPServer((address, 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def ask(self, method, path, headers, body=None, server=None) -> int:
+        """The status of a request with these headers only: Host is the address asked unless
+        they name one."""
+        address, port = (server or self.server).server_address[:2]
+        connection = http.client.HTTPConnection(address, port, timeout=5)
+        try:
+            connection.request(method, path, body, headers)
+            response = connection.getresponse()
+            response.read()
+            return response.status
+        finally:
+            connection.close()
+
+    def label_c2(self, headers) -> int:
+        body = json.dumps({"id": "c2", "line": 0, "start": 0, "verdict": "heard", "reading": "た"})
+        return self.ask("POST", "/api/label", headers, body.encode("utf-8"))
+
+    def labels(self) -> list:
+        return fa.read_jsonl(self.audio / "labels.jsonl")
 
     def get(self, path, headers=None):
         request = urllib.request.Request(self.url + path, headers=headers or {})
@@ -304,6 +332,8 @@ class ServerTest(unittest.TestCase):
         status, headers, body = self.get("/")
         self.assertEqual(status, 200)
         self.assertIn("Furigana by ear", body.decode("utf-8"))
+        # The server takes nothing else from it
+        self.assertIn('headers: {"Content-Type": "application/json"}', body.decode("utf-8"))
 
     def test_a_clip_whole_and_a_range_of_it(self):
         status, headers, body = self.get("/audio/c1.opus")
@@ -321,11 +351,54 @@ class ServerTest(unittest.TestCase):
 
     def test_the_api(self):
         body = json.dumps({"id": "c2", "line": 0, "start": 0, "verdict": "heard", "reading": "た"})
-        request = urllib.request.Request(self.url + "/api/label", data=body.encode("utf-8"))
+        request = urllib.request.Request(
+            self.url + "/api/label", data=body.encode("utf-8"), headers=self.JSON
+        )
         with urllib.request.urlopen(request, timeout=5) as r:
             data = json.loads(r.read())
         self.assertEqual(data["card"]["id"], "c1")
-        self.assertEqual(fa.read_jsonl(self.audio / "labels.jsonl")[0]["reading"], "た")
+        self.assertEqual(self.labels()[0]["reading"], "た")
+
+    def test_a_post_not_sent_as_json_is_refused(self):
+        """A page of another site may send a form or text/plain without a CORS preflight; JSON
+        only after one, which the server never answers."""
+        for content_type in ("text/plain", "application/x-www-form-urlencoded"):
+            self.assertEqual(self.label_c2({"Content-Type": content_type}), 415, content_type)
+        self.assertEqual(self.labels(), [])
+
+    def test_a_page_of_another_site_is_refused(self):
+        self.assertEqual(self.label_c2({**self.JSON, "Origin": "https://evil.example"}), 403)
+        self.assertEqual(self.ask("GET", "/", {"Origin": "null"}), 403)
+        self.assertEqual(self.labels(), [])
+        self.assertEqual(self.label_c2({**self.JSON, "Origin": self.url}), 200)
+
+    def test_a_name_the_server_does_not_answer_to_is_refused(self):
+        """A site that points its own name at this machine (DNS rebinding) has a page of the
+        server's own origin, as the browser sees it: only the name tells it apart."""
+        evil = f"evil.example:{self.port}"
+        self.assertEqual(self.ask("GET", "/", {"Host": evil}), 403)
+        self.assertEqual(self.ask("GET", "/audio/c1.opus", {"Host": evil}), 403)
+        rebound = {**self.JSON, "Host": evil, "Origin": f"http://{evil}"}
+        self.assertEqual(self.label_c2(rebound), 403)
+        self.assertEqual(self.labels(), [])
+        self.assertEqual(self.ask("GET", "/", {"Host": f"localhost:{self.port}"}), 200)
+
+    def test_a_name_given_as_the_host(self):
+        server = self.start("127.0.0.1", hosts=["labels.example"])
+        host = f"labels.example:{server.server_address[1]}"
+        self.assertEqual(self.ask("GET", "/", {"Host": host}, server=server), 200)
+
+    def test_the_address_a_request_came_in_on(self):
+        """With `--host 0.0.0.0` a phone opens the page by this machine's address on the
+        network; 127.0.0.2, another address of this machine, stands in for it here."""
+        try:
+            server = self.start("127.0.0.2")
+        except OSError:
+            self.skipTest("127.0.0.2 is not an address of this machine")
+        host = f"127.0.0.2:{server.server_address[1]}"
+        self.assertEqual(self.ask("GET", "/", {"Host": host}, server=server), 200)
+        # Not a name it answers to on another address
+        self.assertEqual(self.ask("GET", "/", {"Host": f"127.0.0.2:{self.port}"}), 403)
 
 
 if __name__ == "__main__":

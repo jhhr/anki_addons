@@ -35,6 +35,10 @@ selection reads the line so corrected (`--reword`), the scorer compares the tran
 it, and the card comes back to label once the queue is built again; until then it is left out.
 The labels given on the line move with their words (`furigana_audio.moved_labels`).
 
+To label from a phone, serve with `--host 0.0.0.0` and open the page by this machine's address
+on the network (http://192.168.1.10:8791/, say): the server answers no other name of the
+machine, and nothing a page of another site sends (`make_handler`).
+
 The clips are Ogg Opus, which Chrome, Edge and Firefox play.
 """
 
@@ -615,7 +619,8 @@ function renderWord() {
   });
 }
 async function post(url, body) {
-  const r = await fetch(url, {method: "POST", body: JSON.stringify(body)});
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"},
+                              body: JSON.stringify(body)});
   return r.json();
 }
 async function label(verdict, reading) {
@@ -691,13 +696,32 @@ post("/api/next", {}).then(show);
 </script></body></html>"""
 
 
-def make_handler(session: Session, audio_dir: Path):
+def make_handler(session: Session, audio_dir: Path, hosts: Sequence[str] = ()):
+    """The page's server. It answers only requests sent to it as 127.0.0.1, localhost, one of
+    `hosts` (`--host`'s) or the address of this machine they came in on, which a phone uses
+    with `--host 0.0.0.0`: a site that points a name of its own at this machine (DNS
+    rebinding) is refused. So is anything a page of another site sends (its Origin)."""
     page = PAGE.encode("utf-8")
     clips = {card["audio"] for card in session.queue}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def _refused(self) -> bool:
+            """Whether the request is refused, answered 403 if so: sent by a name this server
+            does not answer to, or from a page of another site."""
+            here, port = self.connection.getsockname()[:2]
+            names = ("127.0.0.1", "localhost", here, *hosts)
+            host = (self.headers.get("Host") or "").lower()
+            if host not in {f"{name}:{port}".lower() for name in names}:
+                self.send_error(403, "Not a host this server answers to")
+                return True
+            origin = self.headers.get("Origin")
+            if origin is not None and origin.lower() != f"http://{host}":
+                self.send_error(403, "Requests from other sites are refused")
+                return True
+            return False
 
         def _send(self, body: bytes, content_type: str, status: int = 200, extra=()) -> None:
             self.send_response(status)
@@ -709,6 +733,8 @@ def make_handler(session: Session, audio_dir: Path):
             self.wfile.write(body)
 
         def do_GET(self):
+            if self._refused():
+                return
             path = urlparse(self.path).path
             if path == "/":
                 self._send(page, "text/html; charset=utf-8")
@@ -740,13 +766,22 @@ def make_handler(session: Session, audio_dir: Path):
             self._send(data[start : end + 1], "audio/ogg", 206, extra)
 
         def do_POST(self):
+            # Read even when refused: a body left unread turns the close into a reset, which
+            # can lose the answer
+            raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            if self._refused():
+                return
             path = urlparse(self.path).path
             if path not in ("/api/next", "/api/label", "/api/fix", "/api/skip", "/api/undo"):
                 self.send_error(404)
                 return
-            length = int(self.headers.get("Content-Length") or 0)
+            # A page of another site may send a form or text/plain without asking; JSON only
+            # after a CORS preflight, which this server never answers
+            if self.headers.get_content_type() != "application/json":
+                self.send_error(415, "The body must be JSON, as application/json")
+                return
             try:
-                body = json.loads(self.rfile.read(length) or b"{}")
+                body = json.loads(raw or b"{}")
                 data = session.handle(path, body)
             except (ValueError, KeyError, TypeError) as e:
                 self.send_error(400, str(e))
@@ -771,7 +806,8 @@ def serve(args: argparse.Namespace) -> int:
     # HTTPServer sets SO_REUSEADDR, which on Windows lets it bind a port another server holds
     # without error, and the browser then reaches that server instead (see hand_judge.py)
     ThreadingHTTPServer.allow_reuse_address = False
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(session, fa.AUDIO))
+    handler = make_handler(session, fa.AUDIO, [args.host])
+    server = ThreadingHTTPServer((args.host, args.port), handler)
     url = f"http://127.0.0.1:{args.port}/"
     print(f"Serving {url} (Ctrl+C to stop)")
     if not args.no_browser:
@@ -792,7 +828,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     q.add_argument("--sample", type=float, default=SAMPLE, help="share of agreed drafts to label")
     q.add_argument("--seed", type=int, default=0)
     s = sub.add_parser("serve", help="the labelling page")
-    s.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to label from a phone")
+    s.add_argument(
+        "--host", default="127.0.0.1", help="0.0.0.0 to label from a phone, by this machine's IP"
+    )
     s.add_argument("--port", type=int, default=8791, help="not 8765, AnkiConnect's")
     s.add_argument("--no-browser", action="store_true")
     s.add_argument("--labels", default=str(fa.LABELS), help="the label file (the eval's)")

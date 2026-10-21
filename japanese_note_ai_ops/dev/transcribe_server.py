@@ -26,17 +26,20 @@ reading among the 846 it wrote with a known answer. The others are here for the 
 pinned to the revision the eval measured (`Model.revision`): rose3 retrains kana-anime-whisper
 now and then.
 
-Setup, once, in an environment of its own (the add-on's Python has none of these packages):
+Setup, once, in an environment of its own (the add-on's Python has none of these packages),
+made outside the add-on's folder: an update of the add-on replaces that folder, `build.py dist`
+would pack an environment left in it, and git does not ignore one there. ENV below is such a
+folder, transcribe-env in the home folder say; from the add-on's folder:
 
-    python -m venv transcribe-env
-    transcribe-env\\Scripts\\activate          (macOS and Linux: source transcribe-env/bin/activate)
+    python -m venv ENV
+    ENV\\Scripts\\activate          (macOS and Linux: source ENV/bin/activate)
     pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu126
     pip install -r dev/transcribe_server_requirements.txt
 
 The CUDA 12.6 wheels are the newest that still run on a Maxwell card such as the GTX 970;
-without an NVIDIA card take https://download.pytorch.org/whl/cpu instead. ffmpeg must be on
-PATH: it decodes the clips. Then, from the add-on's folder, leave this running while Anki
-transcribes:
+without an NVIDIA card take https://download.pytorch.org/whl/cpu instead. The clips are decoded
+by PyAV, with the FFmpeg its wheel brings: no ffmpeg on PATH is needed. Then, from the add-on's
+folder, leave this running while Anki transcribes:
 
     python dev/transcribe_server.py [--models kana-anime-whisper ruby-mora] [--device cuda]
         [--port 8792]
@@ -49,7 +52,7 @@ kana-anime-whisper; ruby-mora stays on the CPU, where it took 0.4 s a clip in th
 since Ruby-ASR's package loads the whole model first.
 
     GET  /health      the models loaded: repo, revision, device
-    POST /transcribe  {"audio": the clip in base64, any format ffmpeg reads, "models": some of
+    POST /transcribe  {"audio": the clip in base64, any format FFmpeg reads, "models": some of
                       the loaded ones, all by default}
                       -> {"transcripts": {model: kana}, "seconds": {model: s}}
 
@@ -57,7 +60,9 @@ The clip comes in JSON as Anki's other requests do, so the add-on sends, retries
 cancels it as it does those.
 
 It listens on 127.0.0.1 unless `--host` says otherwise, and asks for no password: whatever can
-reach its port can have clips transcribed.
+reach its port can have clips transcribed. It takes a POST only as JSON (Content-Type
+application/json): a web page may send another site a form or text/plain without asking, but
+JSON only after a CORS preflight, which this server never answers.
 """
 
 from __future__ import annotations
@@ -66,13 +71,13 @@ import argparse
 import base64
 import gc
 import importlib
+import io
 import json
 import os
-import subprocess
 import sys
-import tempfile
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional, Sequence
@@ -143,28 +148,35 @@ def module(name: str) -> Any:
     return importlib.import_module(name)
 
 
-def load_clip(path: Path) -> Any:
-    """The clip as 16 kHz mono float32 samples."""
-    raw = subprocess.run(
-        ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "1"]
-        + ["-ar", str(SAMPLE_RATE), "-"],
-        check=True,
-        capture_output=True,
-    ).stdout
-    np = module("numpy")
-    return np.frombuffer(raw, dtype=np.float32)
+class ClipError(ValueError):
+    """A clip that cannot be decoded: the request's fault, which sending it again cannot mend."""
 
 
 def decode(data: bytes) -> Any:
-    """A clip sent as bytes, as `load_clip` reads one from a file. Through a file rather than a
-    pipe: an MP4 or M4A clip keeps its index at the end, which ffmpeg cannot reach in a pipe."""
-    handle, name = tempfile.mkstemp(suffix=".clip")
+    """A clip sent as bytes, as 16 kHz mono float32 samples: the samples
+    `ffmpeg -i CLIP -f f32le -ac 1 -ar 16000 -` writes (the same on every clip of the eval),
+    decoded in this process by PyAV rather than by an ffmpeg started for each request. From
+    memory, where the demuxer can seek: an MP4 or M4A clip keeps its index at the end."""
+    av, np = module("av"), module("numpy")
+    chunks = []
     try:
-        with os.fdopen(handle, "wb") as f:
-            f.write(data)
-        return load_clip(Path(name))
-    finally:
-        os.unlink(name)
+        with av.open(io.BytesIO(data)) as container:
+            if not container.streams.audio:
+                raise ClipError("no audio in the clip")
+            resampler = av.AudioResampler(format="flt", layout="mono", rate=SAMPLE_RATE)
+            for frame in container.decode(container.streams.audio[0]):
+                chunks += [part.to_ndarray() for part in resampler.resample(frame)]
+            chunks += [part.to_ndarray() for part in resampler.resample(None)]
+    except av.FFmpegError as e:
+        raise ClipError(e.strerror or str(e)) from e
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(chunks, axis=1)[0]
+
+
+def load_clip(path: Path) -> Any:
+    """A clip file's samples, decoded as the server decodes a clip sent to it."""
+    return decode(path.read_bytes())
 
 
 def snapshot(model: Model, *patterns: str) -> Path:
@@ -286,17 +298,43 @@ class Service:
             return 400, {"error": "no audio in the request"}
         try:
             wav = self.decoder(data)
-        except subprocess.CalledProcessError as e:
-            detail = e.stderr.decode("utf-8", "replace").strip() if e.stderr else str(e)
-            return 400, {"error": f"ffmpeg could not decode the clip: {detail}"}
+        except ClipError as e:
+            return 400, {"error": f"the clip could not be decoded: {e}"}
         transcripts: dict[str, str] = {}
         seconds: dict[str, float] = {}
         with self.lock:
             for name in names:
                 start = time.perf_counter()
-                transcripts[name] = self.transcribers[name](wav)
+                try:
+                    transcripts[name] = self.transcribers[name](wav)
+                except Exception as e:  # whatever a model raises, answered by what it says
+                    return model_failure(name, e)
                 seconds[name] = round(time.perf_counter() - start, 2)
         return 200, {"transcripts": transcripts, "seconds": seconds}
+
+
+def model_failure(name: str, error: Exception) -> tuple[int, dict]:
+    """(HTTP status, answer) when a model fails on a clip; its traceback goes to the console.
+    The add-on sends a request again on a 429 or a 500, 502, 503 or 504 and takes any other
+    status as final (api_client.classify_response). A failure that recurs on the same clip is
+    422, final: a 500 had the clip sent five more times, half a minute of backoff, to fail the
+    same way on every run. Running out of memory may pass, so it is 503, sent again."""
+    status = 503 if out_of_memory(error) else 422
+    print(f"{name} failed on a clip, answered {status}:", file=sys.stderr, flush=True)
+    traceback.print_exception(type(error), error, error.__traceback__)
+    return status, {"error": f"{name} failed on the clip: {type(error).__name__}: {error}"}
+
+
+def out_of_memory(error: Exception) -> bool:
+    """Whether a model ran out of memory, which other users of the GPU (or of the machine's
+    memory) may have given back by the time the clip comes again."""
+    # torch.cuda.OutOfMemoryError by its name, as torch is only in the models' environment;
+    # older versions raised a RuntimeError saying "CUDA out of memory"
+    return (
+        isinstance(error, MemoryError)
+        or type(error).__name__ == "OutOfMemoryError"
+        or "out of memory" in str(error).lower()
+    )
 
 
 def make_handler(service: Service):
@@ -323,8 +361,13 @@ def make_handler(service: Service):
             if url.path != "/transcribe":
                 self._send(404, {"error": f"no {url.path} here"})
                 return
+            # Read even when refused: a body left unread turns the close into a reset, which
+            # can lose the answer
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length > 0 else b""
+            if self.headers.get_content_type() != "application/json":
+                self._send(415, {"error": "the body must be JSON, as application/json"})
+                return
             try:
                 body = json.loads(raw or b"{}")
                 data = base64.b64decode(body.get("audio") or "", validate=True)
@@ -334,11 +377,18 @@ def make_handler(service: Service):
                 return
             try:
                 status, payload = service.transcribe(data, wanted)
-            except Exception as e:  # a model failing on one clip must not take the server down
+            except Exception as e:  # a fault of the server's own still answers the request
                 status, payload = 500, {"error": f"{type(e).__name__}: {e}"}
             self._send(status, payload)
 
     return Handler
+
+
+class Server(ThreadingHTTPServer):
+    # HTTPServer sets SO_REUSEADDR, which on Windows lets it bind a port another server holds
+    # without error (one left running, say), and Anki's requests then reach that server
+    # instead. Off, as in word_array/research/hand_judge.py and furigana_audio_label.py.
+    allow_reuse_address = False
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -349,6 +399,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=PORT)
     args = ap.parse_args(argv)
+    # PyAV, which the decoder imports only once a clip comes: missing, it stops the start here
+    module("av")
     torch = module("torch")
     torch.set_num_threads(os.cpu_count() or 1)
     transcribers: dict[str, Transcriber] = {}
@@ -359,7 +411,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         transcribers[name] = load(name, device)
         devices[name] = device
     handler = make_handler(Service(transcribers, devices))
-    server = ThreadingHTTPServer((args.host, args.port), handler)
+    server = Server((args.host, args.port), handler)
     url = f"http://{args.host}:{args.port}"
     print(f"transcribing on {url} with {', '.join(args.models)}", flush=True)
     try:
