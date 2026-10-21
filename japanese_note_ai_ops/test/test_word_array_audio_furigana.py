@@ -198,6 +198,12 @@ class ReviewTest(unittest.TestCase):
         self.assertEqual(why(result), {"響迂": "mismatch"})
         self.assertEqual(result.text, "響迂[？]はどこにいるのかしら")
 
+    def test_a_rare_kanji_form_sudachi_cannot_read_is_marked_too(self):
+        # 𠮟, of a supplementary plane, was taken for punctuation: no furigana and no mark
+        heard = "しかられたのわどこなのかしら"
+        result = furigana("𠮟られたのはどこなのかしら", heard, heard)
+        self.assertEqual(result.text, "𠮟[？]られたのはどこなのかしら")
+
     def test_a_spelling_the_captions_read_in_hiragana_somewhere_is_no_name(self):
         # The show's list reads 薬師 as a name, but the captions read it in hiragana elsewhere:
         # a word then, whose readings only the dictionary licenses

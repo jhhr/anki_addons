@@ -48,6 +48,15 @@ class CleaningTest(unittest.TestCase):
         self.assertEqual(text, "猫猫が")
         self.assertEqual(readings, [captions.InlineReading("猫猫", "まおまお", True, 0, 2)])
 
+    def test_a_rare_kanji_form_is_a_kanji(self):
+        # A compatibility ideograph and one of a supplementary plane; 〇 is no kanji here
+        self.assertTrue(captions.KANJI_RE.match("﨑"))
+        self.assertTrue(captions.KANJI_RE.match("𠮟"))
+        self.assertIsNone(captions.KANJI_RE.match("〇"))
+        text, readings = captions.split_readings("山﨑(やまざき)さん")
+        self.assertEqual(text, "山﨑さん")
+        self.assertEqual(readings, [captions.InlineReading("山﨑", "やまざき", False, 0, 2)])
+
     def test_a_reading_after_other_kanji_takes_the_tail_base_gives(self):
         text, readings = captions.split_readings("白鈴姐(ねえ)ちゃん", base=lambda run, reading: 1)
         self.assertEqual(text, "白鈴姐ちゃん")

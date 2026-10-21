@@ -37,7 +37,10 @@ from typing import Callable, Iterable, NamedTuple
 from ..html_stripping import text_lines
 from ..kana_conv import to_hiragana
 
-KANJI = "一-鿿㐀-䶿々〆ヶ"
+# The ranges of the shared kanji_furi.KANJI_RANGES, the compatibility ideographs (﨑 of 山﨑)
+# and the supplementary planes (𠮟 of 𠮟る) as well as the CJK blocks, with 々 〆 ヶ, but not
+# 〇: Sudachi reads it レイキゴウ ("zero sign"), which a placeholder 〇〇 would be drafted as
+KANJI = "\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\U00020000-\U0002fa1f々〆ヶ"
 KANJI_RE = re.compile(f"[{KANJI}]")
 # A reading the captions give in half-width parentheses right after the kanji it reads; any
 # more right after it, 猫猫(マオマオ)(ねこ), are taken out with it and not read
