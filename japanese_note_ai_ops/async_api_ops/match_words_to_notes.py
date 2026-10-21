@@ -45,6 +45,7 @@ from ..link_ids import (
     note_link_id,
     parse_link_id,
 )
+from ..note_hooks import NEW_MATCHED_TAG
 from ..note_roles import (
     SENTENCE_KEYS,
     SENTENCE_ROLE,
@@ -1166,7 +1167,7 @@ def create_new_note_without_matching(
     )
     logger.debug(f"{log_prefix}New note reading type for word {word}: {new_note_reading_type}")
     new_note[word_sort_field] = word
-    new_note.add_tag("new_matched_jp_word")
+    new_note.add_tag(NEW_MATCHED_TAG)
     # Query for a note with a (kun)/(on) or (rX) marker in the sort field, we'll want to
     # set the marker in this note appropriately based on that:
     # - if there is (kun) --> this should be (on), or other way around
@@ -1555,7 +1556,7 @@ def create_new_note_from_matched_note(
     # Don't copy tags, the meaning's audio and the copied note's sentence to the new note
     new_note.set_tags_from_str("")
     new_note[meaning_audio_field] = ""
-    new_note.add_tag("new_matched_jp_word")
+    new_note.add_tag(NEW_MATCHED_TAG)
     if vocab_type is None:
         new_note[word_list_field] = ""
     else:

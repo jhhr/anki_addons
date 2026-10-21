@@ -36,13 +36,15 @@ from typing import Any, Optional
 from ..html_stripping import strip_context_sentences
 from ..kana_conv import to_hiragana
 from ..link_ids import LinkIndex, link_id, parse_link_id, placeholder_holders
+from ..note_hooks import NEW_MATCHED_TAG
 from ..note_roles import SENTENCE_KEYS, is_vocab_type, layout_error, named_field, sentence_type_of
 from ..word_array import match_flags, match_targets, merge
 from ..word_array.match_flags import MatchState
 
-# The tags this concerns. The first three are the addon's own, spelled as the ops that set them
-# spell them (each hardcodes its own)
-MATCH_OP_TAG = "new_matched_jp_word"
+# The tags this concerns. The first three are the addon's own: the match op's from note_hooks,
+# which is free of anki as this module is, then two spelled as the ops that set them spell them
+# (each hardcodes its own, in a module that imports anki)
+MATCH_OP_TAG = NEW_MATCHED_TAG
 INVALID_ARRAY_TAG = "invalid_word_list_json"
 KANJIFY_MISMATCH_TAG = "kanjify_sentence_mismatch"
 NEEDS_EXTRACT_TAG = "sentence-needs-extract"

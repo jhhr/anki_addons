@@ -46,6 +46,7 @@ try:
     from .note_hooks import (  # noqa: E402
         CLEAN_MEANING,
         EXTRACT_WORDS,
+        NEW_MATCHED_TAG,
         ops_on_added_note,
         suspends_added_cards,
         translates_on_unfocus,
@@ -185,7 +186,7 @@ def run_op_on_add_note(note: Note):
     # reading the config twice. Measured over one run: 1,512 notes x ~1.0s = 25.8 minutes,
     # 98.9% of the note-adding phase, to conclude there was nothing to do. Nothing above this
     # line may need the note type or the config.
-    if note.has_tag("new_matched_jp_word"):
+    if note.has_tag(NEW_MATCHED_TAG):
         # Happening within match_words_to_notes, which causes some problems
         return
 
