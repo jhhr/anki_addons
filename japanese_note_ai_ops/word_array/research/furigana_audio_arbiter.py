@@ -12,10 +12,10 @@ op's (`furigana_arbiter.review_inputs`, the English subtitle as the translation)
 is asked through the op's request code (`base_ops.get_response`), so a `terminal-` model runs
 `claude -p` as the op does. Only `terminal-` models: the add-on's config is read with
 meta.json's settings over it, but never an API key (AGENTS.md). Answers are cached by model and
-prompt in
-`evals/furigana_audio/arbiter_results.jsonl` of the test data checkout: a rerun pays only for
-prompts that changed. `--workers` is requests at once, and for `terminal-` models the cap on
-live `claude` processes.
+prompt in `evals/furigana_audio/arbiter_results.jsonl` of the test data checkout, each as it
+comes back: a rerun pays only for prompts that changed, and Ctrl+C keeps every answer already
+back and stops the `claude` processes still running. `--workers` is requests at once, and for
+`terminal-` models the cap on live `claude` processes.
 
 Each model is scored alone, and the models given together as the op's `furigana_models` list
 are (`agreed_reading`: every one sure of the same reading, heard at the word, keeping its kana).
@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 from typing import Optional, Sequence
 
@@ -136,34 +136,71 @@ def read_results() -> dict[str, dict]:
     return {row["key"]: row for row in fa.read_jsonl(RESULTS)}
 
 
+class Cancel:
+    """A cancel state for the op's request code (base_ops.CancelState's shape): once set, a
+    request still running stops, its `claude` process killed and not sent again."""
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+
+    def is_cancelled(self) -> bool:
+        return self.event.is_set()
+
+
 def fetch(get_response, model: str, todo: list[Card], workers: int, cached: dict) -> None:
-    lock = threading.Lock()
+    """Asks `model` about each card of `todo`, `workers` at a time, and caches each answer as
+    it comes back. On Ctrl+C the requests not sent yet are dropped and those running stopped,
+    and every answer already back is kept: an answer behind a slow one was lost before."""
+    cancel = Cancel()
 
     def ask(card: Card):
-        return card, get_response(
+        return get_response(
             model,
             card.prompt,
+            cancel_state=cancel,
             response_schema=arbiter.RESPONSE_SCHEMA,
             kind=KIND,
             inputs=card.inputs,
         )
 
-    started, failed = time.monotonic(), 0
-    with RESULTS.open("a", encoding="utf-8") as f, ThreadPoolExecutor(workers) as pool:
-        for done, (card, response) in enumerate(pool.map(ask, todo), 1):
+    started = time.monotonic()
+    counts: Counter = Counter()
+    pool = ThreadPoolExecutor(workers)
+    futures: dict[Future, Card] = {pool.submit(ask, card): card for card in todo}
+    with RESULTS.open("a", encoding="utf-8") as out:
+
+        def save(future: Future) -> None:
+            card = futures.pop(future)
+            response = None if future.cancelled() else future.result()
+            counts["done"] += 1
             if not isinstance(response, dict):
-                failed += 1
-                continue  # not cached, so a rerun asks again
+                counts["failed"] += 1
+                return  # not cached, so a rerun asks again
             key = capture_store.research_cache_key(model, card.prompt)
-            row = {"key": key, "model": model, "id": card.row["id"], "response": response}
-            with lock:
-                cached[key] = row
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-                f.flush()
-            if done % 25 == 0:
-                print(f"  {model} ...{done}", file=sys.stderr)
+            cached[key] = {"key": key, "model": model, "id": card.row["id"], "response": response}
+            out.write(json.dumps(cached[key], ensure_ascii=False) + "\n")
+            out.flush()
+            if counts["done"] % 25 == 0:
+                print(f"  {model} ...{counts['done']}", file=sys.stderr)
+
+        try:
+            for future in as_completed(list(futures)):
+                save(future)
+        except KeyboardInterrupt:
+            cancel.event.set()
+            pool.shutdown(wait=True, cancel_futures=True)
+            for future in [future for future in futures if future.done()]:
+                save(future)
+            kept = counts["done"] - counts["failed"]
+            print(f"{model}: stopped, {kept} answers kept", file=sys.stderr)
+            raise
+        finally:
+            pool.shutdown(wait=False)
     minutes = (time.monotonic() - started) / 60
-    print(f"{model}: {len(todo)} requests ({failed} failed) in {minutes:.1f} min", file=sys.stderr)
+    print(
+        f"{model}: {len(todo)} requests ({counts['failed']} failed) in {minutes:.1f} min",
+        file=sys.stderr,
+    )
 
 
 def evaluate(
@@ -178,13 +215,16 @@ def evaluate(
         asked = arbiter.asked(card.furigana)
         number = {id(r): n for n, r in enumerate(asked, 1)}
         answers = []
+        unanswered = False
         for model in models:
             key = capture_store.research_cache_key(model, card.prompt)
             row = cached.get(key) if card.prompt else None
-            c["unanswered cards"] += bool(card.prompt) and row is None
+            unanswered |= bool(card.prompt) and row is None
             answers.append(
                 arbiter.answers_from_response(row["response"], len(asked)) if row else {}
             )
+        # A card some model has not answered yet, once whatever the number of such models
+        c["unanswered cards"] += unanswered
         left = False
         for r in review:
             label = fa.label_for(labels, (card.row["id"], r.line, r.start), r.surface)

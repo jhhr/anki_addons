@@ -7,6 +7,7 @@ suite runs without SudachiPy or the downloaded dictionaries."""
 
 import sys
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from collections import Counter
@@ -492,6 +493,17 @@ class ArbiterEvalTest(unittest.TestCase):
     """The arbiter over the eval's cards (furigana_audio_arbiter.py): what it asks with and what
     it keeps."""
 
+    def card(self, n, words=("他",)):
+        review = [
+            arbiter_eval.audio_furigana.Reading(0, i, i + 1, w, "ほか", None, "review", ["タ"])
+            for i, w in enumerate(words)
+        ]
+        furigana = arbiter_eval.audio_furigana.Furigana(["".join(words)], review, False)
+        inputs = {"lines": ["".join(words)], "translation": "", "transcripts": [], "words": []}
+        card = arbiter_eval.Card({"id": f"c{n}"}, furigana, inputs)
+        card.prompt = f"prompt {n}"
+        return card
+
     def test_no_secret_of_the_config_is_kept(self):
         config = {"openai_api_key": "k", "x": {"together_api_key": "k", "y": 1}, "z": 2}
         self.assertEqual(arbiter_eval.without_secrets(config), {"x": {"y": 1}, "z": 2})
@@ -499,6 +511,42 @@ class ArbiterEvalTest(unittest.TestCase):
     def test_only_terminal_models_which_need_no_key_are_asked(self):
         with self.assertRaises(SystemExit):
             arbiter_eval.load_get_response(1, ["terminal-claude-haiku-5-5", "gemini-x"])
+
+    def test_on_ctrl_c_the_answers_back_are_kept_and_the_rest_stopped(self):
+        cards = [self.card(n) for n in range(3)]
+        back, stopped = threading.Event(), []
+
+        def get_response(model, prompt, cancel_state=None, **kwargs):
+            if prompt == "prompt 0":
+                back.set()
+                return {"words": []}
+            # The slow ones wait for Ctrl+C, and stop as the op's request code does
+            while not cancel_state.is_cancelled():
+                threading.Event().wait(0.01)
+            stopped.append(prompt)
+            return None
+
+        def interrupted(futures):
+            back.wait(5)
+            for future in futures:
+                if future.done():
+                    yield future
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as d:
+            results = Path(d) / "arbiter_results.jsonl"
+            cached: dict = {}
+            with unittest.mock.patch.object(arbiter_eval, "RESULTS", results):
+                with unittest.mock.patch.object(arbiter_eval, "as_completed", interrupted):
+                    with self.assertRaises(KeyboardInterrupt):
+                        arbiter_eval.fetch(get_response, "m", cards, 3, cached)
+            self.assertEqual([row["id"] for row in fa.read_jsonl(results)], ["c0"])
+        self.assertEqual(sorted(stopped), ["prompt 1", "prompt 2"])
+        self.assertEqual([row["id"] for row in cached.values()], ["c0"])
+
+    def test_a_card_no_model_answered_is_one_unanswered_card(self):
+        lines = arbiter_eval.evaluate(["m1", "m2"], [self.card(0)], {}, {}, False)
+        self.assertTrue(lines[0].endswith(", 1 unanswered"), lines[0])
 
 
 class FoldTest(unittest.TestCase):
