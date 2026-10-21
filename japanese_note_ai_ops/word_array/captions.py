@@ -37,6 +37,7 @@ from typing import Callable, Iterable, NamedTuple, Optional
 
 from ..html_stripping import text_lines
 from ..kana_conv import to_hiragana, to_katakana
+from .numbers import DIGITS, numeral
 
 # The ranges of the shared kanji_furi.KANJI_RANGES, the compatibility ideographs (﨑 of 山﨑)
 # and the supplementary planes (𠮟 of 𠮟る) as well as the CJK blocks, with 々 〆 ヶ, but not
@@ -54,7 +55,6 @@ UNSPOKEN_RE = re.compile(r"（[^（）]*）|\[[^\[\]]*\]")
 ASS_TAG_RE = re.compile(r"\{\\[^}]*\}")
 KATAKANA_RE = re.compile(r"[ァ-ヺー・]+")
 DIGITS_RE = re.compile(r"[0-9０-９]+")
-KANJI_DIGITS = "〇一二三四五六七八九"
 # Latin letters, of either width and case
 LATIN_RE = re.compile(r"[A-Za-zＡ-Ｚａ-ｚ]+")
 # Each Latin letter's names as said, the first the one a letter is read by
@@ -89,22 +89,11 @@ LETTER_NAMES = {
 
 
 def kanji_number(n: int) -> str:
-    """`n` in kanji numerals as a word spells it: 10 十, 2010 二千十, 10000 一万."""
-    if n == 0 or n >= 10**16:
-        return "".join(KANJI_DIGITS[int(d)] for d in str(n))
-    out = []
-    for size, unit in ((10**12, "兆"), (10**8, "億"), (10**4, "万"), (1, "")):
-        group = n // size % 10000
-        if not group:
-            continue
-        for place, name in ((1000, "千"), (100, "百"), (10, "十")):
-            digit = group // place % 10
-            if digit:
-                out.append(("" if digit == 1 else KANJI_DIGITS[digit]) + name)
-        if group % 10:
-            out.append(KANJI_DIGITS[group % 10])
-        out.append(unit)
-    return "".join(out)
+    """`n` in kanji numerals as a word spells it (`numbers.numeral`): 10 十, 2010 二千十, 10000
+    一万; past the largest unit, 兆, digit by digit."""
+    if n >= 10**16:
+        return "".join(DIGITS[int(d)] for d in str(n))
+    return numeral(n)
 
 
 def kanji_numerals(text: str) -> str:

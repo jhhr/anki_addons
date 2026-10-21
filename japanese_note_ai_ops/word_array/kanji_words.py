@@ -35,19 +35,13 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
 
 from ..kana_conv import to_hiragana
-from .captions import (
-    DIGITS_RE,
-    KANJI_DIGITS,
-    KANJI_RE,
-    LATIN_RE,
-    InlineReading,
-    kanji_numerals,
-)
+from .captions import DIGITS_RE, KANJI_RE, LATIN_RE, InlineReading, kanji_numerals
+from .numbers import DIGITS, LARGE_UNITS, SMALL_UNITS
 
 # Sudachi's part of speech for a numeral
 NUMERAL = ("名詞", "数詞")
 # The kanji a number is spelt with, as `captions.kanji_number` writes it
-NUMERAL_KANJI = frozenset(KANJI_DIGITS + "十百千万億兆")
+NUMERAL_KANJI = frozenset(DIGITS) | frozenset(SMALL_UNITS) | frozenset(LARGE_UNITS)
 # Sudachi's part of speech for a noun that can be used as an adverb, of time mostly (今, 時)
 ADVERBIAL_NOUN = ("名詞", "普通名詞", "副詞可能")
 

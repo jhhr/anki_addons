@@ -52,12 +52,8 @@ FIXES = HOME / "fixes.jsonl"
 # The scripts here reach the op's caption cleaning as fa.<name>
 KANJI = captions.KANJI
 KANJI_RE = captions.KANJI_RE
-DIGITS_RE = captions.DIGITS_RE
-KANJI_DIGITS = captions.KANJI_DIGITS
-InlineReading = captions.InlineReading
 BaseFinder = captions.BaseFinder
 whole_run = captions.whole_run
-kanji_number = captions.kanji_number
 kanji_numerals = captions.kanji_numerals
 to_hiragana = captions.to_hiragana
 spoken_lines = captions.spoken_lines

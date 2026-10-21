@@ -128,6 +128,8 @@ class NumeralsTest(unittest.TestCase):
     def test_a_number_in_kanji_numerals(self):
         cases = {0: "〇", 10: "十", 11: "十一", 175: "百七十五", 1000: "千", 2010: "二千十"}
         cases.update({10000: "一万", 12345: "一万二千三百四十五", 100000000: "一億"})
+        # Past 兆, the largest unit, digit by digit
+        cases.update({10**16: "一〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇〇"})
         self.assertEqual({n: captions.kanji_number(n) for n in cases}, cases)
 
     def test_digits_of_either_width_in_a_text(self):
