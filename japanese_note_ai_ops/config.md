@@ -226,8 +226,9 @@ every word of a sentence whose clip is far from its text, goes to the language m
 translation in `translated_sentence_field` when the type has one, the lines and what each heard
 at the word, and the reading is written where every model is sure of the same one and a line
 heard it there. A word no line heard anything at (the clip stops before it) could never be
-written so, and is not asked about; a note with only such words asks nothing. A word still unsettled is written with the readings to choose between in its
-brackets, joined by `？`: Sudachi's reading, then what the lines heard there, ` 方[ほう？かた]`.
+written so, and is not asked about; a note with only such words asks nothing. A word still
+unsettled is written with the readings to choose between in its brackets, joined by `？`:
+Sudachi's reading, then what the lines heard there, ` 方[ほう？かた]`.
 A word with nothing else heard has its one reading and a `？`, ` 薬[くすり？]`, and one Sudachi
 cannot read has the `？` alone. The note is tagged `furigana-review`. Kanjify and word
 extraction leave such a note alone: listen to the clip, leave each marked word with the reading
