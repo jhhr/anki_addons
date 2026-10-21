@@ -432,7 +432,8 @@ class NotFound(Exception):
 class TwoTypeCollection:
     """The collection behind clean_meaning's `col_find_notes` / `col_get_notes`. The search
     reads the terms the sentence searches are made of (a `"field:*text*"` term a substring, as
-    in Anki), and a fetch of an id with no note raises, as Anki's get_note does."""
+    in Anki), and a fetch of an id with no note raises, as Anki's get_note does, unless asked
+    to leave it out (`skip_gone`, as the note cache asks collection_access)."""
 
     def __init__(self, *notes: TypedNote) -> None:
         self.notes = {note.id: note for note in notes}
@@ -453,13 +454,13 @@ class TwoTypeCollection:
             and all(field in note and text in note[field] for field, text in terms)
         ]
 
-    def get_notes(self, note_ids):
+    def get_notes(self, note_ids, *, skip_gone=False):
         ids = list(note_ids)
         self.fetches.append(ids)
         missing = [nid for nid in ids if nid not in self.notes]
-        if missing:
+        if missing and not skip_gone:
             raise NotFound(missing)
-        return [self.notes[nid] for nid in ids]
+        return [self.notes[nid] for nid in ids if nid in self.notes]
 
     def find_note_id(self, config, note_type_name, held, col=None):
         """link_lookup.find_note_id: the note of the type holding the link ID, by the type's

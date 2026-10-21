@@ -46,7 +46,7 @@ class LookupTestCase(unittest.TestCase):
         self.fetched: "list[list[int]]" = []
         self.real_get_notes = nc.get_notes_async
 
-        async def fake_get_notes_async(note_ids):
+        async def fake_get_notes_async(note_ids, *, skip_gone=False):
             ids = list(note_ids)
             self.fetched.append(ids)
             return [FakeNote(note_id) for note_id in ids]

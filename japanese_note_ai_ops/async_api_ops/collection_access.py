@@ -48,6 +48,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional, Sequence, TypeVar
 
+from anki.errors import NotFoundError
 from aqt import mw
 
 from . import capture, capture_notes
@@ -315,7 +316,11 @@ def get_note(note_id: "NoteId") -> "Note":
     return _fetched([run_on_collection("get_note", lambda: mw.col.get_note(note_id))])[0]
 
 
-def _fetch_notes(ids: "list[NoteId]", run: "Optional[Run]", exempt: bool) -> "list[Note]":
+def _fetch_notes(
+    ids: "list[NoteId]", run: "Optional[Run]", exempt: bool, gone: "Optional[list[NoteId]]"
+) -> "list[Note]":
+    """The notes of `ids`. With `gone`, an id the collection has no note for goes there instead
+    of failing the batch with Anki's NotFoundError."""
     notes: "list[Note]" = []
     for note_id in ids:
         # One turn with the collection, but a bounded one. A broad search hands this thousands
@@ -324,33 +329,53 @@ def _fetch_notes(ids: "list[NoteId]", run: "Optional[Run]", exempt: bool) -> "li
         # inside the backend has to be waited out, not all the rest.
         if _giving_up(run, exempt):
             raise RunCancelled(f"get_notes: gave up after {len(notes)} of {len(ids)} notes")
-        notes.append(mw.col.get_note(note_id))
+        try:
+            notes.append(mw.col.get_note(note_id))
+        except NotFoundError:
+            if gone is None:
+                raise
+            gone.append(note_id)
     return notes
 
 
-def get_notes(note_ids: "Iterable[NoteId]") -> "list[Note]":
+def _left_out(gone: "Optional[list[NoteId]]") -> None:
+    # Logged on the calling thread, whose log lines carry the run's and the note's ids; the
+    # worker that fetched has neither
+    for note_id in gone or ():
+        logger.warning("Note %s is not in the collection, left out of the fetch", note_id)
+
+
+def get_notes(note_ids: "Iterable[NoteId]", *, skip_gone: bool = False) -> "list[Note]":
     """Fetch several notes under a single turn with the collection.
 
     Taking and releasing per note would let every other waiting caller in between, turning one
-    stretch of work into a long interleaved one.
+    stretch of work into a long interleaved one. With `skip_gone`, an id the collection has no
+    note for is left out of that one turn, logged. Without it, Anki's NotFoundError for that id
+    fails the whole batch, and a caller left to fetch the rest one by one pays a turn per note.
     """
     ids = list(note_ids)
     if not ids:
         return []
     run, exempt = current_run(), bool(getattr(_exempt, "on", False))
-    return _fetched(
-        run_on_collection(f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt))
+    gone: "Optional[list[NoteId]]" = [] if skip_gone else None
+    notes = run_on_collection(
+        f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt, gone)
     )
+    _left_out(gone)
+    return _fetched(notes)
 
 
-async def get_notes_async(note_ids: "Iterable[NoteId]") -> "list[Note]":
+async def get_notes_async(
+    note_ids: "Iterable[NoteId]", *, skip_gone: bool = False
+) -> "list[Note]":
     """get_notes for a caller on the event loop."""
     ids = list(note_ids)
     if not ids:
         return []
     run, exempt = current_run(), bool(getattr(_exempt, "on", False))
-    return _fetched(
-        await run_on_collection_async(
-            f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt)
-        )
+    gone: "Optional[list[NoteId]]" = [] if skip_gone else None
+    notes = await run_on_collection_async(
+        f"get_notes: {len(ids)} notes", lambda: _fetch_notes(ids, run, exempt, gone)
     )
+    _left_out(gone)
+    return _fetched(notes)
