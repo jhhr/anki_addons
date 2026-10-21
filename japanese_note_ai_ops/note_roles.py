@@ -69,6 +69,24 @@ def _name(block: Mapping[str, Any], key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def configured_field(config: Mapping[str, Any], note_type_name: str, key: str) -> str:
+    """The field a note type's block names for `key`, "" when the type has no block or the
+    block gives nothing usable (`_name`). A value that names no field, such as a list in a
+    hand-edited config, leaves the key unconfigured: as a field name it raised TypeError in a
+    note's `in`, which in a check made before a run's notes failed the whole run."""
+    block = _block(config, note_type_name)
+    return _name(block, key) if block is not None else ""
+
+
+def configured_value(
+    config: Mapping[str, Any], note_type_name: str, note: NoteFields, key: str
+) -> str:
+    """The note's value of the field its type's block names for `key`: "" when the key is not
+    configured (`configured_field`) or the note has no such field."""
+    field = configured_field(config, note_type_name, key)
+    return note[field] if field and field in note else ""
+
+
 def _other(block: Mapping[str, Any], key: str, note_type_name: str) -> str:
     # A block naming itself describes the one-type layout, the same as naming nothing
     named = _name(block, key)

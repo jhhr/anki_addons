@@ -245,6 +245,9 @@ class BulkServerCheckTest(unittest.TestCase):
         self.assertFalse(op.lacks_transcript(CONFIG, Note({"Heard": every})))
         # A field the note lacks is asked about, and the op says why it cannot be
         self.assertTrue(op.lacks_transcript(CONFIG, Note({})))
+        # So is one a hand-edited config names by a list, which raised TypeError before a run
+        listed = {SENTENCE: {**CONFIG[SENTENCE], "sentence_transcription_field": ["Heard"]}}
+        self.assertTrue(op.lacks_transcript(listed, Note({"Heard": every})))
 
 
 if __name__ == "__main__":

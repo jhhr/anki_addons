@@ -375,6 +375,16 @@ class NewNotesTest(unittest.TestCase):
         note = Note({"Sentence": LINE, "Audio": "[sound:clip.opus]"})
         self.assertFalse(op.wants_audio_furigana(no_transcripts, note))
 
+    def test_a_key_that_names_no_field_is_not_configured(self):
+        # A list in a hand-edited config raised TypeError in the note's `in`
+        note = Note({"Sentence": LINE, "Audio": "[sound:clip.opus]", "Furigana": " 他[ほか？た]の"})
+        for key in ("sentence_transcription_field", "furigana_sentence_field"):
+            config = {SENTENCE: {**self.config[SENTENCE], key: ["Heard"]}}
+            with self.subTest(key):
+                self.assertFalse(op.wants_audio_furigana(config, note))
+        config = {SENTENCE: {**self.config[SENTENCE], "furigana_sentence_field": ["Furigana"]}}
+        self.assertIsNone(op.unchecked_furigana(config, note))
+
     def test_furigana_awaiting_a_check_by_tag_or_by_a_word_still_marked(self):
         checked = Note({"Furigana": "他[ほか]の 人[ひと]は？"})
         tagged = Note({"Furigana": "他[ほか]の"}, tags=[op.FURIGANA_REVIEW_TAG])

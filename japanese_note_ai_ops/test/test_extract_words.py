@@ -176,6 +176,14 @@ class ExtractWordsInNoteTests(unittest.TestCase):
             generate.assert_not_called()
             self.assertIn('"？"', report.call_args.args[0])
 
+    def test_a_furigana_field_named_by_no_string_is_not_read(self):
+        # A list in a hand-edited config raised TypeError in the note's `in`
+        config = {"Sentence": {"furigana_sentence_field": ["furigana"]}}
+        note = FakeNote({"sentence": "本を読む。", "furigana": " 本[ほん？]を", "words": ""})
+        changed, generate, _ = run(note, {}, array=[["本"]], config=config)
+        self.assertTrue(changed)
+        generate.assert_called_once()
+
     def test_a_note_with_no_sentence_gets_nothing(self):
         note = FakeNote({"sentence": "", "words": ""})
 

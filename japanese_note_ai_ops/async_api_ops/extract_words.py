@@ -59,7 +59,7 @@ from ..configuration import (
 )
 from ..html_stripping import strip_context_sentences
 from ..generator_resources import with_generator_resources
-from ..note_roles import SENTENCE_ROLE
+from ..note_roles import SENTENCE_ROLE, configured_value
 from ..utils import get_field_config, print_error_traceback
 from ..word_array import generator, merge, names, resources
 from ..word_array.audio_furigana import has_doubt
@@ -112,8 +112,8 @@ def extract_words_in_note(
         logger.error(f"{log_prefix}The note is missing the sentence or the word list field")
         return False
     # The furigana sentence too, which the extracted sentence is often kanjified from
-    furigana_field = config.get(note_type["name"], {}).get("furigana_sentence_field")
-    if any(has_doubt(note[f]) for f in (sentence_field, furigana_field) if f and f in note):
+    furigana = configured_value(config, note_type["name"], note, "furigana_sentence_field")
+    if has_doubt(note[sentence_field]) or has_doubt(furigana):
         report_error(FURIGANA_DOUBT_LEFT)
         return False
 

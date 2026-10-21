@@ -58,7 +58,13 @@ from ..configuration import (
 )
 from ..generator_resources import with_generator_resources
 from ..kana_conv import to_hiragana
-from ..note_roles import SENTENCE_ROLE, note_type_search, search_escape
+from ..note_roles import (
+    SENTENCE_ROLE,
+    configured_field,
+    configured_value,
+    note_type_search,
+    search_escape,
+)
 from ..utils import get_field_config
 from ..word_array import furigana_arbiter, jmdict_index
 from ..word_array.audio_furigana import Furigana, Reading, audio_furigana, has_doubt
@@ -274,15 +280,14 @@ def wants_audio_furigana(config: dict, note: Note) -> bool:
     asks, so that a note whose furigana was typed or set before, or one with no clip (added
     by hand), is neither transcribed nor set."""
     note_type = note.note_type()
-    block = config.get(note_type["name"]) if note_type else None
-    if not isinstance(block, dict) or not block.get("sentence_transcription_field"):
+    if not note_type:
         return False
-    furigana = block.get("furigana_sentence_field")
-    sentence = block.get("sentence_field")
-    audio = block.get("sentence_audio_field")
-    if not (isinstance(furigana, str) and isinstance(sentence, str) and isinstance(audio, str)):
+    name = note_type["name"]
+    if not configured_field(config, name, "sentence_transcription_field"):
         return False
-    if not all(field in note for field in (furigana, sentence, audio)):
+    keys = ("furigana_sentence_field", "sentence_field", "sentence_audio_field")
+    furigana, sentence, audio = (configured_field(config, name, key) for key in keys)
+    if not all(field and field in note for field in (furigana, sentence, audio)):
         return False
     return (
         not note[furigana].strip()
@@ -297,9 +302,8 @@ def unchecked_furigana(config: dict, note: Note) -> Optional[str]:
     if note.has_tag(FURIGANA_REVIEW_TAG):
         return FURIGANA_REVIEW_LEFT
     note_type = note.note_type()
-    block = config.get(note_type["name"]) if note_type else None
-    field = block.get("furigana_sentence_field") if isinstance(block, dict) else None
-    if field and field in note and has_doubt(note[field]):
+    name = note_type["name"] if note_type else ""
+    if has_doubt(configured_value(config, name, note, "furigana_sentence_field")):
         return FURIGANA_DOUBT_LEFT
     return None
 
@@ -367,8 +371,7 @@ def set_furigana_in_note(
     # nothing (furigana_arbiter.asked)
     if arbiters and furigana_arbiter.asked(result):
         # The translation is context only: a note type without one is asked all the same
-        translation_field = config.get(note_type["name"], {}).get("translated_sentence_field")
-        translation = note[translation_field] if translation_field in note else ""
+        translation = configured_value(config, note_type["name"], note, "translated_sentence_field")
         settled = settle_by_arbiter(
             arbiters,
             result,

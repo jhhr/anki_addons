@@ -33,7 +33,7 @@ from anki.notes import Note, NoteId
 from aqt import mw
 from aqt.browser import Browser
 
-from ..note_roles import SENTENCE_ROLE
+from ..note_roles import SENTENCE_ROLE, configured_field
 from ..utils import get_field_config
 from .api_client import get_session
 from .base_ops import (
@@ -158,8 +158,8 @@ def lacks_transcript(config: dict, note: Note) -> bool:
     so that a run asks for one. A note whose field cannot be read counts: `transcribe_note`
     reports why."""
     note_type = note.note_type()
-    block = config.get(note_type["name"]) if note_type else None
-    field = block.get("sentence_transcription_field") if isinstance(block, dict) else None
+    name = note_type["name"] if note_type else ""
+    field = configured_field(config, name, "sentence_transcription_field")
     if not field or field not in note:
         return True
     heard = parse_transcripts(note[field])

@@ -14,6 +14,7 @@ from ..note_roles import (
     ROLES,
     SENTENCE_ROLE,
     VOCAB_ROLE,
+    configured_field,
     is_sentence_type,
     role_error,
     roles_of,
@@ -194,10 +195,9 @@ def audio_furigana_configured(config: dict) -> bool:
     """Whether a sentence type of the config keeps transcripts (`sentence_transcription_field`),
     from which "Set furigana from audio" sets its notes' furigana."""
     return any(
-        isinstance(block, dict)
-        and bool(block.get("sentence_transcription_field"))
+        configured_field(config, name, "sentence_transcription_field")
         and is_sentence_type(config, name)
-        for name, block in config.items()
+        for name in config
     )
 
 

@@ -197,6 +197,11 @@ class AudioFuriganaPhaseTests(unittest.TestCase):
 
     def test_without_transcripts_the_run_is_as_before(self):
         self.assertEqual(self.names(TWO_TYPE), ["New note ops", "Judging words matchability"])
+        # A transcription field named by a list in a hand-edited config is none: it used to
+        # fail the run before its first note
+        listed = {**FURIGANA_TYPE[SENTENCE], "sentence_transcription_field": ["Heard"]}
+        config = {**FURIGANA_TYPE, SENTENCE: listed}
+        self.assertEqual(self.names(config), ["New note ops", "Judging words matchability"])
         # Transcripts kept on a vocab type are no sentence type's
         config = {**TWO_TYPE, VOCAB: {**TWO_TYPE[VOCAB], "sentence_transcription_field": "x"}}
         self.assertEqual(self.names(config), ["New note ops", "Judging words matchability"])
