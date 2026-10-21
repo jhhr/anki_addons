@@ -279,8 +279,13 @@ def clear_unadded_note_ids(
         if not note_type:
             logger.error(f"Error: A new note not added has no note type: {note.fields}")
             continue
-        new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
-        links = _array_links(config, note_type["name"])
+        try:
+            new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
+            links = _array_links(config, note_type["name"])
+        except Exception as e:
+            # A note type the config lacks (the adding raised on it): the others are unlinked
+            logger.error(f"Error: A new note not added cannot be unlinked: {e}")
+            continue
         if not new_note_id_field or not links.word_list_field:
             logger.error("Error: Missing required fields in config")
             continue

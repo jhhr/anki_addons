@@ -1163,6 +1163,112 @@ class CleanupTailTests(unittest.TestCase):
         self.assertTrue(self.updater.cancel_ended)
 
 
+class RefusingSearchableCollection(SearchableCollection):
+    """A SearchableCollection that refuses every merge once `refuse_after` have gone through, as
+    Anki does after a hook wrote the collection outside its undo (a raw SQL statement): that
+    throws the undo queue away, and the run's entry with it."""
+
+    def __init__(self, search: FakeSearch, updater: FakeUpdater, refuse_after: int):
+        super().__init__(search, updater)
+        self.refuse_after = refuse_after
+
+    def merge_undo_entries(self, pos):
+        if len(self.merged) >= self.refuse_after:
+            raise RuntimeError("target undo op not found")
+        return super().merge_undo_entries(pos)
+
+
+class AddingRaisesTests(unittest.TestCase):
+    """A dedupe or an adding that raises still fails the op, but only after the tail has run.
+
+    The arrays saved before the adding link every prepared note by its ID, and no later run
+    repairs an ID no note holds: the notes never added are unlinked, the added ones an add hook
+    wrote over are saved again holding their IDs, and new_notes_op gets the added notes.
+    """
+
+    def setUp(self):
+        saved_phase_log = base_ops.phase_log
+        base_ops.phase_log = lambda _name: contextlib.nullcontext()
+        self.addCleanup(setattr, base_ops, "phase_log", saved_phase_log)
+        self.updater = FakeUpdater()
+
+    def test_a_refused_merge_still_saves_what_a_hook_wrote_over_and_unlinks_the_rest(self):
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
+        search = FakeSearch(sentence(2, w("様", [NEW_1]), w("本", [NEW_2]), w("机", [NEW_3])))
+        # The first add's merge goes through, the second's is refused
+        col = RefusingSearchableCollection(search, self.updater, refuse_after=1)
+        col.hook = writes_its_id
+
+        with search.patched(), self.assertRaisesRegex(RuntimeError, "target undo op"):
+            base_ops.add_new_notes(
+                col, notes, CONFIG, POS, self.updater,
+                unadded_notes_op=mwtn.clear_unadded_note_ids,
+            )
+
+        # Both added notes hold their link IDs again, the one never tried is unlinked
+        self.assertEqual(search.saved[501]["new_note_id_field"], str(NEW_1))
+        self.assertEqual(search.saved[502]["new_note_id_field"], str(NEW_2))
+        saved = FakeNote(dict(search.saved[2]), 2)
+        self.assertEqual(match_data(saved), [[NEW_1], [NEW_2], ["match"]])
+        self.assertTrue(self.updater.cancel_ended)
+
+    def test_a_note_type_the_config_lacks_still_unlinks_the_rest(self):
+        notes = [new_note(NEW_1), unconfigured_note(NEW_2), new_note(NEW_3)]
+        search = FakeSearch(sentence(2, w("様", [NEW_1]), w("机", [NEW_3])))
+        col = SearchableCollection(search, self.updater)
+        col.hook = writes_its_id
+
+        with search.patched(), self.assertRaisesRegex(Exception, "has not been configured"):
+            base_ops.add_new_notes(
+                col, notes, CONFIG, POS, self.updater,
+                unadded_notes_op=mwtn.clear_unadded_note_ids,
+            )
+
+        self.assertEqual(search.saved[501]["new_note_id_field"], str(NEW_1))
+        # The unlinking cannot place the note it raised on and skips it, not the one after
+        self.assertEqual(match_data(FakeNote(dict(search.saved[2]), 2)), [[NEW_1], ["match"]])
+
+    def test_new_notes_op_still_gets_the_added_notes_and_the_adding_s_error_is_raised(self):
+        """The migration's new_notes_op makes each added sentence note its vocab notes' example.
+        What it returns is saved although its merge is refused too, the run's undo entry being
+        gone: the write stands as an undo step of its own."""
+        notes = [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)]
+        col = UndoCountingCollection(refuse_merge_after=1)
+        vocab = FakeNote({"word_list_field": "[]"}, note_id=2)
+        resolving, unlinking = Recorder(returns={2: vocab}), Recorder()
+
+        with (
+            self.assertRaisesRegex(RuntimeError, "target undo op not found"),
+            self.assertLogs(base_ops.logger, "ERROR") as logs,
+        ):
+            base_ops.add_new_notes(
+                col, notes, CONFIG, POS, self.updater, resolving, unadded_notes_op=unlinking
+            )
+
+        # The second note was added before its merge was refused, the third never tried
+        self.assertEqual([note.id for note in notes], [501, 502, 0])
+        self.assertEqual(resolving.handed, [notes[:2]])
+        self.assertEqual(col.updated, [vocab])
+        self.assertEqual(unlinking.handed, [notes[2:]])
+        self.assertEqual(col.merged, [POS])
+        self.assertIn("after the adding raised", "\n".join(logs.output))
+
+    def test_the_adding_s_error_is_raised_rather_than_a_new_notes_op_s_after_it(self):
+        unlinking = Recorder()
+
+        with self.assertRaisesRegex(RuntimeError, "target undo op not found"), self.assertLogs(
+            base_ops.logger, "ERROR"
+        ):
+            base_ops.add_new_notes(
+                UndoCountingCollection(refuse_merge_after=1),
+                [new_note(NEW_1), new_note(NEW_2), new_note(NEW_3)], CONFIG, POS, self.updater,
+                Recorder(raises=True), unadded_notes_op=unlinking,
+            )
+
+        # Both raised, and the unlinking ran all the same
+        self.assertEqual(len(unlinking.handed), 1)
+
+
 class EditedNotesCountTests(unittest.TestCase):
     """How the final message counts the notes the note adding saved (review finding C6): a
     selected note as one of the selection edited, any other as an other note, each once."""

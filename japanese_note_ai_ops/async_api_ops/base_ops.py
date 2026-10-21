@@ -3035,7 +3035,9 @@ def add_new_notes(
 
     `new_notes_op` and the unlinking always run to the end: the unlinking is what leaves the
     arrays consistent. A `new_notes_op` that raises fails the op, but only after the unlinking
-    has run.
+    has run, and so does a dedupe or an adding that raises: the notes are split as a cancel at
+    that point would split them, and that error is the one raised. A crash or a kill runs none
+    of this.
     """
     total_notes = len(notes_to_add)
     logger.debug(f"Adding {total_notes} new notes to note_will_be_added hooks will be run")
@@ -3056,6 +3058,25 @@ def add_new_notes(
     # The add loop's time, split: the adds with their hooks, and the undo merges
     add_seconds = 0.0
     merge_seconds = 0.0
+    # What the dedupe or the adding raised, raised again once the tail below has run
+    adding_error: Optional[Exception] = None
+
+    def merge_into_run() -> None:
+        """The tail's merge into the run's undo entry, which may be refused once the adding has
+        raised; before that, a refused merge raises as it always did.
+
+        A refused merge in the adding is one such raise: a hook that wrote the collection
+        outside Anki's undo (a raw SQL statement) throws the undo queue away, the run's entry
+        with it, and every merge after it is refused too. The tail's writes are made anyway,
+        each then an undo step of its own, so one undo no longer takes the whole run back:
+        better than arrays linking notes that were never added."""
+        nonlocal op_changes
+        try:
+            op_changes = col.merge_undo_entries(pos)
+        except Exception as e:
+            if adding_error is None:
+                raise
+            logger.error(f"Merging into the run's undo entry after the adding raised: {e}")
 
     try:
         if notes:
@@ -3179,6 +3200,19 @@ def add_new_notes(
                 add_seconds=round(add_seconds, 3),
                 merge_seconds=round(merge_seconds, 3),
             )
+    except Exception as e:
+        # A note type the config lacks, a refused merge, a dedupe that broke. The run still
+        # fails, but after the tail below: the arrays saved before the adding link every
+        # prepared note by its ID, and no later run repairs an ID no note holds. The notes are
+        # split as a cancel here would split them: until one is added or fails, every note as
+        # prepared (see "not added" above), then the rest of the deduped list. By identity,
+        # since a note not added has no id
+        adding_error = e
+        logger.error(f"Error adding the new notes: {e}")
+        print_error_traceback(e, logger)
+        decided = {id(note) for note in (*added_notes, *failed_notes)}
+        rest = notes if decided else prepared
+        not_added = [note for note in rest if id(note) not in decided]
     finally:
         # However the adding ends, a raise included (a note type the config lacks, a failed
         # merge): the op still has its teardown ahead with the dialog up, and a Cancel left
@@ -3187,22 +3221,25 @@ def add_new_notes(
         progress_updater.end_cleanup_cancel()
     if rewritten:
         # The add wrote these as an add hook left them: saved again holding the link IDs the
-        # arrays link them by (link_id_kept). Whether the adding was cancelled or not, since
-        # they are in the collection either way
+        # arrays link them by (link_id_kept). However the adding ended, cancelled or raising,
+        # since they are in the collection either way
         try:
             col.update_notes(rewritten)
         except Exception as e:
             logger.error(f"Error saving the link IDs an add hook wrote over: {e}")
             print_error_traceback(e, logger)
             report_exception(e, "Saving the link IDs of the notes an add hook changed")
-        op_changes = col.merge_undo_entries(pos)
+        # Not a bare merge: after a refused one in the adding it would raise here again, before
+        # new_notes_op and the unlinking below
+        merge_into_run()
         started = log_phase("cleanup: link IDs kept", started, notes=len(rewritten))
     counts = NewNotesCounts(len(added_notes), len(failed_notes), len(not_added))
     # The link ID each added note was made with, and the id it got
     capture_notes.record_added(added_notes, config)
     if not_added:
+        stopped = "cancelled" if adding_error is None else "stopped by an error"
         logger.info(
-            f"The adding was cancelled: {len(not_added)} of {counts.prepared} new notes not added"
+            f"The adding was {stopped}: {len(not_added)} of {counts.prepared} new notes not added"
         )
 
     # The added notes are counted as added; updated_nids holds the notes edited for them
@@ -3235,7 +3272,7 @@ def add_new_notes(
                 logger.error(f"Error updating valid notes after new_notes_op: {e}")
                 print_error_traceback(e, logger)
                 report_exception(e, "Saving the notes linked to the added notes")
-            op_changes = col.merge_undo_entries(pos)
+            merge_into_run()
             updated_nids = [note.id for note in valid_notes if note.id not in added_nids]
             saved_notes.extend(valid_notes)
 
@@ -3267,11 +3304,13 @@ def add_new_notes(
                 logger.error(f"Error updating notes after unadded_notes_op: {e}")
                 print_error_traceback(e, logger)
                 report_exception(e, "Saving the notes unlinked from the new notes not added")
-            op_changes = col.merge_undo_entries(pos)
+            merge_into_run()
             already = {*updated_nids, *added_nids}
             updated_nids.extend(note.id for note in unlinked_notes if note.id not in already)
             saved_notes.extend(unlinked_notes)
         log_phase("cleanup: unadded_notes_op", started, unlinked=len(unlinked_notes))
+    if adding_error is not None:
+        raise adding_error
     if resolving_error is not None:
         raise resolving_error
     return NewNotesAdded(
