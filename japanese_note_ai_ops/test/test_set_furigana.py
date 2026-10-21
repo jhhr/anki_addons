@@ -316,10 +316,13 @@ class ArbiterTest(OpHarness):
         self.assertEqual(note["Furigana"], "他[た]の 人[ひと]はどこにいるの")
         self.assertEqual(note.tags, [])
         self.assertEqual([model for model, _, _ in calls], self.MODELS)
-        for _, prompt, kwargs in calls:
+        for model, prompt, kwargs in calls:
             self.assertEqual(kwargs["kind"], "furigana_arbiter.note")
             self.assertEqual(kwargs["response_schema"], arbiter.RESPONSE_SCHEMA)
-            self.assertEqual(arbiter.review_prompt(**kwargs["inputs"]), prompt)
+            # The model is recorded with the inputs, and is no part of the prompt
+            inputs = dict(kwargs["inputs"])
+            self.assertEqual(inputs.pop("model"), model)
+            self.assertEqual(arbiter.review_prompt(**inputs), prompt)
         inputs = calls[0][2]["inputs"]
         self.assertEqual(inputs["translation"], "Where are the\nothers?")
         self.assertEqual([w["context"] for w in inputs["words"]], ["［他］の人はどこにいるの"])

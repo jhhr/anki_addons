@@ -1251,15 +1251,24 @@ class FuriganaArbiterCallTests(unittest.TestCase):
 
         self.assertEqual([r.written for r in settled], ["た"])
         self.assertEqual([model for model, _, _ in calls], ["a", "b"])
-        for _, prompt, kwargs in calls:
+        for model, prompt, kwargs in calls:
             self.assertEqual(kwargs["kind"], "furigana_arbiter.note")
             inputs = kwargs["inputs"]
             self.assertEqual(json.loads(json.dumps(inputs)), inputs)
-            self.assertEqual(arbiter.review_prompt(**inputs), prompt)
+            # Each model's call is a case of its own: the model is recorded, and not shown in
+            # the prompt, which is built from the rest
+            self.assertEqual(inputs["model"], model)
+            self.assertEqual(arbiter.review_prompt(**review_prompt_args(inputs)), prompt)
             stored = json.loads(capture_store.canonical_json(inputs))
-            self.assertEqual(arbiter.review_prompt(**stored), prompt)
+            self.assertEqual(arbiter.review_prompt(**review_prompt_args(stored)), prompt)
         self.assertEqual(calls[0][2]["inputs"]["lines"], ["他の人は"])
         self.assertEqual(calls[0][2]["inputs"]["translation"], "Others?")
+
+
+def review_prompt_args(inputs: dict) -> dict:
+    """review_prompt's arguments in an arbiter call's inputs: all but the model, which the
+    prompt does not show."""
+    return {key: value for key, value in inputs.items() if key != "model"}
 
 
 def names_get_response(node: ast.expr) -> bool:

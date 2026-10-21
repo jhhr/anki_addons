@@ -258,7 +258,11 @@ def settle_by_arbiter(
             prompt,
             response_schema=furigana_arbiter.RESPONSE_SCHEMA,
             kind=ARBITER_KIND,
-            inputs=inputs,
+            # The model too, which the prompt does not show, as a transcription's inputs name
+            # theirs: every model is asked the same, so without it a note's calls shared one
+            # request key, and a replay's cassette, which answers a key's calls in the order
+            # they came, could hand one model's answer to another
+            inputs={**inputs, "model": model},
         )
         if response is None:
             return []

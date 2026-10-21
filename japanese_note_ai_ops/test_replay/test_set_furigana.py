@@ -25,6 +25,7 @@ import replay
 from anki_shared.testing import real_anki
 from japanese_note_ai_ops.async_api_ops import (
     base_ops,
+    capture_store,
     extract_words,
     run_errors,
     set_furigana,
@@ -38,7 +39,7 @@ from japanese_note_ai_ops.configuration import (
     FURIGANA_REVIEW_TAG,
     REGENERATE_TAG,
 )
-from japanese_note_ai_ops.word_array import judge, resources
+from japanese_note_ai_ops.word_array import audio_furigana, furigana_arbiter, judge, resources
 
 pytestmark = pytest.mark.skipif(
     not resources.is_ready(), reason="needs SudachiPy, a Sudachi dictionary and JMdict"
@@ -242,6 +243,65 @@ def test_a_word_the_arbiters_models_agree_on_is_written(col):
     assert sorted(asked) == ["first-model", "second-model"]
     assert furigana(col, note) == "他[た]の 人[ひと]はどこにいるの"
     assert col.get_note(note.id).tags == [SHOW_TAG]
+
+
+def test_a_replay_hands_each_arbiter_model_its_own_answers():
+    # Every model is asked the same about a note's words. Two notes asking the same, their calls
+    # interleaved as the pool ran them, were recorded m1, m1, m2, m2: a cassette answering a
+    # request key's calls in turn must give note A's m2 call m2's answer, not m1's second
+    transcripts = [("kana-anime-whisper", "たのひとわ"), ("ruby-mora", "ホカノヒトワ")]
+    answers = {
+        "m1": {"words": [{"n": 1, "why": "", "reading": "た", "sure": True}]},
+        "m2": {"words": [{"n": 1, "why": "", "reading": "た", "sure": False}]},
+    }
+
+    def in_review() -> audio_furigana.Furigana:
+        word = audio_furigana.Reading(0, 0, 1, "他", "ほか", None, "review", ["タ", "ホカ"])
+        word.known = ["た", "ほか"]
+        return audio_furigana.Furigana(["他の人は"], [word], False)
+
+    def ask(answer: Any) -> tuple[list, str]:
+        asked: list = []
+
+        def responder(request: Any) -> Any:
+            asked.append(request)
+            return answer(request)
+
+        previous = base_ops.set_responder(responder)
+        try:
+            result = in_review()
+            set_furigana.settle_by_arbiter(["m1", "m2"], result, "他の人は", "", transcripts)
+        finally:
+            base_ops.set_responder(previous)
+        return asked, result.text
+
+    requests, _ = ask(lambda request: answers[request.model])
+    by_model = {request.model: request for request in requests}
+    keys = {model: capture_store.request_key(r.kind, r.inputs) for model, r in by_model.items()}
+    assert keys["m1"] != keys["m2"]
+    calls = [
+        {
+            "kind": by_model[model].kind,
+            "request_key": keys[model],
+            "inputs_json": json.dumps(by_model[model].inputs, ensure_ascii=False),
+            "response_json": json.dumps(answers[model], ensure_ascii=False),
+            "outcome": "ok",
+            "prompt_key": None,
+            "latency_ms": 0,
+        }
+        for model in ("m1", "m1", "m2", "m2")
+    ]
+    cassette = replay.Cassette(replay._cassette_entries(calls))
+
+    replayed = [ask(cassette)[1], ask(cassette)[1]]
+
+    # As captured: m2 was not sure, so the word stays in review in both notes
+    assert replayed == ["他[ほか？]の人は", "他[ほか？]の人は"]
+    assert cassette.misses == []
+    # The prompt is the inputs' but for the model, which it does not show
+    for request in requests:
+        inputs = {k: v for k, v in request.inputs.items() if k != "model"}
+        assert furigana_arbiter.review_prompt(**inputs) == request.prompt
 
 
 def test_new_notes_get_their_furigana_from_audio_before_kanjify_and_extraction(col, reported):
