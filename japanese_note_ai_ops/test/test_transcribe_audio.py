@@ -253,6 +253,17 @@ class BulkServerCheckTest(unittest.TestCase):
         self.assertEqual((result, ran), (None, []))
         self.assertEqual(reported[0].args[0], "The server does not answer")
 
+    def test_a_responder_hears_the_clips_without_a_server(self):
+        base_ops = load_ops_module("base_ops")
+        previous = base_ops.set_responder(lambda request: {"text": "たのひとわ"})
+        try:
+            notes = [Note({"Audio": CLIP_TAG, "Heard": "kana-anime-whisper: たのひとわ"}, 2)]
+            result, ran, reported = self.run_bulk(notes)
+        finally:
+            base_ops.set_responder(previous)
+        # The server is down in run_bulk: had it been asked, the run would have stopped
+        self.assertEqual((result, ran, reported), ("ran", [2], []))
+
     def test_a_line_lacking_is_one_of_the_configs_transcribers(self):
         self.assertTrue(op.lacks_transcript(CONFIG, Note({"Audio": CLIP_TAG, "Heard": ""})))
         every = "x: a<br>ruby-mora: b<br>kana-anime-whisper: c"

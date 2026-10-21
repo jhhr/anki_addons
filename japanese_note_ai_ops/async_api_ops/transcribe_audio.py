@@ -42,6 +42,7 @@ from .base_ops import (
     DialogCancelState,
     bulk_notes_op,
     get_transcript,
+    responder_active,
     selected_notes_op,
     transcribe_url,
 )
@@ -218,8 +219,10 @@ async def bulk_transcribe_notes_op(
         return None
     notes = notes_of_role(config, notes, SENTENCE_ROLE)
     # Only a run that has a clip to send needs the server: one over notes transcribed already
-    # (a rerun, or "Run all ops for new notes" again) must not fail for want of it
-    if any(lacks_transcript(config, note) for note in notes):
+    # (a rerun, or "Run all ops for new notes" again) must not fail for want of it, nor a
+    # replay's or a test's, whose responder hears the clips in its place (get_transcript):
+    # the check goes to the server itself, past the responder
+    if not responder_active() and any(lacks_transcript(config, note) for note in notes):
         problem = server_problem(config, transcribe_models(config))
         if problem:
             report_error(problem)

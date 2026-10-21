@@ -23,7 +23,7 @@ from anki.notes import NoteId
 
 import replay
 from anki_shared.testing import real_anki
-from japanese_note_ai_ops.async_api_ops import base_ops, run_errors, set_furigana
+from japanese_note_ai_ops.async_api_ops import base_ops, run_errors, set_furigana, transcribe_audio
 from japanese_note_ai_ops.async_api_ops.new_note_all_ops import new_note_all_ops_spec
 from japanese_note_ai_ops.configuration import (
     FURIGANA_REVIEW_LEFT,
@@ -275,6 +275,43 @@ def test_new_notes_get_their_furigana_from_audio_before_kanjify_and_extraction(c
     kanjified = sorted(text for kind, text in asked if kind == "kanjify.sentence")
     assert kanjified == sorted([field(said, "Sentence furigana"), "他[ほか]の 人[ひと]は"])
     assert col.undo_status().undo == "Running new note all ops for 3 notes."
+
+
+def test_a_responder_hears_the_clips_with_no_server(col, reported, monkeypatch):
+    # The check that the server is up goes to it past the responder: a replay answering the
+    # transcriptions needed one all the same
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(NEW_NOTES_CONFIG))
+    health: list = []
+
+    class NoServer:
+        def get(self, url: str, timeout: Any = None) -> Any:
+            health.append(url)
+            raise ConnectionError("no server in a replay")
+
+    def answer(request: Any) -> Any:
+        if request.kind == "transcribe.audio":
+            return {"text": "たのひとわどこにいるの"}
+        if request.kind == "kanjify.sentence":
+            return {"kanjified_sentence": request.inputs["sentence"]}
+        if request.kind == "proper_nouns.sentence":
+            return {"proper_nouns": []}
+        if request.kind == "judge.word":
+            return {"reason": "", "decision": judge.DONT_MATCH}
+        raise AssertionError(f"not asked: {request.kind}")
+
+    monkeypatch.setattr(transcribe_audio, "get_session", lambda provider: NoServer())
+    Path(col.media.dir(), "clip.opus").write_bytes(b"clip bytes")
+    # Only the first model's line: the run asks for ruby-mora's
+    note = sentence(col, "他の人はどこにいるの", "たのひとわどこにいるの")
+
+    run(col, [note], spec=new_note_all_ops_spec(), answer=answer)
+
+    held = col.get_note(note.id)
+    assert health == []
+    assert held["Heard"].endswith("ruby-mora: たのひとわどこにいるの")
+    assert held["Sentence furigana"] == "他[た]の 人[ひと]はどこにいるの"
+    assert reported == []
 
 
 def test_a_note_without_its_transcripts_is_left_and_reported(col, reported):

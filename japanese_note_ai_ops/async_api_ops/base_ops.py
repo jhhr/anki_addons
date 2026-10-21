@@ -268,6 +268,12 @@ def set_responder(
     return previous
 
 
+def responder_active() -> bool:
+    """Whether a responder answers the calls (`set_responder`): in a replay or a benchmark
+    nothing goes out, so no provider or server needs to be up."""
+    return _responder is not None
+
+
 def get_response(
     model: str,
     prompt: str,
