@@ -50,6 +50,7 @@ LEXICON = {
     "175": ("イチナナゴ", NUMERAL),
     "百七十五": ("ヒャクナナジュウゴ", NUMERAL),
     "三つ": ("ミッツ", NUMERAL),
+    "km": ("キロメートル", COUNTER_NOUN),
     "七": ("ナナ", NUMERAL),
     "三": ("サン", NUMERAL),
     "3": ("サン", NUMERAL),
@@ -138,6 +139,13 @@ class KanjiWordsTest(unittest.TestCase):
         )
         # A number in kana needs no furigana
         self.assertEqual(self.words("みっつ"), [])
+
+    def test_a_counter_in_latin_letters_is_no_part_of_the_number(self):
+        def read(text):
+            return kanji_words.numeral_reading(text, tokenize)
+
+        words = self.words("175km", read=read)
+        self.assertEqual([(w.surface, w.sudachi) for w in words], [("175", "ひゃくななじゅうご")])
 
     def test_a_name_the_tokenizer_cut_is_one_word(self):
         words = self.words("あら 猫猫", names={"猫猫"})

@@ -40,8 +40,10 @@ from ..shared.jp_text_processing.kana.make_furigana_from_reading import (
 )
 from .captions import (
     KANJI_RE,
+    LATIN_RE,
     BaseFinder,
     kanji_numerals,
+    read_letters,
     spoken_lines,
     split_readings,
     whole_run,
@@ -67,6 +69,8 @@ DOUBT = "？"
 DOUBT_RE = re.compile(r"\[[^\]]*" + DOUBT + r"[^\]]*\]")
 # Katakana at the end of a word: a counter, 十センチ
 KATAKANA_TAIL_RE = re.compile(r"[ァ-ヺー]+$")
+# A word as the Latin letters at its start, the rest, and those at its end: Ｂ型 is Ｂ, 型
+LETTERS_AROUND_RE = re.compile(r"([A-Za-zＡ-Ｚａ-ｚ]*)(.*?)([A-Za-zＡ-Ｚａ-ｚ]*)", re.S)
 # make_furigana_from_reading's furigana of a word that is one group: kana before it, the group,
 # kana after it (お 茶[ちゃ], 開[ひら]か)
 ONE_GROUP_RE = re.compile(
@@ -199,10 +203,14 @@ def audio_furigana(
         else:
             written = decide(hearings[i], w.sudachi, quorum, licensed[i])
             why = "review" if written is None else "draft" if written == w.sudachi else "correction"
+        if written is not None and not writable(w.surface, written):
+            # Latin letters a reading does not read by their names (Ｗ杯, わーるどかっぷ): no
+            # furigana leaves them out of its brackets, so a person writes the word
+            written, why = None, "review"
         heard = stretches.get(i, [])
         reading = Reading(w.line, w.start, w.end, w.surface, w.sudachi, written, why, heard)
         reading.known = licensed[i]
-        if why == "review":
+        if why == "review" and i in hearings:
             reading.offered = offered_readings(options[i], hearings[i], heard)
         readings.append(reading)
     return Furigana(texts, readings, mismatched)
@@ -243,12 +251,44 @@ def furigana_line(text: str, readings: Sequence[Reading]) -> str:
 def word_furigana(surface: str, reading: str) -> str:
     """A word's furigana, Anki's 漢字[かな], as make_furigana_from_reading writes it, which
     leaves the word's kana out of the brackets: but for katakana at its end, which it takes in
-    with the rest (十センチ[じゅっせんち]), so they are left out here: 十[じゅっ]センチ."""
+    with the rest (十センチ[じゅっせんち]), so they are left out here: 十[じゅっ]センチ. Latin
+    letters at either end are left out too, their names taken off the reading
+    (`captions.read_letters`): Ｂ型 read びーがた is Ｂ 型[がた], a letter being its own
+    reading. Where the reading does not read them so, they stay in (`writable`)."""
+    split = split_letters(surface, reading)
+    if split is not None and (split[0] or split[3]):
+        before, rest, rest_reading, after = split
+        return before + word_furigana(rest, rest_reading) + after
     tail = KATAKANA_TAIL_RE.search(surface)
     if tail and tail.start() and to_hiragana(reading).endswith(to_hiragana(tail.group())):
         head = reading[: len(reading) - len(tail.group())]
         return make_furigana_from_reading(surface[: tail.start()], head) + tail.group()
     return make_furigana_from_reading(surface, reading)
+
+
+def split_letters(surface: str, reading: str) -> Optional[tuple[str, str, str, str]]:
+    """The Latin letters at the start of a word, the rest and its reading, and the letters at
+    its end, the letters read by their names (`captions.read_letters`): Ｂ型 read びーがた is
+    Ｂ, 型, がた and none. None where the reading does not read them so (Ｗ杯, わーるどかっぷ),
+    where one is inside the word, or where they are all of it."""
+    match = LETTERS_AROUND_RE.fullmatch(surface)
+    before, rest, after = match.groups() if match else ("", surface, "")
+    if not before and not after:
+        return "", surface, reading, ""
+    if not rest or LATIN_RE.search(rest):
+        return None
+    start = read_letters(before, reading) if before else 0
+    end = read_letters(after, reading[start:], at_end=True) if after and start is not None else 0
+    if start is None or end is None or start + end >= len(reading):
+        return None
+    return before, rest, reading[start : len(reading) - end], after
+
+
+def writable(surface: str, reading: str) -> bool:
+    """Whether `reading` can be written over `surface` with its Latin letters out of the
+    brackets (`word_furigana`), each read by its name: kana-highlight makes junk of a letter
+    given a reading, and a letter is its own reading anyway."""
+    return split_letters(surface, reading) is not None
 
 
 def doubt_choices(r: Reading) -> list[str]:

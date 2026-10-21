@@ -52,6 +52,8 @@ LEXICON = {
     "日": ("ニチ", COUNTER_NOUN),
     "十日": ("トオカ", NOUN),
     "十": ("ジュウ", NUMERAL),
+    "Ｂ型": ("ビーガタ", NOUN),
+    "Ｗ杯": ("ワールドカップ", PROPER),
 }
 
 # JMdict's readings of the spellings the lines hold
@@ -150,6 +152,17 @@ class WrittenTest(unittest.TestCase):
         result = furigana("10にはどこにいるのかしら", heard, heard)
         self.assertEqual(result.text, "10[じゅう]にはどこにいるのかしら")
         self.assertEqual(why(result), {"10": "draft"})
+
+    def test_a_latin_letter_is_left_out_of_the_furigana_its_name_out_of_the_reading(self):
+        heard = "びーがたわどこにいるのかしら"
+        result = furigana("Ｂ型はどこにいるのかしら", heard, heard)
+        self.assertEqual(result.text, "Ｂ 型[がた]はどこにいるのかしら")
+
+    def test_a_word_whose_reading_does_not_read_its_letters_by_name_is_left_for_review(self):
+        # No furigana leaves the W out of what ワールドカップ reads
+        heard = "わーるどかっぷわどこにいるのかしら"
+        result = furigana("Ｗ杯はどこにいるのかしら", heard, heard)
+        self.assertEqual(why(result), {"Ｗ杯": "review"})
 
     def test_lines_are_joined_and_what_is_not_spoken_left_out(self):
         caption = "（赤ん坊の泣き声）<br>（猫猫）他の人は<br>猫猫(マオマオ)"
@@ -268,6 +281,16 @@ class WordFuriganaTest(unittest.TestCase):
         self.assertEqual(af.word_furigana("十メートル", "じゅうめーとる"), " 十[じゅう]メートル")
         # A reading that does not end in the katakana is one group, as before
         self.assertEqual(af.word_furigana("十センチ", "じゅっ"), " 十センチ[じゅっ]")
+
+    def test_latin_letters_at_either_end_are_left_out_their_names_taken_off_the_reading(self):
+        self.assertEqual(af.word_furigana("Ｂ型", "びーがた"), "Ｂ 型[がた]")
+        self.assertEqual(af.word_furigana("AB型", "えーびーがた"), "AB 型[がた]")
+        self.assertEqual(af.word_furigana("型Ｂ", "がたびー"), " 型[がた]Ｂ")
+        self.assertTrue(af.writable("Ｂ型", "びーがた"))
+        # A reading that does not read a letter by its name, or reads the letters alone
+        self.assertFalse(af.writable("Ｗ杯", "わーるどかっぷ"))
+        self.assertFalse(af.writable("Ｂ型", "びー"))
+        self.assertTrue(af.writable("他", "ほか"))
 
 
 class DoubtTest(unittest.TestCase):

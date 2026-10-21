@@ -45,6 +45,11 @@ LEXICON = {
     "百七十五": ("ヒャクナナジュウゴ", NUMERAL),
     # Sudachi's reading of a space
     "\u3000": ("キゴウ", SPACE),
+    # A letter Sudachi leaves unread, one it reads as a unit, and a unit
+    "Ｓ": ("s", NOUN),
+    "Ａ": ("アール", NOUN),
+    "級": ("キュウ", NOUN),
+    "km": ("キロメートル", NOUN),
 }
 
 
@@ -143,6 +148,14 @@ class ReferenceTest(unittest.TestCase):
         ref, owner, _, _ = check.reference(["175\u3000猫"], [], tokenize)
         self.assertEqual("".join(ref), "ヒャクナナジュウゴネコ")
         self.assertEqual(owner, [-1] * len(ref))
+
+    def test_latin_letters_are_read_by_their_names_a_unit_after_a_number_as_sudachi_reads_it(
+        self,
+    ):
+        ref = check.reference(["Ｓ級とＡ級"], [], tokenize).morae
+        self.assertEqual(ref, check.morae("エスキュウトエーキュウ"))
+        ref = check.reference(["175km"], [], tokenize).morae
+        self.assertEqual(ref, check.morae("ヒャクナナジュウゴキロメートル"))
 
     def test_a_word_not_starting_at_a_morpheme_is_not_found(self):
         # 175 is one morpheme: a word from its second digit starts inside it

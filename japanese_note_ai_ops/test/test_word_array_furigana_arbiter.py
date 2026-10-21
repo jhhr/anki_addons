@@ -144,6 +144,14 @@ class ChecksTest(unittest.TestCase):
         self.assertFalse(arbiter.keeps_kana("お茶", "ちゃ"))
         self.assertTrue(arbiter.keeps_kana("泣き明かし", "なきあかし"))
 
+    def test_a_latin_letter_is_read_by_its_name(self):
+        self.assertTrue(arbiter.keeps_kana("Ｂ型", "びーがた"))
+        word = review(0, 2, "Ｗ杯", "わーるどかっぷ", ["ワールドカップ"])
+        # Every model is sure of it and it was heard, but no furigana leaves the W out of it
+        self.assertIsNone(arbiter.agreed_reading(word, [answer("わーるどかっぷ")]))
+        word = review(0, 2, "Ｂ型", "びーがた", ["ビーガタ"])
+        self.assertEqual(arbiter.agreed_reading(word, [answer("びーがた")]), "びーがた")
+
     def test_a_number_in_digits_is_read_as_its_kanji_numerals(self):
         # A digit is no kana a reading could hold: 7時 said しちじ was never settled
         self.assertTrue(arbiter.keeps_kana("7時", "しちじ"))

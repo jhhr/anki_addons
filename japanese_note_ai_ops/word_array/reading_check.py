@@ -28,8 +28,8 @@ from collections import defaultdict
 from typing import Any, Callable, Iterable, Mapping, NamedTuple, Optional, Sequence
 
 from ..kana_conv import to_katakana
-from .captions import DIGITS_RE, KANJI_RE
-from .kanji_words import numeral_reading
+from .captions import DIGITS_RE, KANJI_RE, LATIN_RE, letter_names
+from .kanji_words import is_numeral, numeral_reading
 
 SMALL = "ャュョァィゥェォヮ"
 VOWEL_ROWS = {
@@ -205,12 +205,20 @@ def hears(
     return {key: f <= limit[key] + 1e-9 and f <= best + 1e-9 for key, f in fits.items()}
 
 
-def spoken(mo: Any) -> list[str]:
+def spoken(mo: Any, after_number: bool = False) -> list[str]:
     """A morpheme's morae as pronounced: its reading, a particle は/へ/を as ワ/エ/オ. A space,
     a bracket or ♪ is no sound, though Sudachi reads it キゴウ ("symbol"), which put three
-    morae no one says into the line at every one."""
+    morae no one says into the line at every one. Latin letters are read by their names
+    (captions.LETTER_NAMES): Sudachi leaves Ｓ of Ｓ級 unread, and reads Ａ as the unit アール
+    and Ｎ as ノルマル. Not a unit after a number (5Ｖ, 100km) or an abbreviation Sudachi
+    reads (ＮＨＫ): it reads those as said."""
     surface = mo.surface()
     pos = mo.part_of_speech()[0]
+    if LATIN_RE.fullmatch(surface):
+        reading = morae(mo.reading_form())
+        if reading and (after_number or len(surface) > 1):
+            return reading
+        return [m for letter in surface for m in morae(letter_names(letter)[0])]
     if pos in SYMBOLS:
         return morae(surface)
     if pos == "助詞" and to_katakana(surface) in PARTICLE_SOUND:
@@ -261,9 +269,12 @@ def reference(
     for n, text in enumerate(texts):
         mine = sorted(by_line.get(n, []), key=lambda k: spans[k].start)
         i = 0
+        before: Any = None
         for mo in tokenize(text):
             if mo.end() <= mo.begin():
                 continue
+            after_number = before is not None and is_numeral(before)
+            before = mo
             while i < len(mine) and spans[mine[i]].end <= mo.begin():
                 i += 1
             if i < len(mine) and spans[mine[i]].start <= mo.begin() < spans[mine[i]].end:
@@ -277,7 +288,7 @@ def reference(
             got = (
                 morae(numeral_reading(mo.surface(), tokenize))
                 if DIGITS_RE.search(mo.surface())
-                else spoken(mo)
+                else spoken(mo, after_number)
             )
             ref.extend(got)
             owner.extend([-1] * len(got))

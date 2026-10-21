@@ -33,7 +33,14 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional, Sequence
 
 from ..kana_conv import to_hiragana
-from .captions import DIGITS_RE, KANJI_DIGITS, KANJI_RE, InlineReading, kanji_numerals
+from .captions import (
+    DIGITS_RE,
+    KANJI_DIGITS,
+    KANJI_RE,
+    LATIN_RE,
+    InlineReading,
+    kanji_numerals,
+)
 
 # Sudachi's part of speech for a numeral
 NUMERAL = ("名詞", "数詞")
@@ -196,9 +203,10 @@ def is_numeral(m) -> bool:
 def number_spans(morphemes: Sequence) -> list[tuple[int, int]]:
     """[i, j) morpheme ranges of the numbers that are one word: a run of numerals and the
     counter after it, if any, where a kanji or a digit is among them (10日, 十月, １万, 175,
-    3つ); a number in kana needs no furigana. A word right after the numerals that starts
-    with a numeral kanji is the number's too, with the counter after it if any: in a line
-    Sudachi cuts 三十分 into 三|十分, which it reads じゅうぶん, enough."""
+    3つ); a number in kana needs no furigana. A counter in Latin letters is no part of it,
+    since a letter is given no furigana: 100[ひゃく]km. A word right after the numerals that
+    starts with a numeral kanji is the number's too, with the counter after it if any: in a
+    line Sudachi cuts 三十分 into 三|十分, which it reads じゅうぶん, enough."""
     spans = []
     i = 0
     while i < len(morphemes):
@@ -210,7 +218,12 @@ def number_spans(morphemes: Sequence) -> list[tuple[int, int]]:
             j += 1
         if j < len(morphemes) and morphemes[j].surface()[:1] in NUMERAL_KANJI:
             j += 1
-        end = j + 1 if j < len(morphemes) and is_counter(morphemes[j]) else j
+        counted = (
+            j < len(morphemes)
+            and is_counter(morphemes[j])
+            and not LATIN_RE.search(morphemes[j].surface())
+        )
+        end = j + 1 if counted else j
         surfaces = "".join(m.surface() for m in morphemes[i:end])
         if KANJI_RE.search(surfaces) or DIGITS_RE.search(surfaces):
             spans.append((i, end))

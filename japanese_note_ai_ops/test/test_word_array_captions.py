@@ -110,6 +110,20 @@ class ShowReadingsTest(unittest.TestCase):
         self.assertEqual((names, words), ({}, {"姐"}))
 
 
+class LettersTest(unittest.TestCase):
+    def test_a_latin_letters_names_whatever_its_width_and_case(self):
+        self.assertEqual(captions.letter_names("Ｂ"), ("ビー",))
+        self.assertEqual(captions.letter_names("b"), ("ビー",))
+        self.assertEqual(captions.letter_names("Ｚ")[0], "ゼット")
+
+    def test_how_much_of_a_reading_letters_take_read_by_their_names(self):
+        self.assertEqual(captions.read_letters("Ｂ", "びーがた"), 2)
+        self.assertEqual(captions.read_letters("AB", "エービーガタ"), 4)
+        self.assertEqual(captions.read_letters("Ｃ", "びたみんしー", at_end=True), 2)
+        # ワールドカップ of Ｗ杯 is no letter's name
+        self.assertIsNone(captions.read_letters("Ｗ", "わーるどかっぷ"))
+
+
 class NumeralsTest(unittest.TestCase):
     def test_a_number_in_kanji_numerals(self):
         cases = {0: "〇", 10: "十", 11: "十一", 175: "百七十五", 1000: "千", 2010: "二千十"}

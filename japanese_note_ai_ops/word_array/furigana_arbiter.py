@@ -40,8 +40,8 @@ from typing import Any, Mapping, Optional, Sequence
 
 from ..html_stripping import text_lines
 from ..kana_conv import to_hiragana
-from .audio_furigana import Furigana, Reading
-from .captions import KANJI_RE, kanji_numerals, spoken_lines
+from .audio_furigana import Furigana, Reading, writable
+from .captions import KANJI_RE, LATIN_RE, kanji_numerals, spoken_lines
 from .reading_check import AGREE, fit, morae, same_reading
 
 WORDS = "words"
@@ -219,27 +219,29 @@ def keeps_kana(surface: str, reading: str) -> bool:
     for 困っ that drops its っ still fits a transcript's コマッ a mora short. A number in
     digits is matched as spelt in kanji numerals (`captions.kanji_numerals`, 10日 as 十日),
     as the rule reads it, and its 〇 is read like any numeral kanji: a digit is no kana a
-    reading could hold, and 7時 said しちじ was otherwise never settled."""
-    pattern = re.sub(
-        r"(?:\.\+)+",
-        ".+",
-        "".join(
-            ".+" if KANJI_RE.match(c) or c == "〇" else re.escape(to_hiragana(c))
-            for c in kanji_numerals(surface)
-        ),
-    )
+    reading could hold, and 7時 said しちじ was otherwise never settled. A Latin letter is read
+    by its name, which `writable` checks."""
+
+    def part(c: str) -> str:
+        if KANJI_RE.match(c) or LATIN_RE.match(c) or c == "〇":
+            return ".+"
+        return re.escape(to_hiragana(c))
+
+    pattern = re.sub(r"(?:\.\+)+", ".+", "".join(part(c) for c in kanji_numerals(surface)))
     return re.fullmatch(pattern, to_hiragana(reading)) is not None
 
 
 def agreed_reading(r: Reading, answers: Sequence[Optional[Answer]]) -> Optional[str]:
     """The reading to write for a word in review given each model's answer for it: the one
-    every model is sure of, heard at the word and keeping its kana; None leaves it in review."""
+    every model is sure of, heard at the word, keeping its kana and with its Latin letters read
+    by their names (`writable`); None leaves it in review."""
     readings = [
         a.reading
         for a in answers
         if a is not None
         and a.sure
         and keeps_kana(r.surface, a.reading)
+        and writable(r.surface, a.reading)
         and heard_at(a.reading, r.heard)
     ]
     if not answers or len(readings) < len(answers):

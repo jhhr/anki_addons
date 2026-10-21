@@ -31,11 +31,12 @@ reads its captions through this module.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter, defaultdict
-from typing import Callable, Iterable, NamedTuple
+from typing import Callable, Iterable, NamedTuple, Optional
 
 from ..html_stripping import text_lines
-from ..kana_conv import to_hiragana
+from ..kana_conv import to_hiragana, to_katakana
 
 # The ranges of the shared kanji_furi.KANJI_RANGES, the compatibility ideographs (﨑 of 山﨑)
 # and the supplementary planes (𠮟 of 𠮟る) as well as the CJK blocks, with 々 〆 ヶ, but not
@@ -54,6 +55,37 @@ ASS_TAG_RE = re.compile(r"\{\\[^}]*\}")
 KATAKANA_RE = re.compile(r"[ァ-ヺー・]+")
 DIGITS_RE = re.compile(r"[0-9０-９]+")
 KANJI_DIGITS = "〇一二三四五六七八九"
+# Latin letters, of either width and case
+LATIN_RE = re.compile(r"[A-Za-zＡ-Ｚａ-ｚ]+")
+# Each Latin letter's names as said, the first the one a letter is read by
+LETTER_NAMES = {
+    "A": ("エー", "エイ"),
+    "B": ("ビー",),
+    "C": ("シー",),
+    "D": ("ディー", "デー"),
+    "E": ("イー",),
+    "F": ("エフ",),
+    "G": ("ジー",),
+    "H": ("エイチ", "エッチ"),
+    "I": ("アイ",),
+    "J": ("ジェー", "ジェイ"),
+    "K": ("ケー", "ケイ"),
+    "L": ("エル",),
+    "M": ("エム",),
+    "N": ("エヌ",),
+    "O": ("オー",),
+    "P": ("ピー",),
+    "Q": ("キュー",),
+    "R": ("アール",),
+    "S": ("エス",),
+    "T": ("ティー", "テー"),
+    "U": ("ユー",),
+    "V": ("ブイ", "ヴィー"),
+    "W": ("ダブリュー", "ダブル"),
+    "X": ("エックス",),
+    "Y": ("ワイ",),
+    "Z": ("ゼット", "ゼッド", "ズィー"),
+}
 
 
 def kanji_number(n: int) -> str:
@@ -80,6 +112,27 @@ def kanji_numerals(text: str) -> str:
     a number is read and looked up in: Sudachi reads 10 digit by digit, イチレイ, and JMdict
     has 十日 (とおか) but no 10日."""
     return DIGITS_RE.sub(lambda m: kanji_number(int(m.group())), text)
+
+
+def letter_names(letter: str) -> tuple[str, ...]:
+    """A Latin letter's names as said, in katakana: Ｂ and b are ビー."""
+    return LETTER_NAMES[unicodedata.normalize("NFKC", letter).upper()]
+
+
+def read_letters(letters: str, reading: str, at_end: bool = False) -> Optional[int]:
+    """How much of `reading` the Latin `letters` take, read by their names, from its start (or
+    its end): 2 of びーがた for Ｂ; None where it does not read them so (ワールドカップ for
+    Ｗ杯)."""
+    kana = to_katakana(reading)
+    taken = 0
+    for letter in reversed(letters) if at_end else letters:
+        rest = kana[: len(kana) - taken] if at_end else kana[taken:]
+        has = rest.endswith if at_end else rest.startswith
+        names = [n for n in letter_names(letter) if has(n)]
+        if not names:
+            return None
+        taken += len(names[0])
+    return taken
 
 
 def caption_lines(jp: str) -> list[str]:

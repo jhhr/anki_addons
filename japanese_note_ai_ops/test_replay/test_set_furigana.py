@@ -217,6 +217,21 @@ def test_a_number_in_digits_gets_furigana(col):
     assert col.get_note(pair.id).tags == col.get_note(hundred.id).tags == []
 
 
+def test_latin_letters_are_given_no_furigana(col):
+    blood = sentence(col, "Ｂ型の人", "びーがたのひと", "びーがたのひと")
+    # Sudachi leaves Ｓ unread, so the エス heard went to 級
+    rank = sentence(col, "Ｓ級の冒険者だ", *["えすきゅうのぼうけんしゃだ"] * 2)
+    # ワールドカップ does not read the W by its name
+    cup = sentence(col, "Ｗ杯を見る", "わーるどかっぷをみる", "わーるどかっぷをみる")
+
+    run(col, [blood, rank, cup])
+
+    assert furigana(col, blood) == "Ｂ 型[がた]の 人[ひと]"
+    assert furigana(col, rank) == "Ｓ 級[きゅう]の 冒険者[ぼうけんしゃ]だ"
+    assert col.get_note(blood.id).tags == col.get_note(rank.id).tags == []
+    assert col.get_note(cup.id).tags == [set_furigana.REVIEW_TAG]
+
+
 def test_a_name_the_shows_other_notes_read(col):
     # The show's first mention of the name read it; this note's line does not
     sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("myshow::01",))
