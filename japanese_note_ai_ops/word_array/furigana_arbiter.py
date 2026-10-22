@@ -18,13 +18,12 @@ word's own kana (`keeps_kana`: 困っ is never こま). Anything else stays in r
 the readings to choose between as before.
 
 One model alone is wrong too often for furigana meant to be right: of the eval's labelled words
-it settled, Claude Haiku 5.5 got 1 of 73 wrong (好き as ずき, where the transcripts split),
-Sonnet 5.5 3 of 74 (妓女 as げじょ twice, which both transcripts misheard, and 診療所 as
-しんりょうしょ) and Opus 5.5 1 of 80 (the same 好き). So the op asks every model of a list
+it settled, Claude Haiku 5.5 got 1 of 72 wrong (好き as ずき, where the transcripts split),
+Sonnet 5.5 3 of 71 (妓女 as げじょ twice, which both transcripts misheard, and 診療所 as
+しんりょうしょ) and Opus 5.5 1 of 78 (the same 好き). So the op asks every model of a list
 (`settle`), and a reading is written only where all of them give it: Haiku and Sonnet together
-got none of their 66 wrong, settling 165 of the 360 words the rule then left in review (it now
-leaves 315), as did Sonnet and Opus. A mistake two models share gets through: Haiku and Opus
-kept their 好き.
+got none of their 63 wrong, settling 125 of the 315 words in review, as did Sonnet and Opus. A
+mistake two models share gets through: Haiku and Opus kept their 好き.
 
 One call a note and model, for all its words in review that a transcript heard something at
 (`asked`): the line's other words are context for each. A word no transcript heard anything

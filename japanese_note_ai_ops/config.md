@@ -248,11 +248,11 @@ off. A sentence whose furigana still holds a `？` is left alone too, tag or no 
 
 - `furigana_models`: Default `[]` (none). The models that settle the words the audio leaves in
   review; a reading is written only where all of them give it. On the eval's 400 cards the
-  audio leaves 315 words in review on 150 cards. Measured when it left 360 on 155,
-  `["terminal-claude-haiku-5-5", "terminal-claude-sonnet-5-5"]` settled 165 of them, leaving 107
-  cards to check, and got none of the 66 checked by ear wrong. One model alone was wrong too often: Haiku on 1 of 73, Sonnet
-  on 3 of 74, Opus on 1 of 80. A model names a provider as the `*_model` keys do; other models
-  than these were not measured.
+  audio leaves 315 words in review on 150 cards. `["terminal-claude-haiku-5-5",
+  "terminal-claude-sonnet-5-5"]` settled 125 of them, leaving 105 cards to check, and got none of
+  the 63 checked by ear wrong. One model alone was wrong too often: Haiku on 1 of 72, Sonnet on 3
+  of 71, Opus on 1 of 78. A model names a provider as the `*_model` keys do; other models than
+  these were not measured.
 
 Only a note whose furigana field is empty is written, so furigana you typed or fixed is never
 replaced. Empty the field to have it set again. A note whose call to a `furigana_models` model
