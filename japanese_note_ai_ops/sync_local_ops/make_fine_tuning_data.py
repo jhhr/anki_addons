@@ -7,6 +7,7 @@ from anki.notes import NoteId
 from aqt import mw
 from aqt.utils import showInfo, tooltip
 
+from ..async_api_ops.furigana_review import unchecked_furigana
 from ..utils import get_field_config
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,9 @@ def _write_kanjify_sentence_data(config: dict, nids: Sequence[NoteId]) -> str:
     evaluating and fine-tuning `kanjify_sentence`."""
     notes: list[tuple[NoteId, str, str]] = []
     skipped = 0
+    # Furigana awaiting a person's check (furigana_review): its ？ words are no sentence, and
+    # its kanjified sentence, when there is one, is the one of the furigana it replaced
+    unchecked = 0
 
     os.makedirs(_OUTPUT_DIR, exist_ok=True)
     output_path = os.path.join(_OUTPUT_DIR, "kanjify_sentence_data.jsonl")
@@ -81,6 +85,9 @@ def _write_kanjify_sentence_data(config: dict, nids: Sequence[NoteId]) -> str:
         if furigana_field not in note or kanjified_field not in note:
             skipped += 1
             continue
+        if unchecked_furigana(config, note) is not None:
+            unchecked += 1
+            continue
 
         sentence = note[furigana_field].strip()
         kanjified = note[kanjified_field].strip()
@@ -91,10 +98,13 @@ def _write_kanjify_sentence_data(config: dict, nids: Sequence[NoteId]) -> str:
 
     rows, duplicates = build_kanjify_rows(notes)
     _write_jsonl_entries(output_path, rows)
-    return (
+    message = (
         f"Wrote {len(rows)} kanjify sentences to {output_path}. Skipped {duplicates} duplicate"
         f" sentences and {skipped} notes missing a sentence or kanjified sentence."
     )
+    if unchecked:
+        message += f" Left out {unchecked} notes whose furigana awaits a check."
+    return message
 
 
 # Config key holding the search query for each export, in the order they run.

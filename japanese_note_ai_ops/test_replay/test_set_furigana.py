@@ -1,0 +1,767 @@
+"""Set furigana from audio (async_api_ops/set_furigana.py) in a real collection, with the real
+Sudachi and JMdict, run through its NotesRunSpec as a script runs it: the furigana written as
+the transcripts hear it, a name read from the show's other notes (the show by its `ep::` tag
+among tags as Anki sorts them, its search whatever the show's name, notes of no show said
+once), a note left for review tagged, a note with furigana left alone, the run one undo step,
+a word the arbiter's models agree on written, and a note whose arbiter call failed or was
+cancelled left for the next run. Then "Run all ops for new notes"
+(async_api_ops/new_note_all_ops.py) over such notes: their furigana set from audio before
+kanjify and word extraction read it, a note left for review given neither, all of it one undo
+step. The models are a responder's.
+
+The lines are made up for these tests. Skipped without the generator's resources
+(word_array/resources.py), as the word array tests are.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from pathlib import Path
+from typing import Any, Iterator
+
+import pytest
+from anki.notes import NoteId
+
+import replay
+from anki_shared.testing import real_anki
+from japanese_note_ai_ops.async_api_ops import (
+    api_client,
+    base_ops,
+    capture_store,
+    extract_words,
+    run_errors,
+    set_furigana,
+    transcribe_audio,
+)
+from japanese_note_ai_ops.async_api_ops.base_ops import NotesRunSpec
+from japanese_note_ai_ops.async_api_ops.new_note_all_ops import new_note_all_ops_spec
+from japanese_note_ai_ops.configuration import (
+    FURIGANA_DOUBT_LEFT,
+    FURIGANA_REVIEW_LEFT,
+    FURIGANA_REVIEW_TAG,
+    REGENERATE_TAG,
+)
+from japanese_note_ai_ops.word_array import audio_furigana, furigana_arbiter, judge, resources
+
+pytestmark = pytest.mark.skipif(
+    not resources.is_ready(), reason="needs SudachiPy, a Sudachi dictionary and JMdict"
+)
+
+PACKAGE = "japanese_note_ai_ops"
+SENTENCE = "Sentence note"
+VOCAB = "Vocab note"
+FIELDS = ["Sentence", "Sentence furigana", "Heard", "Words", "Audio", "Kanjified"]
+CONFIG: dict[str, Any] = {
+    SENTENCE: {
+        "sentence_field": "Sentence",
+        "furigana_sentence_field": "Sentence furigana",
+        "sentence_transcription_field": "Heard",
+        "word_list_field": "Words",
+    },
+    "transcribe_models": ["local-kana-anime-whisper", "local-ruby-mora"],
+    "log_to_console": False,
+}
+# The two-type layout, so that a sentence note gets the sentence role's steps alone
+NEW_NOTES_CONFIG = {
+    **CONFIG,
+    SENTENCE: {
+        **CONFIG[SENTENCE],
+        "vocab_note_type": VOCAB,
+        "sentence_audio_field": "Audio",
+        "kanjified_sentence_field": "Kanjified",
+        "word_extraction_sentence_field": "Kanjified",
+    },
+    VOCAB: {"sentence_note_type": SENTENCE, "word_sort_field": "Word sort"},
+}
+# The show and episode of a note the tests make, unless one says otherwise
+SHOW_TAG = "ep::show::01"
+
+
+@pytest.fixture
+def col(tmp_path: Path, monkeypatch) -> Iterator[Any]:
+    stub = real_anki.install()
+    saved = (stub.col, dict(stub.addonManager.configs), stub.pm._profile_folder)
+    collection = real_anki.open_collection(tmp_path / "collection.anki2")
+    # "Run all ops for new notes" keeps its generated meanings in the profile's media folder
+    stub.pm.set_profile_folder(tmp_path / "profile")
+    # Never the names file of the checkout's own user_files
+    monkeypatch.setattr(set_furigana, "NAMES_FILE", str(tmp_path / "show_names.json"))
+    try:
+        real_anki.make_note_type(collection, SENTENCE, FIELDS)
+        real_anki.make_note_type(collection, VOCAB, ["Word sort"])
+        stub.col = collection
+        stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(CONFIG))
+        stub.progress.set_cancel(False)
+        yield collection
+    finally:
+        stub.progress.set_cancel(False)
+        stub.col, stub.addonManager.configs, stub.pm._profile_folder = saved
+        collection.close()
+
+
+@pytest.fixture
+def reported() -> Iterator[list]:
+    """The run errors reported, as (title, text)."""
+    errors: list = []
+    previous = run_errors.deliver_with(lambda title, text: errors.append((title, text)))
+    try:
+        yield errors
+    finally:
+        run_errors.deliver_with(previous)
+
+
+def sentence(
+    col: Any, text: str, *heard: str, furigana: str = "", tags: tuple = (SHOW_TAG,)
+) -> Any:
+    """A sentence note with a clip, tagged with its show and episode as subs2srs' export tags
+    a card (`ep::${deck_name}::${0:episode_num}`), unless `tags` says otherwise."""
+    lines = "<br>".join(
+        f"{name}: {kana}" for name, kana in zip(("kana-anime-whisper", "ruby-mora"), heard)
+    )
+    fields = {"Sentence": text, "Sentence furigana": furigana, "Heard": lines}
+    return real_anki.add_note(
+        col,
+        SENTENCE,
+        {**fields, "Audio": "[sound:clip.opus]"},
+        deck_name="Sentences",
+        tags=list(tags),
+    )
+
+
+def run(col: Any, notes: list, spec: Any = None, answer: Any = None) -> Any:
+    """`spec`'s run over the notes, set furigana's by default, every model call answered by
+    `answer`."""
+    spec = spec or set_furigana.set_furigana_spec()
+    previous = base_ops.set_responder(answer)
+    try:
+        # The gate's learned costs stay out of the user's memory_estimates.json
+        with replay.memory_estimates({}):
+            run_notes, result = spec.notes_run([NoteId(note.id) for note in notes])
+            run_notes(col)
+    finally:
+        base_ops.set_responder(previous)
+    return result
+
+
+def furigana(col: Any, note: Any) -> str:
+    return col.get_note(note.id)["Sentence furigana"]
+
+
+def test_the_furigana_as_the_clip_says_it(col, reported):
+    # 他 is ほか to Sudachi; JMdict also reads it た, which both models hear
+    said = sentence(col, "（客）他の人はどこにいるの", "たのひとわどこにいるの", "タノヒトワドコニイルノ")
+    unsure = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+    typed = sentence(col, "他の人は", "たのひとわ", "たのひとわ", furigana="他[ほか]の 人[ひと]は")
+
+    result = run(col, [said, unsure, typed])
+
+    assert sorted(result.edited_nids) == sorted([said.id, unsure.id])
+    assert furigana(col, said) == "他[た]の 人[ひと]はどこにいるの"
+    assert col.get_note(said.id).tags == [SHOW_TAG]
+    # The models heard it two ways: both are offered and the note left for review
+    assert furigana(col, unsure) == "他[ほか？た]の 人[ひと]はどこにいるの"
+    assert col.get_note(unsure.id).tags == [SHOW_TAG, FURIGANA_REVIEW_TAG]
+    assert furigana(col, typed) == "他[ほか]の 人[ひと]は"
+    assert reported == []
+    assert col.undo_status().undo == "Setting furigana from audio for 3 notes."
+
+
+@pytest.mark.parametrize(
+    "caption",
+    [
+        '<font color="#ffff00">今日は本当に楽しかった</font>',
+        '<span style="color: rgb(0, 0, 0);">今日は<b>本当</b>に楽しかった</span>',
+        "<i>今日は本当に楽しかった</i>",
+        "<div>今日は本当に楽しかった<br></div>",
+        # An ASS tag: a line drawn at the top of the screen
+        "{\\an8}今日は本当に楽しかった",
+    ],
+)
+def test_a_captions_markup_is_neither_heard_nor_written(col, reported, caption):
+    # Sudachi reads a tag's name as words (フォント カラー), which no clip says
+    heard = "きょうわほんとうにたのしかった"
+    note = sentence(col, caption, heard, heard)
+
+    run(col, [note])
+
+    assert furigana(col, note) == "今日[きょう]は 本当[ほんとう]に 楽[たの]しかった"
+    assert col.get_note(note.id).tags == [SHOW_TAG]
+    assert reported == []
+
+
+def test_a_captions_line_breaks_are_written_br_and_its_text_escaped(col):
+    lines = sentence(col, "猫が来た<BR />明日また来る", *["ねこがきたあしたまたくる"] * 2)
+    escaped = sentence(col, "猫&amp;犬が来た", *["ねこいぬがきた"] * 2)
+
+    run(col, [lines, escaped])
+
+    assert furigana(col, lines) == "猫[ねこ]が 来[き]た<br>明日[あした]また 来[く]る"
+    assert furigana(col, escaped) == "猫[ねこ]&amp; 犬[いぬ]が 来[き]た"
+    assert col.get_note(lines.id).tags == col.get_note(escaped.id).tags == [SHOW_TAG]
+
+
+def test_a_word_after_an_ellipsis_is_read_once(col):
+    # Sudachi reads … as ... and puts the two dots it adds where 猫猫 starts: the word was read
+    # three times there, so a short line said as written was one its clip did not match
+    heard = "あまおまおがきた"
+    note = sentence(col, "あ…猫猫(マオマオ)が来た", heard, heard)
+
+    run(col, [note])
+
+    assert furigana(col, note) == "あ… 猫猫[まおまお]が 来[き]た"
+    assert col.get_note(note.id).tags == [SHOW_TAG]
+
+
+def test_a_short_line_with_a_wrong_draft_is_no_mismatch(col, reported):
+    # 何時 is いつ to Sudachi, which on a line this short put the clip too far from it; JMdict
+    # also reads it なんじ, which both models hear
+    when = sentence(col, "何時に起きた？", "なんじにおきた", "なんじにおきた")
+    today = sentence(col, "今日中にやる", "きょうじゅうにやる", "きょうじゅうにやる")
+    other = sentence(col, "何時に起きた？", "おはようございます", "おはようございます")
+
+    run(col, [when, today, other])
+
+    assert furigana(col, when) == "何時[なんじ]に 起[お]きた？"
+    assert furigana(col, today) == "今日[きょう] 中[じゅう]にやる"
+    assert col.get_note(when.id).tags == col.get_note(today.id).tags == [SHOW_TAG]
+    # A clip of another line is one still: each word offers its draft alone
+    assert furigana(col, other) == "何時[いつ？]に 起[お？]きた？"
+    assert col.get_note(other.id).tags == [SHOW_TAG, FURIGANA_REVIEW_TAG]
+
+
+def test_a_number_in_digits_gets_furigana(col):
+    # Sudachi reads 2つ ニツ digit by digit, which put this short line too far from its clip
+    pair = sentence(col, "2つ持って", "ふたつもって", "ふたつもって")
+    hundred = sentence(col, "175センチだ", "ひゃくななじゅうごせんちだ", "ひゃくななじゅうごせんちだ")
+
+    run(col, [pair, hundred])
+
+    assert furigana(col, pair) == "2[ふた]つ 持[も]って"
+    assert furigana(col, hundred) == "175[ひゃくななじゅうご]センチだ"
+    assert col.get_note(pair.id).tags == col.get_note(hundred.id).tags == [SHOW_TAG]
+
+
+def test_latin_letters_are_given_no_furigana(col):
+    blood = sentence(col, "Ｂ型の人", "びーがたのひと", "びーがたのひと")
+    # Sudachi leaves Ｓ unread, so the エス heard went to 級
+    rank = sentence(col, "Ｓ級の冒険者だ", *["えすきゅうのぼうけんしゃだ"] * 2)
+    # ワールドカップ does not read the W by its name
+    cup = sentence(col, "Ｗ杯を見る", "わーるどかっぷをみる", "わーるどかっぷをみる")
+
+    run(col, [blood, rank, cup])
+
+    assert furigana(col, blood) == "Ｂ 型[がた]の 人[ひと]"
+    assert furigana(col, rank) == "Ｓ 級[きゅう]の 冒険者[ぼうけんしゃ]だ"
+    assert col.get_note(blood.id).tags == col.get_note(rank.id).tags == [SHOW_TAG]
+    assert col.get_note(cup.id).tags == [SHOW_TAG, FURIGANA_REVIEW_TAG]
+
+
+def test_a_reading_jmdict_gives_another_spelling_is_not_written(col):
+    # 豪勢 is ごうせい, こうせい is 強勢's; 集落 is しゅうらく, じゅらく is 聚落's: heard where
+    # these are written, they are slips of the transcripts, not corrections
+    lavish = sentence(col, "豪勢な食事だな", "こうせいなしょくじだな", "こうせいなしょくじだな")
+    village = sentence(col, "集落に戻ろう", "じゅうらくにもどろう", "じゅうらくにもどろう")
+
+    run(col, [lavish, village])
+
+    assert furigana(col, lavish) == "豪勢[ごうせい？こうせい]な 食事[しょくじ]だな"
+    assert furigana(col, village) == "集落[しゅうらく？じゅうらく]に 戻[もど]ろう"
+    review = [SHOW_TAG, FURIGANA_REVIEW_TAG]
+    assert col.get_note(lavish.id).tags == col.get_note(village.id).tags == review
+
+
+def test_a_long_vowel_is_spelt_as_jmdict_spells_it(col):
+    # Sudachi spells 十日 とうか; JMdict, like the speakers, とおか
+    note = sentence(col, "十日に来た", "とおかにきた", "とおかにきた")
+
+    run(col, [note])
+
+    assert furigana(col, note) == "十日[とおか]に 来[き]た"
+
+
+def test_words_side_by_side_without_a_particle_keep_their_own_furigana(col):
+    came = sentence(col, "誰来たの？", "だれきたの", "だれきたの")
+    looking = sentence(col, "何見てるの？", "なにみてるの", "なにみてるの")
+    slept = sentence(col, "一晩中寝た", "ひとばんじゅうねた", "ひとばんじゅうねた")
+    # What the rule is for, kept: a name Sudachi cut into single kanji
+    name = sentence(col, "羅半が来た", "らはんがきた", "らはんがきた")
+
+    run(col, [came, looking, slept, name])
+
+    got = {n: (furigana(col, n), col.get_note(n.id).tags) for n in (came, looking, slept, name)}
+    assert got == {
+        came: ("誰[だれ] 来[き]たの？", [SHOW_TAG]),
+        # 何 is Sudachi's なん; JMdict's なに is written once it is a word of its own
+        looking: ("何[なに] 見[み]てるの？", [SHOW_TAG]),
+        slept: ("一[ひと] 晩[ばん] 中[じゅう] 寝[ね]た", [SHOW_TAG]),
+        name: ("羅半[らはん]が 来[き]た", [SHOW_TAG]),
+    }
+
+
+def test_a_number_grouped_by_thousands_or_with_a_decimal_part_is_read_whole(col):
+    # Run by run, 1,000 was 一,〇, read いち,れい, and 2.5 had no 点
+    price = sentence(col, "1,000円だ", "せんえんだ", "センエンダ")
+    times = sentence(col, "2.5倍だ", "にてんごばいだ", "ニテンゴバイダ")
+
+    run(col, [price, times])
+
+    assert furigana(col, price) == "1,000円[せんえん]だ"
+    assert furigana(col, times) == "2.5倍[にてんごばい]だ"
+    assert col.get_note(price.id).tags == col.get_note(times.id).tags == [SHOW_TAG]
+
+
+def test_a_name_the_shows_other_notes_read(col, reported):
+    # The show's first mention of the name read it; this note's line does not
+    sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("ep::myshow::01",))
+    heard = "まおまおがいたのわどこなのかしら"
+    # Its other tags as Anki keeps them, sorted: two of them before the show's
+    tags = ("ep::myshow::02", "JLPT::N3", "anime::seinen", REGENERATE_TAG)
+    later = sentence(col, "猫猫がいたのはどこなのかしら", heard, heard, tags=tags)
+    assert col.get_note(later.id).tags[:2] == ["anime::seinen", "ep::myshow::02"]
+    # Another show reads the same spelling otherwise
+    sentence(col, "猫猫(ネコネコ)", "ねこねこ", "ねこねこ", tags=("ep::othershow::01",))
+
+    run(col, [later])
+
+    assert furigana(col, later) == "猫猫[まおまお]がいたのはどこなのかしら"
+    assert reported == []
+
+
+def test_notes_of_no_show_are_read_alone_and_said_once(col, reported):
+    # Tagged as subs2srs' default export tags a card, which names no show
+    sentence(col, "猫猫(マオマオ)", "まおまお", "まおまお", tags=("JP_sentences_01",))
+    heard = "まおまおがいたのわどこなのかしら"
+    notes = [
+        sentence(col, "猫猫がいたのはどこなのかしら", heard, heard, tags=("JP_sentences_02",)),
+        sentence(col, "猫猫がいたのはどこなのかしら", heard, heard, tags=("JP_sentences_03",)),
+    ]
+
+    run(col, notes)
+
+    # The first note's reading is no show's, so not theirs
+    assert furigana(col, notes[0]) != "猫猫[まおまお]がいたのはどこなのかしら"
+    [(_, text)] = reported
+    assert text.startswith("2 notes have no tag ep::<show>::<episode>")
+    assert text.endswith(f"search: nid:{notes[0].id},{notes[1].id}")
+
+
+@pytest.mark.parametrize(
+    "show",
+    ["nc", "nc:café", "nc:show", "re:zero", "re:(x", "re:a+b", "a_b*c\\d", "Kusuriya",
+     "薬屋のひとりごと", "-x(y)", "a::b"],
+)
+def test_the_shows_search_finds_its_notes_and_no_others(col, show):
+    # Shows a search read as a mode or with a wildcard would find
+    for other in ("show", "zero", "ab", "x", "b"):
+        sentence(col, f"other {other}", "x", "x", tags=(f"ep::{other}::01",))
+    note = sentence(col, "self", "x", "x", tags=(f"ep::{show}::01",))
+    found = set_furigana.show_of(col.get_note(note.id))
+
+    assert set_furigana.show_captions(found, SENTENCE, "Sentence") == ["self"]
+
+
+def test_a_name_from_the_names_file(col):
+    Path(set_furigana.NAMES_FILE).write_text(
+        json.dumps({"myshow": {"猫猫": "マオマオ"}}, ensure_ascii=False), encoding="utf-8"
+    )
+    heard = "まおまおがいたのわどこなのかしら"
+    note = sentence(col, "猫猫がいたのはどこなのかしら", heard, heard, tags=("ep::myshow::01",))
+
+    run(col, [note])
+
+    assert furigana(col, note) == "猫猫[まおまお]がいたのはどこなのかしら"
+
+
+def test_a_word_the_arbiters_models_agree_on_is_written(col):
+    asked: list = []
+
+    def answer(request: Any) -> Any:
+        assert request.kind == "furigana_arbiter.note"
+        asked.append(request.model)
+        return {"words": [{"n": 1, "why": "", "reading": "た", "sure": True}]}
+
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE]["furigana_models"] = ["first-model", "second-model"]
+    note = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+
+    run(col, [note], answer=answer)
+
+    assert sorted(asked) == ["first-model", "second-model"]
+    assert furigana(col, note) == "他[た]の 人[ひと]はどこにいるの"
+    assert col.get_note(note.id).tags == [SHOW_TAG]
+
+
+SURE = {"words": [{"n": 1, "why": "", "reading": "た", "sure": True}]}
+IN_REVIEW = "他[ほか？た]の 人[ひと]はどこにいるの"
+SETTLED = "他[た]の 人[ひと]はどこにいるの"
+
+
+def arbiters(*models: str) -> None:
+    real_anki.install().addonManager.configs[PACKAGE]["furigana_models"] = list(models)
+
+
+def held(col: Any, note: Any) -> tuple:
+    stored = col.get_note(note.id)
+    return stored["Sentence furigana"], stored.tags
+
+
+def test_a_failed_arbiter_call_leaves_the_note_for_the_next_run(col, reported):
+    # Written with its words in review, the note would never be asked about again: a run writes
+    # only an empty field
+    arbiters("first-model", "second-model")
+    asked: list = []
+    failing = True
+
+    def answer(request: Any) -> Any:
+        asked.append(request.model)
+        # None from a responder is a failed call
+        return None if failing else SURE
+
+    note = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+    first = run(col, [note], answer=answer)
+
+    assert (first.edited_nids, asked) == ([], ["first-model"])
+    assert held(col, note) == ("", [SHOW_TAG])
+    assert [text for _, text in reported] == [set_furigana.ARBITER_FAILED]
+    failing = False
+    asked.clear()
+    run(col, [note], answer=answer)
+    assert asked == ["first-model", "second-model"]
+    assert held(col, note) == (SETTLED, [SHOW_TAG])
+
+
+def test_a_model_name_no_provider_takes_is_said_and_leaves_the_note(col, reported):
+    # A typo, or a provider's prefix left out: no provider is asked, and the call answers None
+    arbiters("haiku-5-5")
+    note = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+
+    result = run(col, [note])
+
+    assert result.edited_nids == []
+    assert held(col, note) == ("", [SHOW_TAG])
+    assert [text for _, text in reported] == [set_furigana.ARBITER_FAILED]
+
+
+def test_a_call_the_user_cancels_leaves_the_note_unsaid(col, reported, monkeypatch):
+    # The worker returns before the cleanup lists the notes to write, as an aborted call does;
+    # forced here by holding the cleanup's start until it has
+    stub = real_anki.install()
+    arbiters("first-model")
+    returned = threading.Event()
+    inner = set_furigana.set_furigana_in_note
+
+    def watched(*args: Any, **kwargs: Any) -> bool:
+        try:
+            return inner(*args, **kwargs)
+        finally:
+            returned.set()
+
+    def cancelling(request: Any) -> Any:
+        run_state = api_client.current_run()
+        stub.progress.set_cancel(True)
+        assert run_state is not None and run_state.cancelled.wait(10), "never cancelled"
+        return None
+
+    begin = base_ops.begin_cleanup_phase
+
+    def cleanup_after_the_worker() -> None:
+        assert returned.wait(10)
+        begin()
+
+    note = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(set_furigana, "set_furigana_in_note", watched)
+        patched.setattr(base_ops, "begin_cleanup_phase", cleanup_after_the_worker)
+        result = run(col, [note], answer=cancelling)
+
+    stub.progress.set_cancel(False)
+    assert result.cancelled
+    assert held(col, note) == ("", [SHOW_TAG])
+    assert reported == []
+    asked: list = []
+    arbiters("first-model")
+    run(col, [note], answer=lambda request: asked.append(request.model) or SURE)
+    assert (asked, held(col, note)) == (["first-model"], (SETTLED, [SHOW_TAG]))
+
+
+def test_a_replay_hands_each_arbiter_model_its_own_answers():
+    # Every model is asked the same about a note's words. Two notes asking the same, their calls
+    # interleaved as the pool ran them, were recorded m1, m1, m2, m2: a cassette answering a
+    # request key's calls in turn must give note A's m2 call m2's answer, not m1's second
+    transcripts = [("kana-anime-whisper", "たのひとわ"), ("ruby-mora", "ホカノヒトワ")]
+    answers = {
+        "m1": {"words": [{"n": 1, "why": "", "reading": "た", "sure": True}]},
+        "m2": {"words": [{"n": 1, "why": "", "reading": "た", "sure": False}]},
+    }
+
+    def in_review() -> audio_furigana.Furigana:
+        word = audio_furigana.Reading(0, 0, 1, "他", "ほか", None, "review", ["タ", "ホカ"])
+        word.known = ["た", "ほか"]
+        return audio_furigana.Furigana(["他の人は"], [word], False)
+
+    def ask(answer: Any) -> tuple[list, str]:
+        asked: list = []
+
+        def responder(request: Any) -> Any:
+            asked.append(request)
+            return answer(request)
+
+        previous = base_ops.set_responder(responder)
+        try:
+            result = in_review()
+            set_furigana.settle_by_arbiter(["m1", "m2"], result, "他の人は", "", transcripts)
+        finally:
+            base_ops.set_responder(previous)
+        return asked, result.text
+
+    requests, _ = ask(lambda request: answers[request.model])
+    by_model = {request.model: request for request in requests}
+    keys = {model: capture_store.request_key(r.kind, r.inputs) for model, r in by_model.items()}
+    assert keys["m1"] != keys["m2"]
+    calls = [
+        {
+            "kind": by_model[model].kind,
+            "request_key": keys[model],
+            "inputs_json": json.dumps(by_model[model].inputs, ensure_ascii=False),
+            "response_json": json.dumps(answers[model], ensure_ascii=False),
+            "outcome": "ok",
+            "prompt_key": None,
+            "latency_ms": 0,
+        }
+        for model in ("m1", "m1", "m2", "m2")
+    ]
+    cassette = replay.Cassette(replay._cassette_entries(calls))
+
+    replayed = [ask(cassette)[1], ask(cassette)[1]]
+
+    # As captured: m2 was not sure, so the word stays in review in both notes
+    assert replayed == ["他[ほか？]の人は", "他[ほか？]の人は"]
+    assert cassette.misses == []
+    # The prompt is the inputs' but for the model, which it does not show
+    for request in requests:
+        inputs = {k: v for k, v in request.inputs.items() if k != "model"}
+        assert furigana_arbiter.review_prompt(**inputs) == request.prompt
+
+
+def test_new_notes_get_their_furigana_from_audio_before_kanjify_and_extraction(col, reported):
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(NEW_NOTES_CONFIG))
+    asked: list = []
+
+    def answer(request: Any) -> Any:
+        asked.append((request.kind, request.inputs.get("sentence")))
+        if request.kind == "kanjify.sentence":
+            return {"kanjified_sentence": request.inputs["sentence"]}
+        if request.kind == "proper_nouns.sentence":
+            return {"proper_nouns": []}
+        if request.kind == "judge.word":
+            return {"reason": "", "decision": judge.DONT_MATCH}
+        raise AssertionError(f"not asked: {request.kind}")
+
+    said = sentence(col, "（客）他の人はどこにいるの", "たのひとわどこにいるの", "タノヒトワドコニイルノ")
+    unsure = sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+    typed = sentence(col, "他の人は", "たのひとわ", "たのひとわ", furigana="他[ほか]の 人[ひと]は")
+
+    run(col, [said, unsure, typed], spec=new_note_all_ops_spec(), answer=answer)
+
+    def field(note: Any, name: str) -> str:
+        return col.get_note(note.id)[name]
+
+    # Set from the audio, then kanjified and its words extracted
+    assert field(said, "Sentence furigana") == "他[た]の 人[ひと]はどこにいるの"
+    assert field(said, "Kanjified") == "他[た]の 人[ひと]はどこにいるの"
+    assert field(said, "Words").startswith("[")
+    # Left for a person: neither kanjified nor extracted, which is said once
+    assert field(unsure, "Sentence furigana") == "他[ほか？た]の 人[ひと]はどこにいるの"
+    assert (field(unsure, "Kanjified"), field(unsure, "Words")) == ("", "")
+    assert col.get_note(unsure.id).tags == [SHOW_TAG, FURIGANA_REVIEW_TAG]
+    assert [text for _, text in reported] == [FURIGANA_REVIEW_LEFT]
+    # Its furigana typed already: kept, and read as it is
+    assert field(typed, "Sentence furigana") == "他[ほか]の 人[ひと]は"
+    assert field(typed, "Kanjified") == "他[ほか]の 人[ひと]は"
+    kanjified = sorted(text for kind, text in asked if kind == "kanjify.sentence")
+    assert kanjified == sorted([field(said, "Sentence furigana"), "他[ほか]の 人[ひと]は"])
+    assert col.undo_status().undo == "Running new note all ops for 3 notes."
+
+
+def test_a_responder_hears_the_clips_with_no_server(col, reported, monkeypatch):
+    # The check that the server is up goes to it past the responder: a replay answering the
+    # transcriptions needed one all the same
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(NEW_NOTES_CONFIG))
+    health: list = []
+
+    class NoServer:
+        def get(self, url: str, timeout: Any = None) -> Any:
+            health.append(url)
+            raise ConnectionError("no server in a replay")
+
+    def answer(request: Any) -> Any:
+        if request.kind == "transcribe.audio":
+            return {"text": "たのひとわどこにいるの"}
+        if request.kind == "kanjify.sentence":
+            return {"kanjified_sentence": request.inputs["sentence"]}
+        if request.kind == "proper_nouns.sentence":
+            return {"proper_nouns": []}
+        if request.kind == "judge.word":
+            return {"reason": "", "decision": judge.DONT_MATCH}
+        raise AssertionError(f"not asked: {request.kind}")
+
+    monkeypatch.setattr(transcribe_audio, "get_session", lambda provider: NoServer())
+    Path(col.media.dir(), "clip.opus").write_bytes(b"clip bytes")
+    # Only the first model's line: the run asks for ruby-mora's
+    note = sentence(col, "他の人はどこにいるの", "たのひとわどこにいるの")
+
+    run(col, [note], spec=new_note_all_ops_spec(), answer=answer)
+
+    held = col.get_note(note.id)
+    assert health == []
+    assert held["Heard"].endswith("ruby-mora: たのひとわどこにいるの")
+    assert held["Sentence furigana"] == "他[た]の 人[ひと]はどこにいるの"
+    assert reported == []
+
+
+def test_a_clip_is_the_file_anki_plays_for_its_sound_tag(col):
+    # Anki's editor writes a name HTML-escaped, and its player reads the file unescaped
+    for name in ("Spice &amp; Wolf_01.opus", "a&nbsp;b.opus", "a&lt;b&gt;.opus", "a&amp;lt;b.opus",
+                 "Tom&Jerry.opus", "a&copy.opus"):
+        field = f"[sound:{name}]"
+        [played] = col._backend.extract_av_tags(text=field, question_side=True).av_tags
+        assert transcribe_audio.audio_file(field) == played.sound_or_video, field
+
+
+def test_a_run_whose_server_is_down_says_so_once_and_goes_on(col, reported, monkeypatch):
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(NEW_NOTES_CONFIG))
+
+    class NoServer:
+        def get(self, url: str, timeout: Any = None) -> Any:
+            raise ConnectionError("[Errno 111] Connection refused")
+
+    def answer(request: Any) -> Any:
+        if request.kind == "kanjify.sentence":
+            return {"kanjified_sentence": request.inputs["sentence"]}
+        if request.kind == "proper_nouns.sentence":
+            return {"proper_nouns": []}
+        if request.kind == "judge.word":
+            return {"reason": "", "decision": judge.DONT_MATCH}
+        raise AssertionError(f"not asked: {request.kind}")
+
+    monkeypatch.setattr(transcribe_audio, "get_session", lambda provider: NoServer())
+    # The check is made, as in Anki, where no responder hears the clips
+    monkeypatch.setattr(transcribe_audio, "responder_active", lambda: False)
+    # A clip each and no transcript yet
+    new = [sentence(col, "他の人はどこにいるの"), sentence(col, "他の人は")]
+    typed = sentence(col, "他の人は", furigana="他[ほか]の 人[ひと]は")
+
+    run(col, [*new, typed], spec=new_note_all_ops_spec(), answer=answer)
+
+    # Said once, not again for each note as "run Transcribe sentence audio first"
+    [(_, text)] = reported
+    assert "does not answer" in text
+    assert [col.get_note(note.id)["Sentence furigana"] for note in new] == ["", ""]
+    # The rest of the run went on
+    assert col.get_note(typed.id)["Kanjified"] == "他[ほか]の 人[ひと]は"
+
+
+@pytest.mark.parametrize("transcripts", [True, False])
+def test_the_runs_undo_name_counts_the_selection_whichever_phase_is_first(col, transcripts):
+    # The audio phases come first where the config keeps transcripts, and "New note ops" where
+    # it does not; a note of half a broken pair is left out of the run either way
+    stub = real_anki.install()
+    config = json.loads(json.dumps(NEW_NOTES_CONFIG))
+    config["Broken note"] = {"vocab_note_type": "Ghost note"}
+    if not transcripts:
+        del config[SENTENCE]["sentence_transcription_field"]
+    stub.addonManager.configs[PACKAGE] = config
+    real_anki.make_note_type(col, "Broken note", ["Sentence"])
+    said = "たのひとわどこにいるの"
+    notes = [
+        sentence(col, "他の人はどこにいるの", said, said),
+        real_anki.add_note(col, "Broken note", {"Sentence": "猫"}, deck_name="Sentences"),
+    ]
+
+    def answer(request: Any) -> Any:
+        if request.kind == "kanjify.sentence":
+            return {"kanjified_sentence": request.inputs["sentence"]}
+        if request.kind == "proper_nouns.sentence":
+            return {"proper_nouns": []}
+        if request.kind == "judge.word":
+            return {"reason": "", "decision": judge.DONT_MATCH}
+        raise AssertionError(f"not asked: {request.kind}")
+
+    run(col, notes, spec=new_note_all_ops_spec(), answer=answer)
+
+    assert col.undo_status().undo == "Running new note all ops for 2 notes."
+
+
+EXTRACT = NotesRunSpec(
+    "Extracted words", "Extracting words", extract_words.bulk_extract_from_notes_op
+)
+
+
+def extracted_then_set_again(col: Any) -> list:
+    """Two notes holding word arrays extracted from their kanjified furigana, then their
+    furigana emptied and set again from audio that leaves 他 in review: one keeps its tag, the
+    other's was taken off before its ？ word was fixed."""
+    stub = real_anki.install()
+    stub.addonManager.configs[PACKAGE] = json.loads(json.dumps(NEW_NOTES_CONFIG))
+    notes = [
+        sentence(col, "他の人はどこにいるの", "ほかのひとわどこにいるの", "たのひとわどこにいるの")
+        for _ in range(2)
+    ]
+    for note in notes:
+        held = col.get_note(note.id)
+        held["Kanjified"] = "他[ほか]の 人[ひと]はどこにいるの"
+        col.update_note(held)
+    run(col, notes, spec=EXTRACT, answer=lambda request: {"proper_nouns": []})
+    run(col, notes)
+    untagged = col.get_note(notes[1].id)
+    untagged.remove_tag(FURIGANA_REVIEW_TAG)
+    col.update_note(untagged)
+    for note in notes:
+        assert col.get_note(note.id)["Words"].startswith("[")
+        assert "？" in col.get_note(note.id)["Sentence furigana"]
+    return notes
+
+
+def test_extracting_again_says_nothing_of_notes_in_review_that_hold_arrays(col, reported):
+    # A re-run does nothing to a note holding an array: reported, it made an error pane and a
+    # warning box of a run with nothing to do
+    notes = extracted_then_set_again(col)
+    reported.clear()
+    arrays = [col.get_note(note.id)["Words"] for note in notes]
+
+    result = run(col, notes, spec=EXTRACT, answer=lambda request: {"proper_nouns": []})
+
+    assert result.edited_nids == []
+    assert [col.get_note(note.id)["Words"] for note in notes] == arrays
+    assert reported == []
+
+
+def test_regenerating_notes_in_review_is_refused_and_said(col, reported):
+    # Regenerating would read the furigana in doubt
+    notes = extracted_then_set_again(col)
+    reported.clear()
+    regenerate = NotesRunSpec(
+        "Regenerated word arrays", "Regenerating", extract_words.bulk_regenerate_from_notes_op
+    )
+
+    result = run(col, notes, spec=regenerate, answer=lambda request: {"proper_nouns": []})
+
+    assert result.edited_nids == []
+    said = sorted(text for _, text in reported)
+    assert said == sorted([FURIGANA_DOUBT_LEFT, FURIGANA_REVIEW_LEFT])
+
+
+def test_a_note_without_its_transcripts_is_left_and_reported(col, reported):
+    note = sentence(col, "他の人は", "たのひとわ")
+
+    result = run(col, [note])
+
+    assert result.edited_nids == []
+    assert furigana(col, note) == ""
+    [(_, text)] = reported
+    assert "No transcript from ruby-mora yet" in text

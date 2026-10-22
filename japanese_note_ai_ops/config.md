@@ -55,6 +55,8 @@ Define which model to use for each task
 - `proper_nouns_model` (falls back to `extract_words_model`), so also the model "Extract words"
   uses
 - `match_words_model`
+- `furigana_models`: a list, every model of which has to agree; see "setting furigana from
+  audio" below
 
 ### temperature
 
@@ -194,6 +196,102 @@ in again by running `claude` in a terminal, then rerun.
 - `claude_cli_path`: Default `""` (find `claude` on PATH). Path to the claude executable. The npm
   `claude.cmd`/`claude.ps1` shims are skipped for the native `claude.exe` they start.
 
+### transcribing sentence audio
+
+"Transcribe sentence audio" sends each sentence note's clip (`sentence_audio_field`) to speech
+models and keeps what they heard, in kana, in the sentence block's
+`sentence_transcription_field`: a line per model, such as `kana-anime-whisper: そのときは`. Add
+that field to the sentence note type first. "Set furigana from audio" then checks the
+sentence's readings against those lines. A model hears the clip alone, never the sentence: an
+audio model shown text writes the text back, and what it hears by itself is the point.
+
+The models run in a program of their own on your PC, since Anki cannot load them: the file
+`japanese_note_ai_ops/dev/transcribe_server.py` of https://github.com/jhhr/anki_addons, with
+`transcribe_server_requirements.txt` beside it. `dev/` is left out of the released add-on, so
+take both from there. Set it up once and start it before a run, as the top of that file says:
+a Python environment with PyTorch (the CUDA 12.6 build for a GTX 970 and other Maxwell cards),
+made outside the add-on's folder, which an update of the add-on replaces, then, from
+`japanese_note_ai_ops/`, `python dev/transcribe_server.py --device cuda`. Its first start
+downloads the two models, about 5.5 GB, and for a moment takes about 7 GB of memory while it
+loads Ruby-ASR. A run of "Transcribe sentence audio" that cannot reach the server stops at
+once and says so.
+
+- `transcribe_models`: Default `["local-kana-anime-whisper", "local-ruby-mora"]`. The models a
+  clip is sent to, each `local-<model>` for one the server has loaded. The default pair is the
+  one the furigana audio eval picked: on 400 clips checked by ear, the furigana check wrote one
+  wrong reading among 846. A note is only asked for the models its field has no line for, so
+  a model added here later is asked for its own line alone.
+- `transcribe_url`: Default `"http://127.0.0.1:8792"`. Where the server listens. Anki sends
+  to it as to the online services, through the proxy `HTTP_PROXY` or Windows' proxy settings
+  name, unless `NO_PROXY` or the proxy's exceptions list 127.0.0.1 (Windows' `<local>` covers
+  localhost only); a run that meets a proxy in the way says so.
+
+Notes are transcribed one after another, since the server hears one clip at a time: about
+seven seconds a clip on the CPU alone in the eval, less with the GPU (not measured yet).
+
+### setting furigana from audio
+
+"Set furigana from audio" writes a sentence note's furigana into `furigana_sentence_field`, reading
+each kanji word of `sentence_field`, and each number in digits (` 3[みっ]つ`), as the clip says it: the
+reading a model's line in `sentence_transcription_field` hears, where that is Sudachi's reading, one
+JMdict has for the word or the show's for a name. A Latin letter is its own reading: `Ｂ型` is written
+`Ｂ 型[がた]`, and a word whose reading does not say its letters' names (`Ｗ杯`, ワールドカップ) is left for
+review. A reading the captions give themselves, `猫猫(マオマオ)`, is written as they give it. Speaker
+labels and sound descriptions, `（猫猫）`, `（足音）` or `[？？？]`, are not said and are left out, as is the
+caption's formatting but its line breaks (HTML such as an SRT's `<font>` colors or the editor's
+`<span style>`, and ASS tags such as `{\an8}`): the furigana is plain text, a `<br>` between lines.
+Run "Transcribe sentence audio" first: a note needs a line from each of the `transcribe_models`, and
+one of them hearing a reading is enough to write it.
+
+A word the lines do not settle (they hear two readings, or one nothing has for the word), or
+every word of a sentence whose clip is far from its text, goes to the language models of
+`furigana_models`, if it names any. Each is asked once per note, with the sentence, the
+translation in `translated_sentence_field` when the type has one, the lines and what each heard
+at the word, and the reading is written where every model is sure of the same one and a line
+heard it there. A word no line heard anything at (the clip stops before it) could never be
+written so, and is not asked about; a note with only such words asks nothing. A word still
+unsettled is written with the readings to choose between in its brackets, joined by `？`:
+Sudachi's reading, then what the lines heard there, ` 方[ほう？かた]`.
+A word with nothing else heard has its one reading and a `？`, ` 薬[くすり？]`, and one Sudachi
+cannot read has the `？` alone. The note is tagged `furigana-review`. Kanjify, word extraction
+and "Match extracted words" leave such a note alone, and the kanjify export leaves it out:
+listen to the clip, leave each marked word with the reading said (` 方[かた]`), and take the tag
+off. A sentence whose furigana still holds a `？` is left alone too, tag or no tag.
+
+- `furigana_models`: Default `[]` (none). The models that settle the words the audio leaves in
+  review; a reading is written only where all of them give it. On the eval's 400 cards the
+  audio leaves 315 words in review on 150 cards. `["terminal-claude-haiku-5-5",
+  "terminal-claude-sonnet-5-5"]` settled 125 of them, leaving 105 cards to check, and got none of
+  the 63 checked by ear wrong. One model alone was wrong too often: Haiku on 1 of 72, Sonnet on 3
+  of 71, Opus on 1 of 78. A model names a provider as the `*_model` keys do; other models than
+  these were not measured.
+
+Only a note whose furigana field is empty is written, so furigana you typed or fixed is never
+replaced. Empty the field to have it set again. A note whose call to a `furigana_models` model
+got no answer (an error the run lists, or a run cancelled while it waited) is left as it was,
+so that the next run asks again.
+
+"Run all ops for new notes" does both first, before kanjify and word extraction, which read the
+furigana, wherever a sentence note type has `sentence_transcription_field`: its notes with a
+clip and an empty furigana field are transcribed, which needs the server only when one of them
+still lacks a model's line, and their furigana is set. When the server cannot be reached, the
+run says so once and goes on: the notes it could not transcribe get no furigana from it, and
+nothing more is said of them. A note left for review gets no kanjify or word extraction in that
+run, and the run says so once per note.
+
+The show's names: a show's captions give a name its reading at the first mention in an episode
+(`猫猫(マオマオ)`) and seldom after. The op reads the reading the show's captions give a name
+most, wherever it is written, and takes a note's show from its tag `ep::<show>::<episode>`:
+name the tag `ep::${deck_name}::${0:episode_num}` in subs2srs' export, for example. The `ep::`
+is hardcoded, and no other tag should start with it. A note with no such tag, or with tags of
+two shows, is read with its own caption alone, and the run says once how many there were and
+how to find them. A name the captions never read goes in `user_files/show_names.json`, by show
+(the `<show>` of the tag), and wins over the captions:
+
+```json
+{"my_show": {"響迂": "きょうう"}}
+```
+
 ## config fields per note type name
 
 Add the fields by note type like this. You can set multiple different note types. You can't set
@@ -232,6 +330,13 @@ You need to define
 - for translating sentences
   1. `sentence_field`
   2. `translated_sentence_field`
+- for transcribing sentence audio:
+  1. `sentence_audio_field`
+  2. `sentence_transcription_field`
+- for setting furigana from audio:
+  1. `sentence_field`
+  2. `furigana_sentence_field`
+  3. `sentence_transcription_field`
 - for generating kanji stories:
   1. `kanji_field`
   2. `story_field`

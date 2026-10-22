@@ -20,9 +20,9 @@ import types
 import unittest
 from unittest import mock
 
-from addon_modules import FakeClock, load_addon_module, load_ops_module, mw
+from addon_modules import FakeClock, load_ops_module, mw
 
-link_ids = load_addon_module("link_ids", subdir="")
+link_ids = load_ops_module("link_ids", subdir="")
 base_ops = load_ops_module("base_ops")
 mwtn = load_ops_module("match_words_to_notes")
 cm = load_ops_module("clean_meaning")

@@ -66,6 +66,7 @@ from .base_ops import (
     selected_notes_op,
 )
 from .find_proper_nouns import add_proper_nouns, generate_word_array
+from .furigana_review import unchecked_furigana
 from .progress_errors import report_exception
 from .role_gate import notes_of_role
 from .run_errors import report_error
@@ -114,6 +115,16 @@ def extract_words_in_note(
         return False
     if existing is not None and not overwrite:
         logger.debug(f"{log_prefix}The note already holds a word array")
+        return False
+
+    # Past here the generator runs, and it takes a word's reading from the note's furigana or
+    # from its own sentence, often kanjified from the furigana: a note whose furigana awaits a
+    # check is left alone, and said to be. Not before the skip above: a re-run over notes that
+    # hold arrays does nothing to them, and reported there, it was an error pane and a warning
+    # box for a run that had nothing to do
+    unchecked = unchecked_furigana(config, note, sentence_field)
+    if unchecked is not None:
+        report_error(unchecked)
         return False
 
     # The sentence without its <i> context, so that the array covers the words the note is

@@ -1,5 +1,8 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from addon_modules import load_ops_module
 
@@ -50,6 +53,49 @@ class RunTestDataExportsTests(unittest.TestCase):
             [key for key, _ in make_fine_tuning_data.TEST_DATA_EXPORTS],
             ["kanji_sentence_fine_tuning_data_query"],
         )
+
+
+
+class Note:
+    def __init__(self, furigana: str, tags=()) -> None:
+        self.fields = {"Furigana": furigana, "Kanjified": "<k> 他[た]</k>の"}
+        self.tags = list(tags)
+
+    def note_type(self):
+        return {"name": "Sentence note"}
+
+    def has_tag(self, tag: str) -> bool:
+        return tag in self.tags
+
+    def __contains__(self, field: str) -> bool:
+        return field in self.fields
+
+    def __getitem__(self, field: str) -> str:
+        return self.fields[field]
+
+
+class KanjifyExportTests(unittest.TestCase):
+    def test_a_note_whose_furigana_awaits_a_check_is_left_out_and_counted(self):
+        # Its ？ words are no sentence, and its kanjified one is the furigana's it replaced
+        config = {
+            "Sentence note": {
+                "furigana_sentence_field": "Furigana",
+                "kanjified_sentence_field": "Kanjified",
+            }
+        }
+        notes = {
+            1: Note(" 他[た]の"),
+            2: Note(" 他[ほか？た]の"),
+            3: Note(" 他[た]の", tags=["furigana-review"]),
+        }
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            make_fine_tuning_data, "_OUTPUT_DIR", directory
+        ), mock.patch.object(make_fine_tuning_data, "mw") as mw:
+            mw.col.get_note.side_effect = notes.__getitem__
+            message = make_fine_tuning_data._write_kanjify_sentence_data(config, [1, 2, 3])
+            rows = (Path(directory) / "kanjify_sentence_data.jsonl").read_text(encoding="utf-8")
+        self.assertEqual([json.loads(row)["nids"] for row in rows.splitlines()], [[1]])
+        self.assertTrue(message.endswith("Left out 2 notes whose furigana awaits a check."))
 
 
 if __name__ == "__main__":

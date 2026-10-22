@@ -57,6 +57,16 @@ def test_a_run_that_wrote_no_run_row_reports_no_run(tmp_path):
     assert earlier is not None and report.run_id is None
 
 
+def test_a_list_of_models_is_checked_model_by_model():
+    config = {"kanjify_sentence_model": "terminal-a", "make_meanings_model": "terminal-a"}
+    assert headless.api_model_keys(config) == []
+    assert headless.api_model_keys({**config, "furigana_models": ["terminal-a", "gemini-b"]}) == [
+        "furigana_models"
+    ]
+    assert headless.api_model_keys({**config, "furigana_models": "gemini-b"}) == ["furigana_models"]
+    assert headless.api_model_keys({**config, "furigana_models": []}) == []
+
+
 def test_a_session_puts_back_what_it_replaced(tmp_path):
     stub = real_anki.install()
     before = (stub.col, stub.progress, stub.pm._profile_folder)

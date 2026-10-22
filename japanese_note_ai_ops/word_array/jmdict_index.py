@@ -8,8 +8,8 @@ resources.ensure(); the parsed index is pickled next to it.
 import gzip
 import pickle
 import re
+import threading
 import xml.etree.ElementTree as ET
-from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -109,8 +109,23 @@ def build(gz_path: Path = JMDICT_GZ, spellings: Optional[dict] = None) -> dict[s
     return index
 
 
-@lru_cache(maxsize=1)
-def _data() -> tuple[dict[str, list[Entry]], dict[tuple, Spellings]]:
+Data = tuple[dict[str, list[Entry]], dict[tuple, Spellings]]
+_loaded: Optional[Data] = None
+_load_lock = threading.Lock()
+
+
+def _data() -> Data:
+    """The index and the spellings, loaded once: an op's worker threads ask for them at once,
+    and each loaded a copy of its own, a few hundred MB, before the first was done."""
+    global _loaded
+    if _loaded is None:
+        with _load_lock:
+            if _loaded is None:
+                _loaded = _load()
+    return _loaded
+
+
+def _load() -> Data:
     data = _load_pickle()
     if data is not None:
         return data
@@ -143,3 +158,20 @@ def has_pos(form: str, code: str) -> bool:
 
 def readings(form: str) -> list[str]:
     return [r for _, rs, _ in lookup(form) for r in rs]
+
+
+def spelling_readings(form: str) -> set[str]:
+    """Every reading of the entries that spell `form` in kanji, but one JMdict gives only the
+    entry's other spellings (re_restr): 絵 is never が, which is 画's, nor 集落 じゅらく, 聚落's.
+    A search-only spelling no re_restr names (田ぼ, sK) reads as its entry does. A reading JMdict
+    gives no kanji spelling (re_nokanji) stays: 度 said たんび is still the word over the
+    caption's kanji. An entry `form` is a reading of gives none."""
+    out: set[str] = set()
+    for kebs, rebs, _ in lookup(form):
+        if form not in kebs:
+            continue
+        restr = spellings(kebs, rebs)[1]
+        named = [reb for reb in rebs if form in restr.get(reb, kebs)]
+        out.update(named or rebs)
+        out.update(reb for reb in rebs if restr.get(reb) == ())
+    return out

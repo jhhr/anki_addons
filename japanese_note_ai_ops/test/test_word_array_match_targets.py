@@ -343,6 +343,9 @@ class FakeNote:
     def add_tag(self, tag):
         self.tags.append(tag)
 
+    def has_tag(self, tag):
+        return tag in self.tags
+
 
 class WordIndexCache:
     async def get(self, _):
@@ -440,6 +443,19 @@ class MatchWordsToNotesArrayTests(unittest.TestCase):
         self.assertEqual(updates, {note.id: note})
         self.assertEqual(note["word_list_field"], broken)
         self.assertEqual(progress.notes_done, 1)
+
+    def test_a_note_whose_furigana_awaits_a_check_is_left_alone_and_counted_done(self):
+        # Matched, its furigana would be copied into new notes, 他[ほか？た] and all
+        arr = json.dumps([word("本", ["match"])])
+        tagged = FakeNote({"furigana_sentence_field": "本[ほん]を", "word_list_field": arr})
+        tagged.tags.append("furigana-review")
+        marked = FakeNote({"furigana_sentence_field": "本[ほん？もと]を", "word_list_field": arr})
+        for note, said in ((tagged, 'tagged "furigana-review"'), (marked, '"？"')):
+            progress = Progress()
+            with mock.patch.object(self.mwtn, "report_error") as report:
+                self.assertIsNone(self.plan_note(note, progress, {}))
+            self.assertIn(said, report.call_args.args[0])
+            self.assertEqual(progress.notes_done, 1)
 
     def test_an_empty_word_list_field_is_not_tagged(self):
         note = FakeNote({"furigana_sentence_field": "本を", "word_list_field": ""})

@@ -3,6 +3,29 @@ from html.parser import HTMLParser
 from html import unescape
 
 CONTEXT_SENTENCE_RE = re.compile(r"<i>.*?</i>", re.DOTALL)
+# The edge of a <div> or <p> block, with the breaks and white space around it: Anki's editor
+# writes a field's lines as <div> blocks, often with a <br> inside, and one edge is one break
+BLOCK_EDGE_RE = re.compile(r"(?:\s|<br\s*/?>)*</?(?:div|p)(?:\s[^>]*)?>(?:\s|<br\s*/?>)*", re.I)
+BR_RE = re.compile(r"<br\s*/?>", re.I)
+TAG_RE = re.compile(r"<[^>]*>")
+
+
+def blocks_as_breaks(field: str) -> str:
+    """`field` with each edge of its <div> and <p> blocks a <br>, none before the first line or
+    after the last: `<div>a</div><div>b</div>` is `a<br>b`. A field without blocks comes back
+    as it was."""
+    if not BLOCK_EDGE_RE.search(field):
+        return field
+    return "<br>".join(piece for piece in BLOCK_EDGE_RE.split(field) if piece.strip())
+
+
+def text_lines(field: str) -> list[str]:
+    """A field's lines as plain text. A <br> in any form (<br />, <BR>), the edge of a block
+    (`blocks_as_breaks`) and a line break in the HTML source end a line; every other tag is
+    dropped (an SRT's <font> color, an editor's <span style>) and character references are
+    read (&amp; is &, &nbsp; a space). Text written back into a field escapes &, < and >."""
+    text = TAG_RE.sub("", BR_RE.sub("\n", blocks_as_breaks(field)))
+    return unescape(text).replace("\xa0", " ").splitlines()
 
 
 def strip_context_sentences(sentence: str) -> str:

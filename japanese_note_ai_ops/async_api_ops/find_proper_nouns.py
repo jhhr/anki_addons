@@ -8,7 +8,6 @@ before the word matching judge: a merged name is left with the match_data of its
 """
 
 import logging
-import threading
 from collections.abc import Sequence
 from typing import Optional
 
@@ -29,14 +28,12 @@ from .role_gate import notes_of_role
 
 logger = logging.getLogger(__name__)
 
-# Notes are handled on several threads at once; one Sudachi tokenizer serves them all
-_generator_lock = threading.Lock()
-
 
 def _name_rest_word(word: list, rest_raw: str) -> Optional[list]:
-    """`generator.name_rest_word`, one call at a time: splits a word the generator cut across a
-    name (凛と -> 凛 + と) where the rest is a word of its own."""
-    with _generator_lock:
+    """`generator.name_rest_word`, one call at a time (`generator.TOKENIZER_LOCK`): notes are
+    handled on several threads at once, and one Sudachi tokenizer serves them all. Splits a word
+    the generator cut across a name (凛と -> 凛 + と) where the rest is a word of its own."""
+    with generator.TOKENIZER_LOCK:
         return generator.name_rest_word(word, rest_raw)
 
 
@@ -44,7 +41,7 @@ def generate_word_array(
     sentence: str, name_lexicon: Optional[dict], split_compounds: frozenset[str] = frozenset()
 ) -> list:
     """`generator.generate`, one call at a time, for the same reason as `_name_rest_word`."""
-    with _generator_lock:
+    with generator.TOKENIZER_LOCK:
         return generator.generate(sentence, name_lexicon, split_compounds)
 
 

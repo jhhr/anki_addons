@@ -1,0 +1,196 @@
+"""The kanji words of a spoken line: names, numbers and cut runs taken whole, the captions' own
+readings as a word's caption.
+
+Nothing here tokenizes with Sudachi: a stand-in segments the few lines the tests use the way
+Sudachi does, so the suite runs without SudachiPy or the downloaded dictionaries."""
+
+import unittest
+
+from addon_modules import load_ops_module, stand_in_tokenizer
+
+captions = load_ops_module("captions", subdir="word_array")
+kanji_words = load_ops_module("kanji_words", subdir="word_array")
+
+NOUN = ("名詞", "普通名詞", "一般", "*", "*", "*")
+PROPER = ("名詞", "固有名詞", "人名", "一般", "*", "*")
+PARTICLE = ("助詞", "格助詞", "*", "*", "*", "*")
+NUMERAL = ("名詞", "数詞", "*", "*", "*", "*")
+COUNTER = ("接尾辞", "名詞的", "助数詞", "*", "*", "*")
+COUNTER_NOUN = ("名詞", "普通名詞", "助数詞可能", "*", "*", "*")
+ADVERB = ("副詞", "*", "*", "*", "*", "*")
+PRONOUN = ("代名詞", "*", "*", "*", "*", "*")
+VERB = ("動詞", "非自立可能", "*", "*", "カ行変格", "連用形-一般")
+AUXILIARY = ("助動詞", "*", "*", "*", "助動詞-タ", "終止形-一般")
+TIME_NOUN = ("名詞", "普通名詞", "副詞可能", "*", "*", "*")
+SUFFIX = ("接尾辞", "名詞的", "一般", "*", "*", "*")
+
+
+# Sudachi's take on the lines below: names cut up and read as common words, digits read one by
+# one, a compound cut into words it knows
+LEXICON = {
+    "猫": ("ネコ", NOUN),
+    "馬": ("ウマ", NOUN),
+    "高順": ("タカノブ", PROPER),
+    "10": ("イチレイ", NUMERAL),
+    "175": ("イチナナゴ", NUMERAL),
+    "百七十五": ("ヒャクナナジュウゴ", NUMERAL),
+    "三つ": ("ミッツ", NUMERAL),
+    "km": ("キロメートル", COUNTER_NOUN),
+    "七": ("ナナ", NUMERAL),
+    "三": ("サン", NUMERAL),
+    "3": ("サン", NUMERAL),
+    "つ": ("ツ", COUNTER),
+    "日": ("ニチ", COUNTER_NOUN),
+    "十日": ("トオカ", NOUN),
+    "響": ("ヒビキ", NOUN),
+    "神": ("カミ", NOUN),
+    "美": ("ビ", NOUN),
+    "物置": ("モノオキ", NOUN),
+    "小屋": ("コヤ", NOUN),
+    "誰": ("ダレ", PRONOUN),
+    "来": ("キ", VERB),
+    "た": ("タ", AUXILIARY),
+    "今": ("イマ", TIME_NOUN),
+    "私": ("ワタクシ", PRONOUN),
+    "何": ("ナン", PRONOUN),
+    "様": ("サマ", SUFFIX),
+    "母": ("ハハ", NOUN),
+    "足": ("アシ", NOUN),
+}
+
+
+tokenize = stand_in_tokenizer(LEXICON, PARTICLE)
+
+
+class KanjiWordsTest(unittest.TestCase):
+    def words(self, line, names=(), read=None):
+        text, readings = captions.split_readings(line)
+        return kanji_words.kanji_words(0, text, tokenize(text), readings, names, read)
+
+    def test_a_number_and_its_counter_are_one_word_its_digits_too(self):
+        def read(text):
+            return kanji_words.numeral_reading(text, tokenize)
+
+        words = self.words("10日に七日", read=read)
+        self.assertEqual(
+            [(w.surface, w.start, w.end, w.sudachi, w.kinds) for w in words],
+            [("10日", 0, 3, "とおか", ["number"]), ("七日", 4, 6, "ななにち", ["number"])],
+        )
+
+    def test_a_run_sudachi_cut_into_single_kanji_or_could_not_read_is_one_word(self):
+        # 迂 is not in the stand-in's lexicon: its reading stays the kanji, as Sudachi's does
+        words = self.words("響迂は神美に物置小屋")
+        self.assertEqual(
+            [(w.surface, w.sudachi, w.kinds) for w in words],
+            [
+                ("響迂", "ひびき迂", ["split"]),
+                ("神美", "かみび", ["split"]),
+                ("物置", "ものおき", []),
+                ("小屋", "こや", []),
+            ],
+        )
+
+    def test_a_pronoun_verb_or_noun_of_time_in_a_run_is_a_word_of_its_own(self):
+        # They meet a kanji each because the particle between them was dropped
+        def words(line):
+            return [(w.surface, w.kinds) for w in self.words(line)]
+
+        self.assertEqual(words("誰来た"), [("誰", []), ("来", [])])
+        self.assertEqual(words("母来た"), [("母", []), ("来", [])])
+        self.assertEqual(words("今私"), [("今", []), ("私", [])])
+        self.assertEqual(words("今足"), [("今", []), ("足", [])])
+        # A name cut into single kanji is still one word, a suffix after it too
+        self.assertEqual(words("何様"), [("何様", ["split"])])
+        self.assertEqual(words("神美様"), [("神美様", ["split"])])
+        self.assertEqual(words("今神美"), [("今", []), ("神美", ["split"])])
+
+    def test_a_number_sudachi_cut_into_a_numeral_and_a_word_is_read_by_itself(self):
+        # In a line Sudachi cuts 三十分 into 三|十分 and reads 十分 as "enough"
+        LEXICON["十分"] = ("ジュウブン", ADVERB)
+
+        def read(text):
+            self.assertEqual(text, "三十分")
+            return "さんじゅっぷん"
+
+        try:
+            words = self.words("三十分で", read=read)
+        finally:
+            del LEXICON["十分"]
+        self.assertEqual(
+            [(w.surface, w.sudachi, w.kinds) for w in words],
+            [("三十分", "さんじゅっぷん", ["number"])],
+        )
+
+    def test_digits_alone_or_with_a_kana_counter_are_a_number_too(self):
+        def read(text):
+            return kanji_words.numeral_reading(text, tokenize)
+
+        words = self.words("175と3つ", read=read)
+        self.assertEqual(
+            [(w.surface, w.sudachi, w.kinds) for w in words],
+            [("175", "ひゃくななじゅうご", ["number"]), ("3つ", "みっつ", ["number"])],
+        )
+        # A number in kana needs no furigana
+        self.assertEqual(self.words("みっつ"), [])
+
+    def test_a_counter_in_latin_letters_is_no_part_of_the_number(self):
+        def read(text):
+            return kanji_words.numeral_reading(text, tokenize)
+
+        words = self.words("175km", read=read)
+        self.assertEqual([(w.surface, w.sudachi) for w in words], [("175", "ひゃくななじゅうご")])
+
+    def test_a_name_the_tokenizer_cut_is_one_word(self):
+        words = self.words("あら 猫猫", names={"猫猫"})
+        self.assertEqual(
+            [(w.surface, w.sudachi, w.kinds) for w in words], [("猫猫", "ねこねこ", ["name"])]
+        )
+
+    def test_of_two_names_as_long_that_overlap_the_same_one_is_taken_every_time(self):
+        for names in (["李白", "白鈴"], ["白鈴", "李白"]):
+            words = self.words("李白鈴が", names=names)
+            self.assertEqual([w.surface for w in words if "name" in w.kinds], ["李白"], names)
+
+    def test_an_empty_name_is_no_name(self):
+        # Found at every place, it hung the search for the next one
+        words = self.words("あら 猫猫", names={"", "猫猫"})
+        self.assertEqual([(w.surface, w.kinds) for w in words], [("猫猫", ["name"])])
+
+    def test_an_inline_reading_is_the_words_caption(self):
+        words = self.words("猫猫(マオマオ)")
+        self.assertEqual(
+            [(w.surface, w.caption, w.kinds) for w in words], [("猫猫", "まおまお", ["name"])]
+        )
+
+    def test_readings_of_kanji_the_tokenizer_cut_across_are_one_words(self):
+        # A title and a name, each read by the captions, which the tokenizer cut 春|妃夏|樹:
+        # two words would share 妃夏
+        LEXICON.update({"春": ("ハル", PROPER), "妃夏": ("ヒナツ", PROPER), "樹": ("キ", NOUN)})
+        try:
+            words = self.words("春妃(しゅんひ)夏樹(ナツキ)は")
+        finally:
+            for piece in ("春", "妃夏", "樹"):
+                del LEXICON[piece]
+        self.assertEqual(
+            [(w.surface, w.start, w.end, w.caption, w.kinds) for w in words],
+            [("春妃夏樹", 0, 4, "しゅんひなつき", ["name"])],
+        )
+
+    def test_a_reading_of_a_words_kanji_takes_in_its_okurigana(self):
+        LEXICON["噛みつい"] = ("カミツイ", NOUN)
+        try:
+            words = self.words("噛(か)みついた")
+        finally:
+            del LEXICON["噛みつい"]
+        self.assertEqual([(w.surface, w.caption) for w in words], [("噛みつい", "かみつい")])
+
+    def test_a_one_kanji_name_only_where_it_is_a_proper_noun(self):
+        # 馬 is the horse here: the stand-in tags it a common noun
+        self.assertEqual([w.kinds for w in self.words("馬", names={"馬"})], [[]])
+
+    def test_a_proper_noun_of_sudachis_is_a_name(self):
+        self.assertEqual([(w.surface, w.kinds) for w in self.words("高順")], [("高順", ["name"])])
+
+
+if __name__ == "__main__":
+    unittest.main()

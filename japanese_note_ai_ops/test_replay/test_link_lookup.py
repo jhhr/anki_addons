@@ -2,10 +2,11 @@
 by ID (async_api_ops/link_lookup.py) answering alike.
 
 The rules themselves are test/test_link_ids.py's. These pin what only Anki can say: that the
-field term finds exactly the ID it names and an escaped field name exactly its field, that
-the field names Anki reads as a search of its own are still `link_ids.SEARCH_KEYWORDS`, and
-that a lookup by search answers as the index read by SQL does, through collection_access as a
-run's worker threads read and with a collection as a sync op or a hook does.
+field term finds exactly the ID it names, an escaped field name exactly its field and an
+escaped note type name exactly its type (note_roles.search_escape), that the field names Anki
+reads as a search of its own are still `link_ids.SEARCH_KEYWORDS`, and that a lookup by search
+answers as the index read by SQL does, through collection_access as a run's worker threads
+read and with a collection as a sync op or a hook does.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from unittest import mock
 import pytest
 
 from anki_shared.testing import real_anki
-from japanese_note_ai_ops import link_ids
+from japanese_note_ai_ops import link_ids, note_roles
 from japanese_note_ai_ops.async_api_ops import link_lookup
 from japanese_note_ai_ops.note_roles import LayoutError
 
@@ -91,6 +92,17 @@ def test_the_search_terms_find_exactly_the_ids_they_name(col: Any) -> None:
     assert found(col, f'"note:Terms" {exact}') == {ids["123"]}
     # What the escaping is for
     assert decoy in found(col, '"note:Terms" "Link_ID:123"')
+
+
+def test_an_escaped_note_type_name_finds_its_type_alone(col: Any) -> None:
+    # Unescaped, "a_b" also found "axb"; an escaped colon is read as a colon
+    names = ["a_b", "axb", "re:zero", "zero", "nc:x", "Sentence: note", "star*", "back\\slash"]
+    note_ids = {}
+    for name in names:
+        real_anki.make_note_type(col, name, ["Front"])
+        note_ids[name] = real_anki.add_note(col, name, {"Front": "x"}).id
+    for name in names:
+        assert found(col, note_roles.note_type_search(name)) == {note_ids[name]}, name
 
 
 def test_the_field_names_anki_reads_as_its_own_search(col: Any) -> None:

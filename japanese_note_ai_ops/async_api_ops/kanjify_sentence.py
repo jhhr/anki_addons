@@ -11,6 +11,7 @@ from aqt.utils import showWarning
 from collections.abc import Sequence
 
 from .chain_types import ChainStep
+from .furigana_review import unchecked_furigana
 from .base_ops import (
     get_response,
     bulk_notes_op,
@@ -18,6 +19,7 @@ from .base_ops import (
     AsyncTaskProgressUpdater,
 )
 from .role_gate import notes_of_role
+from .run_errors import report_error
 from ..note_roles import SENTENCE_ROLE
 from ..utils import get_field_config
 
@@ -232,6 +234,11 @@ def kanjify_sentence_in_note(
     model = note.note_type()
     if not model:
         logger.error("Missing note type for note %s", note.id)
+        return False
+    # Kanjified, a reading "Set furigana from audio" left in doubt would be taken as said
+    unchecked = unchecked_furigana(config, note)
+    if unchecked is not None:
+        report_error(unchecked)
         return False
     try:
         furigana_sentence_field = get_field_config(config, "furigana_sentence_field", model)

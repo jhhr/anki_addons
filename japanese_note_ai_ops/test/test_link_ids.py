@@ -12,9 +12,9 @@ import threading
 import unittest
 from typing import Optional
 
-from addon_modules import load_addon_module
+from addon_modules import load_ops_module
 
-link_ids = load_addon_module("link_ids", subdir="")
+link_ids = load_ops_module("link_ids", subdir="")
 
 NOTE_ID = 1700000000000
 LIMIT = 2**53

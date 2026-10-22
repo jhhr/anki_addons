@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import itertools
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -44,6 +45,11 @@ from .text_map import TextMap
 KANJI_RE = re.compile(r"[一-龯㐀-䶿々]")
 # What a reading can't hold: kanji or digits the furigana left unread
 UNREAD_RE = re.compile(r"[一-龯㐀-䶿々0-9０-９]")
+
+
+# One Sudachi tokenizer serves the whole add-on, and the ops handle notes on several threads at
+# once: a caller of `generate`, `name_rest_word` or `sudachi_morphemes` holds this
+TOKENIZER_LOCK = threading.RLock()
 
 
 @lru_cache(maxsize=1)
@@ -152,6 +158,13 @@ def tokenize(natural: str) -> list[Morph]:
             mo.subs = [_morph(s) for s in subs]
         out.append(mo)
     return _sou_naru(_auxiliary_verbs(_split_number_counters(out)))
+
+
+def sudachi_morphemes(text: str) -> list:
+    """Sudachi's SplitMode.C morphemes of `text` as SudachiPy gives them, ungrouped: what the
+    furigana from audio check (`audio_furigana.py`) reads a line with, as its eval did."""
+    with TOKENIZER_LOCK:
+        return list(_tokenizer().tokenize(text, SplitMode.C))
 
 
 def _reads_whole(morphs: list[Morph], n: int) -> bool:

@@ -15,7 +15,11 @@ The notes are those of the configured note types whose word arrays have a word t
 them in id order, or a `--seed`ed random sample. A run matches those words, so the next run
 over the same collection picks other notes. `--model` sets every model the config names; a run
 refuses to start while any model would reach an API provider. `--set key=json` overrides a
-config value (`--set log_level='"INFO"'`).
+config value (`--set log_level='"INFO"'`). `--model` comes after `--set`, and it makes the
+arbiter's list of models (`furigana_models`) that one model too: a run with it never asks the
+arbiter of two that leaves their disagreements in review, `--set furigana_models` or not. For
+that, leave `--model` out and `--set` the model keys, `furigana_models` among them, to
+`terminal-` models.
 
 Prints the run's summary from the store at the end, as JSON on stdout; progress and errors go
 to stderr.

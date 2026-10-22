@@ -39,6 +39,8 @@ STARTUP_MODULES = [
     "translate_field",
     "word_matching_judge",
     "find_proper_nouns",
+    "transcribe_audio",
+    "set_furigana",
     "new_note_all_ops",
     "op_chain",
     "role_gate",

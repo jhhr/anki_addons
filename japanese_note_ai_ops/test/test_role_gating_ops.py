@@ -1,9 +1,10 @@
 """Every op of one role passes its notes through the role gate (async_api_ops/role_gate.py)
 before its driver gets them: the sentence ops (extract, regenerate, judge, find proper nouns,
-kanjify, translate, match, find missing ids) only sentence notes, the vocab ops (clean meaning,
-make and merge meanings, tag matched status, deduplicate meaning notes) only vocab notes. A note
-of the other role used to fail per note, or fail the match run as it planned; now the run goes
-on without it and says so once. In the one-type layout every note goes through, as before.
+kanjify, translate, set furigana, match, find missing ids) only sentence notes, the vocab ops
+(clean meaning, make and merge meanings, tag matched status, deduplicate meaning notes) only
+vocab notes. A note of the other role used to fail per note, or fail the match run as it
+planned; now the run goes on without it and says so once. In the one-type layout every note
+goes through, as before.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ SENTENCE_OPS = [
     ("find_proper_nouns", "async_api_ops", "bulk_find_proper_nouns_op", "bulk_notes_op"),
     ("kanjify_sentence", "async_api_ops", "bulk_kanjify_notes_op", "bulk_notes_op"),
     ("translate_field", "async_api_ops", "bulk_translate_notes_op", "bulk_notes_op"),
+    ("set_furigana", "async_api_ops", "bulk_set_furigana_op", "bulk_notes_op"),
     (
         "match_words_to_notes",
         "async_api_ops",
@@ -101,12 +103,14 @@ class OpsPassTheirRoleOnlyTests(unittest.TestCase):
             mock.patch.object(module, "mw"),
             mock.patch.object(gate, "report_error"),
         ]
-        # What the ops read before they start their driver: files, the name lexicon, the
-        # match op's vocab type's link IDs (refuse_duplicate_link_ids), of the notes handed on,
-        # and find_missing's every type's (link_indexes)
+        # What the ops read before they start their driver: files (set furigana's names file
+        # among them), the name lexicon, the match op's vocab type's link IDs
+        # (refuse_duplicate_link_ids), of the notes handed on, and find_missing's every type's
+        # (link_indexes)
         for name in (
             "load_meanings_dict_from_file",
             "extract_words_op",
+            "read_names_file",
             "refuse_duplicate_link_ids",
             "link_indexes",
         ):

@@ -22,7 +22,7 @@ import sys
 import time as real_time
 from pathlib import Path
 from types import ModuleType
-from typing import Callable
+from typing import Callable, Mapping
 
 ADDON_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = ADDON_ROOT.parent
@@ -258,3 +258,52 @@ async def wait_until(condition: Callable[[], bool], seconds: float = 5.0) -> boo
             return True
         await asyncio.sleep(0.01)
     return False
+
+
+class Morpheme:
+    """A stand-in for a SudachiPy morpheme: what the word array code reads of one."""
+
+    def __init__(self, surface: str, reading: str, pos: tuple, begin: int):
+        self._surface, self._reading, self._pos, self._begin = surface, reading, pos, begin
+
+    def surface(self) -> str:
+        return self._surface
+
+    def reading_form(self) -> str:
+        return self._reading
+
+    def part_of_speech(self) -> tuple:
+        return self._pos
+
+    def begin(self) -> int:
+        return self._begin
+
+    def end(self) -> int:
+        return self._begin + len(self._surface)
+
+
+def stand_in_tokenizer(
+    lexicon: Mapping[str, tuple[str, tuple]], unknown_pos: tuple
+) -> Callable[[str], list[Morpheme]]:
+    """A tokenizer that segments the few lines a test uses as Sudachi does, so the suite runs
+    without SudachiPy or its dictionaries: the longest match over `lexicon` (surface: its
+    reading and part of speech), looked up as it is then, so a test may add to it; any other
+    character is a morpheme of its own, read as itself, as Sudachi reads a kanji it does not
+    know, its part of speech `unknown_pos`."""
+
+    def tokenize(text: str) -> list[Morpheme]:
+        out, i = [], 0
+        while i < len(text):
+            for n in range(len(text) - i, 0, -1):
+                piece = text[i : i + n]
+                if piece in lexicon:
+                    reading, pos = lexicon[piece]
+                    out.append(Morpheme(piece, reading, pos, i))
+                    i += n
+                    break
+            else:
+                out.append(Morpheme(text[i], text[i], unknown_pos, i))
+                i += 1
+        return out
+
+    return tokenize

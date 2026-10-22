@@ -20,8 +20,9 @@ what each hook does is decided in `note_hooks.py`. After a sync, the words of th
 MDX dictionary entries, translate, kanji mnemonic story, kanjify a furigana sentence, extract a
 **word array** from a sentence (rule-based: SudachiPy + JMdict, one LLM call for proper nouns),
 judge which words deserve a note, match words to vocab notes or create them, give each note a
-link ID of its own, and for the two-type layout move the sentences out of the vocab notes and
-refresh their example copies.
+link ID of its own, transcribe a sentence's audio clip with a local speech recognition server
+and set its furigana from the transcripts, and for the two-type layout move the sentences out
+of the vocab notes and refresh their example copies.
 Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 
 ## Map
@@ -32,16 +33,16 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `configuration.py` | `ADDON_USER_FILES_DIR`, word tuple types, tag constants, TypedDicts, `capture_versions()` (the addon, Anki, Python and platform versions every capture run records). Importing it creates `user_files/` and imports `anki` |
 | `call_logging.py` | per-call log files in `user_files/logs/` (`logs_dir()`; a replay's go to `replay_logs/`, below), `<name>_<timestamp>.log`: `start_call_log(name)` is called with the op's `OpSpec.key` by the menu action and by each chain step that starts it (a `MenuOnlyAction` has a key too), with the op's key by the editor's field-unfocus hook, `add_note` for a note added by hand, `browser_menu` for building the context menu, `split_compound_tag` for a sweep that has something to list; a phase's file adds its name to the run's (`match_words_add_note_phase_...`, `phase_log_name`). `bulk_op_logging()`, `phase_log()`, `in_bulk_op()`. Every handler it makes gets `LOG_FORMAT` and a `CaptureContextFilter`, so each line carries the capture ids (`[r12 n1712345678901 c4567]`, `[-]` for none); `current_log_path()` is the file a capture run records |
 | `generator_resources.py` | `with_generator_resources(parent, then, chain=None)`: asks before the ~83 MB Sudachi dictionary + JMdict download, fetches via `QueryOp`; with a chain, each way of not running fails the step |
-| `op_registry.py` | `OPS`: the 24 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
+| `op_registry.py` | `OPS`: the 26 ops that run through `selected_notes_op`, in menu order, as `OpSpec(key, label, start(nids, parent, chain), needs_generator, group)`; `OP_BY_KEY`. The menu and the dialog both read it |
 | `ai_helper_menu.py` | builds the "AI helper" submenu: "Run several ops...", then `OPS` plus two `MENU_ONLY_ACTIONS` (name lexicon, kanjify export). Out of `__init__.py` so it can be tested |
 | `multi_op_dialog.py` | the multi-op dialog: `OpSelection` (Qt-free model of the chosen ops and order), `MultiOpDialog`, `show_multi_op_dialog(browser)` |
 | `split_compound_tag.py` | the `vocab::split-compound-word` sweep (see "word_array"): `tagged_compounds`, `list_compounds` (the `CollectionOp`'s body), `add_to_list` (the config write), `sweep`, the two sync hook handlers, `init_split_compound_tag()` |
 | `html_stripping.py` | aqt-free on purpose, so research scripts can import it |
 | `kana_conv.py` | local copy of AJT `kana_conv` (duplicate of the submodule's; see shared-code.md) |
-| `note_roles.py` | which configured note type plays which role (see "Sentence and vocab note types"): `is_sentence_type`/`is_vocab_type`, `vocab_type_of`/`sentence_type_of` (the type itself in the one-type layout), `layout_error` (the pre-flight message) and `LayoutError`, `role_error`/`roles_of` (what an op of a role may run on), `example_field_pairs`, `example_id_field`, `link_id_field` (`sentence_id_field`, else `new_note_id_field`), `copy_example` (a sentence note into a vocab note, every field checked before any write), `note_type_search` (the quoted, escaped `note:` term every typed search uses). Every function takes a type **name**, but `named_field(block, key)`: what a block names for a key, "" for nothing usable, which the match op and the migration read blocks with too. anki- and aqt-free |
+| `note_roles.py` | which configured note type plays which role (see "Sentence and vocab note types"): `is_sentence_type`/`is_vocab_type`, `vocab_type_of`/`sentence_type_of` (the type itself in the one-type layout), `layout_error` (the pre-flight message) and `LayoutError`, `role_error`/`roles_of` (what an op of a role may run on), `example_field_pairs`, `example_id_field`, `link_id_field` (`sentence_id_field`, else `new_note_id_field`), `configured_field`/`configured_value` (the field a type's block names for a key and a note's value of it, "" for a value that names no field, never a raise), `copy_example` (a sentence note into a vocab note, every field checked before any write), `note_type_search` (the quoted, escaped `note:` term every typed search uses), `search_escape` (the one escaping of a name a search holds: a note type's, a field's, a show's). Every function takes a type **name**, but `named_field(block, key)`: what a block names for a key, "" for nothing usable, which the match op and the migration read blocks with too. anki- and aqt-free |
 | `note_hooks.py` | what `__init__.py`'s note hooks do, decided without Anki so it can be tested: `skips_added_note(tags, op_adding)` (the add hook's first question, below), `ops_on_added_note` (the ops for a note a person added), `translates_on_unfocus`, `suspends_added_cards`; `NEW_MATCHED_TAG`, the tag on every note the match op makes, which the match op and the migration planner import. anki- and aqt-free |
 | `link_ids.py` | link IDs, what every link holds (see Invariants): `parse_link_id`, `link_id(value, note_id)`, `note_link_id` (a note in hand), `new_link_id(key, taken)` (16 digits from the key's sha1), `LinkIndex` (one type's IDs from (note id, field value) rows: `note_id(s)`, `in`, `duplicates`, `invalid`, `new_link_id`), `placeholder_holders`, `plan_id_fills`, `duplicates_error`/`DuplicateLinkIdsError`/`FILL_LINK_IDS`, `field_search` (one field's term, escaped; a field named like a search keyword, `SEARCH_KEYWORDS`, refused). anki- and aqt-free |
-| `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), `note_context(note)` names the note for errors and capture together |
+| `async_api_ops/base_ops.py` | the operation framework and provider dispatch; `get_response` records each call (see "Capture store"), and `get_transcript` each transcription, the same way; `note_context(note)` names the note for errors and capture together |
 | `async_api_ops/api_client.py` | HTTP sessions, retry, rate-limit cooldowns, per-run cancellation and pause. stdlib + `requests` only |
 | `async_api_ops/capture_store.py` | the capture store's SQLite file (`runs`, `calls`, `blobs`), its one writer thread, schema, `prune` and keys (`request_key`, `prompt_key`, `research_cache_key`). Recording methods only enqueue: `get_response` runs in hundreds of pool threads. Imports nothing of the addon's |
 | `async_api_ops/capture.py` | what the addon calls: `install`/`shutdown`, the run, note, task and call ContextVars and their scopes, `begin_run`/`end_run`, `call(...)` (one `calls` row), `note_attempt`/`note_response`/`note_outcome` for the providers, a notes run's `snapshot_note`, `event`, `reference_notes`, `note_added`, `scrub_config`, `CaptureContextFilter`. A cheap no-op until a store is installed. Imports only `capture_store`, so `api_client` and `terminal_client` can note their sends and outcomes through it |
@@ -59,6 +60,8 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `async_api_ops/role_gate.py` | `notes_of_role(config, notes, role)`: the notes an op of one role may run on, the rest left out with one `run_errors` report per note type; `notes_passing` for any other refusal. anki- and aqt-free |
 | `async_api_ops/link_lookup.py` | link IDs read from the collection: `link_index(config, T, col)` (one SQL pass over a type, a sync op's), `LinkIndexCache` (a run's indexes, one per type, read through `collection_access`), `find_note_id` (one ID: one search, field and `nid:` together, the found notes' fields read back; through `collection_access` on a run's worker threads, or the `col` it is given). A missing type or field, or one named like a search keyword: `LayoutError` |
 | `async_api_ops/<op>.py` | the operations; `match_words_to_notes.py` is about 3250 lines |
+| `async_api_ops/set_furigana.py` | "Set furigana from audio": an empty `furigana_sentence_field` written from the caption and the transcripts (`word_array/audio_furigana.py`), with the show's names (the captions' katakana readings over the show's notes, `captions.show_readings`, and `user_files/show_names.json`; the show is `<show>` of the note's tag `ep::<show>::<episode>`, `configuration.EPISODE_TAG_PREFIX`, hardcoded, and a note with none, or two shows', is read alone and reported once a run, `no_show_report`) and JMdict's readings (`jmdict_index.spelling_readings`). The words the audio leaves in review that a transcript heard something at (`furigana_arbiter.asked`) go to the config's `furigana_models`, one call a note and model (kind `furigana_arbiter.note`, its inputs naming the model, which the prompt does not, so that each model's call is a case of its own in a replay; none for a note without such words), and a reading every model gives, heard at the word, is written (`word_array/furigana_arbiter.py`); a note whose call gets no answer is left as it was, for the next run to ask again (`ARBITER_FAILED`, said once a note, not when cancelled), since a run writes only an empty field. A word still unsettled is written with the readings to choose between, `方[ほう？かた]` (`audio_furigana.doubt_furigana`), and its note tagged `furigana-review` (`configuration.FURIGANA_REVIEW_TAG`); kanjify, word extraction and the match op skip a note with the tag or with such a word, and the kanjify export leaves it out (`furigana_review.unchecked_furigana`). Notes run on the pool's threads, sharing the show's names and Sudachi's lock |
+| `async_api_ops/furigana_review.py` | `unchecked_furigana(config, note, *also)`: why a sentence note's furigana is not to be read yet, its `furigana-review` tag or a word still marked `？` (`audio_furigana.has_doubt`) in its furigana field or a field the caller reads instead; the one check kanjify, word extraction (below its skip of a note holding an array), the match op (as it plans each note, counted done), the kanjify export and "Run all ops for new notes" make. Light, so that they need nothing of set_furigana's |
 | `async_api_ops/kanjify_policy.md` | the kanjification policy, read at run time: kanjify_sentence's prompt holds it whole (see "word_array") |
 | `sync_local_ops/` | operations with no API call; `mdx_dictionary.py` (uses vendored `mdict_query`), `mdx_memo.py` (aqt-free) |
 | `sync_local_ops/refresh_example_sentences.py` | "Refresh example sentences" (two-type only): a vocab note copies its example sentence note again; a gone example is replaced by the oldest sentence note whose array links the note, else the id is emptied and the note tagged `example-sentence-missing`. Which note links what comes from one SQL pass over the sentence type's arrays, made the first time a note's example is not found and kept for the run beside the type's link index: Anki cannot index a field's contents, so the search per note it replaced read every array each time |
@@ -66,9 +69,9 @@ Bulk runs are asynchronous, parallel, memory-aware, pausable and cancellable.
 | `sync_local_ops/sentence_migration.py`, `migrate_to_sentence_notes.py` | "Move sentences to sentence notes", single-use (see "Sentence and vocab note types"): the pure planner (`plan_migration`, `preflight_error`, the report's `CASES`; anki- and aqt-free) and the op that reads every vocab and sentence note in one SQL pass each, writes the report to `user_files/sentence_migration_<timestamp>.txt` and applies the plan (`SentenceMigration`, `migrate_spec()`) |
 | `word_array/` | the generator package; **anki- and aqt-free** |
 | `word_array/research/` | dev-only scripts; excluded from the zip by `build.json` |
-| `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs, `sentence_migration_run.py` for the migration's practice run (every note of the vocab type, not `capture_run`'s notes holding an array; prints a summary naming the report). **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture or a corpus (by name from the test data checkout, below: `corpora/` holds the runs too big to replay strictly, where contending notes ask in lock order, which is timing) with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted), optionally a fixed free memory for the gate and the corpus's CopyAnywhere add definitions (`--copy-anywhere`, around the run only), and appends each run's figures, and the added notes' fields, to `user_files/benchmarks/<fixture>.jsonl` with the commit, the machine and the hash of the corpus's inputs. Each run's `work` (calls by kind, decisions, new notes, errors) is the same on any machine: `--record-work` writes it to the corpus's work.json, and every later run, on this machine or another, is checked against it (`work_as_recorded`). `--background N` adds N notes shaped like the corpus's with their Japanese moved into Hangul and their note ids and generated link IDs replaced (`replay.background_notes`): every scan and the word index pay for them as for a real collection's, no request can find one, and the run's work is the same with them (test_pipeline). A replay keeps the gate's learned per-task costs in memory (`replay.memory_estimates`), never in the user's `memory_estimates.json`: a benchmark's first run is cold, its repeats warm. `benchmark_compare.py` compares two sets of summaries of one profile and corpus by where the time went: async (planning, running the plans), collection (held seconds, turns), writes (the cleanup's, merges included) and hooks (the adds). Only `headless` installs the stub `mw`, and only over none or a stub, so the other dev modules import inside a running Anki too |
+| `dev/` | dev-only, excluded from the zip, run from the addon root like the research scripts. `headless.py` runs an op over a collection file without Anki's main window (the stub `mw`, the user's config with secrets removed and only `terminal-` models allowed, a profile folder and capture store of the caller's, Ctrl+C as Cancel); `capture_run.py` is its CLI for capture runs, `sentence_migration_run.py` for the migration's practice run (every note of the vocab type, not `capture_run`'s notes holding an array; prints a summary naming the report). **It writes to the collection it is given**: a copy, never a profile's collection while Anki has it open. `replay.py` exports a notes run as a fixture and replays it (below); `export_fixture.py` and `export_evals.py` are their CLIs; `benchmark.py` replays a fixture or a corpus (by name from the test data checkout, below: `corpora/` holds the runs too big to replay strictly, where contending notes ask in lock order, which is timing) with timed answers (the recorded latency scaled, fixed, or none), a lenient cassette (a request the capture never made gets an answer of its kind, counted), optionally a fixed free memory for the gate and the corpus's CopyAnywhere add definitions (`--copy-anywhere`, around the run only), and appends each run's figures, and the added notes' fields, to `user_files/benchmarks/<fixture>.jsonl` with the commit, the machine and the hash of the corpus's inputs. Each run's `work` (calls by kind, decisions, new notes, errors) is the same on any machine: `--record-work` writes it to the corpus's work.json, and every later run, on this machine or another, is checked against it (`work_as_recorded`). `--background N` adds N notes shaped like the corpus's with their Japanese moved into Hangul and their note ids and generated link IDs replaced (`replay.background_notes`): every scan and the word index pay for them as for a real collection's, no request can find one, and the run's work is the same with them (test_pipeline). A replay keeps the gate's learned per-task costs in memory (`replay.memory_estimates`), never in the user's `memory_estimates.json`: a benchmark's first run is cold, its repeats warm. `benchmark_compare.py` compares two sets of summaries of one profile and corpus by where the time went: async (planning, running the plans), collection (held seconds, turns), writes (the cleanup's, merges included) and hooks (the adds). `transcribe_server.py` is the local server "Transcribe sentence audio" sends clips to: kana-anime-whisper and Ruby-ASR's mora mode, pinned to the revisions the furigana audio eval measured, in an environment of its own (`transcribe_server_requirements.txt`; setup in its docstring), over HTTP on 127.0.0.1, so Anki's Python never loads PyTorch; the eval's runner loads its models through it. Only `headless` installs the stub `mw`, and only over none or a stub, so the other dev modules import inside a running Anki too |
 | `test_anki/` | the write path in a running Anki (pytest-anki2, `anki_shared/testing/running_anki.py`), in the root `testpaths`: `test_real_anki_add_path.py` runs a stand-in op that prepares one new note through `selected_notes_op` and a real `CollectionOp`, with CopyAnywhere's real `init_note_hooks()` and both configs read off disk, and pins that the add hook runs in the add phase and that the run stays one undo step, a hook writing another note under its own undo entry included, and that a hook writing `new_note_id_field` still leaves the new note holding its link ID (`base_ops.link_id_kept`, the note saved again within the run's undo step); `test_real_anki_replay.py` is opt-in (`JNAIO_REAL_ANKI_REPLAY=<fixture name or path>`, `JNAIO_REAL_ANKI_SCALE`, `JNAIO_REAL_ANKI_COPY_ANYWHERE`) and replays a fixture or corpus there (`replay.replay_in_anki`, the corpus's CopyAnywhere definitions attached by `before_run`, after the corpus is built; strict, the notes must match expected.json or expected_copy_anywhere.json), appending its figures and the added notes' fields to `user_files/benchmarks/<fixture>-real-anki.jsonl`; `test_real_anki_split_compound_tag.py` runs the `vocab::split-compound-word` sweep there: what Anki's searches find, the tags and their one undo step, the list in the config the real `AddonManager` reads, and that an older config copied back in the same hook call does not undo it. It calls the two handlers directly, because `media_sync_did_start_or_stop` still holds the handlers of main windows earlier tests closed |
-| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds), and does the same for a two-type match run (a new vocab note with its example copied, a failed add replayed in a stand-in note type); `test_migrate_to_sentence_notes.py` runs the migration in a made-up two-type collection (fields, arrays, tags, decks, suspension, one undo step, the add hook running nothing, a cancel then a rerun, the pre-flight); `test_sentence_note_ops.py` runs Refresh and Translate's copy to vocab notes; `test_meaning_group_search.py` runs the searches for a word's other meaning notes outside a match run (clean_meaning's, "Make meanings'"), with a sort field named with spaces and without; `test_link_lookup.py` pins what the link ID searches find and that the index and the lookups answer alike; `test_fill_link_ids.py` runs Fill over both types (copies, an empty field, placeholders, one undo step), after which the migration's pre-flight and find_missing pass; `test_find_missing_matched_note_ids.py` runs find_missing over link IDs; `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
+| `test_replay/` | replays in real collections, in the root `testpaths` (real_anki mode): `test_pipeline.py` captures, exports and replays a run over notes made up in the test, and benchmarks it twice (the counts, never the seconds), and does the same for a two-type match run (a new vocab note with its example copied, a failed add replayed in a stand-in note type); `test_migrate_to_sentence_notes.py` runs the migration in a made-up two-type collection (fields, arrays, tags, decks, suspension, one undo step, the add hook running nothing, a cancel then a rerun, the pre-flight); `test_sentence_note_ops.py` runs Refresh and Translate's copy to vocab notes; `test_meaning_group_search.py` runs the searches for a word's other meaning notes outside a match run (clean_meaning's, "Make meanings'"), with a sort field named with spaces and without; `test_link_lookup.py` pins what the link ID searches find and that the index and the lookups answer alike; `test_fill_link_ids.py` runs Fill over both types (copies, an empty field, placeholders, one undo step), after which the migration's pre-flight and find_missing pass; `test_find_missing_matched_note_ids.py` runs find_missing over link IDs; `test_set_furigana.py` runs Set furigana from audio with the real Sudachi and JMdict (skipped without them, as the word array tests are), its arbiter answered by a responder, and "Run all ops for new notes" over such notes; `test_furigana_review.py` runs the match op and the kanjify export over a note whose furigana awaits a check; `test_replay.py` replays every fixture in `test_replay/fixtures/` (committed) and in the test data checkout's `fixtures/` (the private repo's), each twice, and twice more with CopyAnywhere when it has expected_copy_anywhere.json. Excluded from the zip |
 | `test/` | the addon's suite, run separately (below) |
 
 ### `__init__.py` order is load-bearing
@@ -192,10 +195,14 @@ No SDKs; raw `requests` POSTs through `api_client.post_with_retry`. `get_respons
 prompt, ...)` dispatches on the model name: `terminal-` to the Claude CLI, `gemini`, `gpt` /
 `o1` / `o3` to OpenAI, `claude` / `anthropic` to Anthropic (accepts `effort`), any name
 containing `/` to Together. Keys and per-operation `*_model` names are in the addon config.
+`get_transcript(model, audio, ...)` does the same for a transcriber: `local-<model>` posts the
+clip, base64 in JSON, to the local transcription server (`dev/transcribe_server.py`) at
+`transcribe_url`; its calls are recorded and replayed like `get_response`'s, the clip by its
+file name and sha1 (kind `transcribe.audio`, `async_api_ops/transcribe_audio.py`).
 There is no configured rate; throttling reacts to `retry-after`. Concurrency is
 memory-driven, with learned per-operation costs in `user_files/memory_estimates.json`.
 Never log, print or commit an API key, and never read the user's `meta.json` to find one.
-Every `get_response` call is recorded in the capture store, below.
+Every `get_response` and `get_transcript` call is recorded in the capture store, below.
 
 ### Capture store
 
@@ -214,7 +221,7 @@ cheap no-op and nothing is recorded.
 | table | one row is |
 | --- | --- |
 | `runs` | one `notes_run` (a chain step is one run): `label` (its done text), `ops_json`, `chain_step`, `note_count`, `config_json` (keys naming an API key, token, secret or password removed), `versions_json`, `log_path`, `started`/`ended`, `outcome` (`completed`, `cancelled`, `failed`, `abandoned` for a caught `RunCancelled`), `profile` (the Anki profile's name), `notes` (1 when it recorded its notes), `dropped` (a notes run's records lost: dropped at a full queue, or a note whose record could not be built; a replay needs 0). A call made outside any run opens an *implicit* run for itself alone (`implicit` 1, labelled with its kind): the editor hooks' calls are recorded that way |
-| `calls` | one `get_response`, retries included: `run_id`, `note_id`, `task_id`/`parent_task_id`, `kind`, `inputs_json`, `request_key`, `prompt_key`, `model`, `params_json`, `prompt`, `instructions_hash`/`schema_hash`, `response_raw` (the answer text before parsing), `response_json` (what `get_response` returned), `outcome`, `error`, `started` (seconds into the run), `latency_ms`, `attempts`, `usage_json`, `extra_json` (`corrected` when the corrector made the result), `context_json` (below) |
+| `calls` | one `get_response` or `get_transcript` call, retries included: `run_id`, `note_id`, `task_id`/`parent_task_id`, `kind`, `inputs_json`, `request_key`, `prompt_key`, `model`, `params_json`, `prompt`, `instructions_hash`/`schema_hash`, `response_raw` (the answer text before parsing), `response_json` (what `get_response` returned), `outcome`, `error`, `started` (seconds into the run), `latency_ms`, `attempts`, `usage_json`, `extra_json` (`corrected` when the corrector made the result), `context_json` (below) |
 | `blobs` | instructions, response schemas and snapshotted notes, stored once by sha1 |
 | `note_snapshots` | a notes run's note at one stage, once per run, note and stage: `run_id`, `note_id` (a new note's link ID before it is added; a made-up negative id when it holds none), `stage`, `t` (seconds into the run), `mid`, `note_hash` (the blob of `capture_notes.note_record`: id, guid, mid, fields by name, tags) |
 | `events` | a notes run's other facts, in the order recorded: `run_id`, `note_id`, `task_id`, `kind`, `t`, `payload_json` |
@@ -337,7 +344,8 @@ cheap no-op and nothing is recorded.
   provider drops a parameter its model does not take (Anthropic's temperature fallback, OpenAI's
   fixed-temperature models, the claude CLI). `capture_store.research_cache_key(model, prompt)`
   is the research scripts' answer cache key (`judge_eval.prompt_key` and its siblings); no
-  column holds it.
+  column holds it. A transcription sends no prompt: its `request_key` holds the clip's name and
+  sha1, its `prompt_key` names its model only, and `dev/export_evals.py` writes it no `key`.
 - Log ids: every line of the addon's log carries `[r<run> n<note> c<call>]`, only the ids there
   are (`n` shows with capture off too), or `[-]`. Each captured call ends with
   `call <id> <kind> <outcome> <seconds>s`, the line that names its row, logged at INFO inside
@@ -611,7 +619,15 @@ is three functions"):
 - "Translate sentence" on a sentence note copies the translation into the vocab notes whose
   example it is; the editor's unfocus translation does not (it saves only its note). "Refresh
   example sentences" copies the examples again.
-- "Run all ops for new notes" gives each note its type's role's steps (`roles_of`).
+- "Run all ops for new notes" gives each note its type's role's steps (`roles_of`). Where a
+  sentence type keeps transcripts (`sentence_transcription_field`), its phases begin with
+  "Transcribe sentence audio" and "Set furigana from audio" over the sentence notes with a clip
+  and no furigana yet (`new_note_all_ops.audio_furigana_phase`,
+  `set_furigana.wants_audio_furigana`), the first naming the run's undo entry
+  (`bulk_notes_op(undo_label=...)`), the second leaving out without a word a note the first
+  left lacking a transcript (the first said why, a server down once); a note whose furigana
+  awaits a check (`furigana_review.unchecked_furigana`) then gets no kanjify or extraction,
+  reported once.
 
 **"Move sentences to sentence notes" is single-use.** It moves the one-type layout's sentences
 into sentence notes once: the user runs it after a practice run on a copy, by the steps in
@@ -742,6 +758,42 @@ subagents instead (`agent_items.py` takes and saves items, the types in the repo
 `.claude/agents/kanjify-*.md` fix model, effort and tools; `kanjify_agents/cloud_runbook.md` is
 what such a session follows), writing the same result files.
 
+The **furigana audio eval** (`furigana_audio*.py`, overview in `furigana_audio.py`'s docstring)
+is for "Set furigana from audio" (`async_api_ops/set_furigana.py`): it measures which
+transcriber or reading check gets the reading the speaker used. Its corpus is a subs2srs export
+of one show in `evals/furigana_audio/` of the test data checkout, not notes: the picking reads
+the TSV, and the picked cards' clips are copied there from the subs2srs output on the machine
+that has it (`furigana_audio_copy.py`). The export's Japanese closed captions have speaker
+labels, sound descriptions and readings of their own (`猫猫(マオマオ)`), which
+`word_array/captions.py` strips or keeps, and a line's words are `word_array/kanji_words.py`'s
+(names, numbers with their counters and runs Sudachi cut, each taken whole): the op's own
+modules, so the eval reads a line as the op will. `furigana_audio_run.py` runs one
+transcriber over the clips into `runs/` with the models and loaders of the op's transcription
+server (`dev/transcribe_server.py`, above), in an environment of its own (PyTorch,
+transformers, Ruby-ASR's package, PyAV: none of them is a dev dependency here, and the scripts
+import them only when they run); `furigana_audio_score.py` scores the runs against the readings the captions
+give and the labels by ear, through the op's own check (`word_array/reading_check.py`: the
+morae, the alignment, what a word is heard as). With `--combine` it writes what the op's rule
+would (`reading_check.decide`): the draft where the models hear it, a reading JMdict has for
+the spelling or the show has for a name where they hear that instead, review otherwise.
+`word_array/audio_furigana.py` is that rule for one caption, its transcripts in and its
+furigana out; over the eval's cards it decides every word as `--combine` does. The
+check's limits on a correction (`CORRECT`, a stretch `fit` may not shrink for one, and none
+that only a vowel's length tells from another licensed reading) each came from readings the
+runs got wrong, so a change to the check shows in the eval's numbers. `furigana_audio_label.py` gets the labels
+by ear: `queue`, where the scored runs are, picks the words the rule corrects, sends to review
+or writes on fewer than every model's hearing, and a sample of the rest; `serve` (standard
+library only, so it runs on the machine with the clips) plays each card's clip in a page on
+localhost and writes `labels.jsonl`, which the scorer then takes for the known reading. The
+page also takes the show's names (`names.jsonl`: one reading for a surface wherever it is
+written) and corrections of caption lines that are not what the clip says (`fixes.jsonl`);
+the selection's `--reword` and the scorer read both, so the queue is built again after either.
+`furigana_audio_arbiter.py` asks the arbiter's models (`word_array/furigana_arbiter.py`) about
+the words the rule leaves in review, through the op's own `get_response` (a `terminal-` model
+runs `claude -p`, so it runs in a cloud session too), caches the answers in the eval's
+`arbiter_results.jsonl` and scores each model, and the models together as the op asks them,
+against the labels.
+
 ## Tests and types
 
 - `test/` (about 70 files, `unittest.TestCase`) is **not** in the root `testpaths`. Run it from
@@ -777,7 +829,8 @@ what such a session follows), writing the same result files.
   widgets: `load_with_real_qt()` loads the dialog module a second time with an `aqt.qt` built
   from PyQt6, for that load only, then restores `sys.modules`; without PyQt6 those tests
   skip. Copy it for another dialog rather than un-stubbing the suite.
-- Capture: `test_capture_store.py` (the file, its migration, writer, prune, keys),
+- Capture: `test_capture_store.py` (the file, its migration, writer, prune, keys, and the
+  key `dev/export_evals.py` writes),
   `test_capture.py` (the API), `test_capture_calls.py` (`get_response` through each provider
   over a fake session or Popen), `test_capture_runs.py` (a real `selected_notes_op` run, and
   `notes_run` called directly as a script does), `test_capture_notes.py` (a notes run's records
@@ -790,6 +843,19 @@ what such a session follows), writing the same result files.
   batch timer, and clears `capture._quiet_until` in `setUp` (capture's warnings are rate limited
   per process).
 
+- Furigana from audio: `test_word_array_captions.py`, `test_word_array_kanji_words.py`,
+  `test_word_array_reading_check.py` and `test_word_array_audio_furigana.py` (the caption
+  cleaning, the word units, the check and the furigana written from them, on a stand-in
+  tokenizer), `test_word_array_furigana_arbiter.py` (the arbiter's inputs, answers and the
+  checks on what it writes), `test_set_furigana.py` (which notes the op writes, the arbiter's
+  calls, the review tag, the show and
+  its names), the check in `test_furigana_review.py` and its use in `test_kanjify_sentence.py`
+  and `test_extract_words.py`,
+  `test_transcribe_audio.py` (the transcription field, which transcribers
+  a note is asked for, the server check before a run), `test_capture_calls.py`'s
+  `TranscriptTests` (the request, its record without the audio, a replay answering it) and
+  `test_transcribe_server.py` (the server's HTTP side, with stand-in models, and the add-on's
+  client against it; its decoder only where PyAV is installed, the server's environment).
 - `word_array/research/test/` is in the root `testpaths` and runs with the root
   `python -m pytest`. Most research scripts are tested in `test/` instead (`test_vocab_*.py`,
   `test_kanjify_*.py`), and `vocab_morphology` in both, so a change under

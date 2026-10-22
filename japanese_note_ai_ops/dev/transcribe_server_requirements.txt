@@ -1,0 +1,11 @@
+# The environment of dev/transcribe_server.py, besides torch, which comes from PyTorch's own
+# index for the machine (see that file's docstring). The versions the furigana audio eval ran.
+transformers==4.57.6
+qwen-asr==0.0.6
+huggingface_hub==0.36.2
+librosa==1.0.0
+soundfile==0.14.0
+# Decodes the clips in the server's process. The eval decoded them with the ffmpeg command,
+# whose samples this gives on every one of its clips
+av==16.1.0
+ruby-asr @ git+https://github.com/hshi-speech/Ruby-ASR-1.7B.git@f2bca73149f94514d10c88a5ef7aaae392a16a8d
