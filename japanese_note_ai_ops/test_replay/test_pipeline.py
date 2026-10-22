@@ -441,7 +441,7 @@ def test_a_corpus_that_fails_to_build_leaves_no_directory(tmp_path, monkeypatch)
 def test_a_failed_add_s_word_is_matched_again_and_replays(tmp_path):
     # The new note's deck is missing, so its add fails. The sentence kept its placeholder once,
     # a random number every run, named in the fixture by a symbol; its link ID is taken out of
-    # the array now, as a cancel's notes' are, and the word goes back to be matched (SPEC D18)
+    # the array now, as a cancel's notes' are, and the word goes back to be matched
     # word_field and translated_sentence_field are the meaning cleaning's, which a new note needs
     note_config = {
         **FIELDS,
@@ -839,7 +839,7 @@ def test_a_run_a_replay_cannot_reproduce_is_refused(tmp_path, end, ops, refusal)
         replay.export_fixture(store, run_id)
 
 
-# --- the two-type layout (SPEC 6 P8) ---------------------------------------------------------
+# --- the two-type layout ---------------------------------------------------------------------
 #
 # The sentence type holds the sentence and its word array, in fields of names of its own. The
 # vocab type, under the name the addon hardcodes as the user's is, holds the words, a copy of
@@ -985,7 +985,7 @@ def test_a_two_type_run_makes_a_vocab_note_holding_its_example_and_links_it(
     assert [value for value in new.values() if read_word_array(value)[0] is not None] == []
     assert not any("買" in value for value in new.values())
     array = json.loads(sentence[SENTENCE_FIELDS["word_list_field"]])
-    # Linked by the link ID the note was made with and holds (SPEC D16): never its note id
+    # Linked by the link ID the note was made with and holds: never its note id
     held = int(new[fields["new_note_id_field"]])
     assert held >= 10**15 and held != new_id
     assert array[0][4][0] == held
@@ -1021,7 +1021,7 @@ def test_a_two_type_run_replays_from_a_fixture_naming_its_types_as_its_corpus_do
     [new] = [note for note in fixture.expected["notes"] if note["note"] == "new-1"]
     assert new["notetype"] == NOTETYPE
     assert new["fields"][VOCAB_FIELDS["example_sentence_id_field"]] == str(sentence["id"])
-    # Named by what the array links it by, its link ID (SPEC 10 P14); its note id nowhere
+    # Named by what the array links it by, its link ID; its note id nowhere
     assert new["fields"][VOCAB_FIELDS["new_note_id_field"]] == "new-1"
     [linking] = [note for note in fixture.expected["notes"] if note["note"] == str(sentence["id"])]
     assert linking["fields"][SENTENCE_FIELDS["word_list_field"]].count("[new-1") == 1
@@ -1104,7 +1104,7 @@ def test_a_two_type_run_that_recorded_no_vocab_note_replays_in_a_stand_in_vocab_
         assert result.differences(fixture.expected) == []
 
 
-# --- new notes' symbols (SPEC 10 P14) --------------------------------------------------------
+# --- new notes' symbols ----------------------------------------------------------------------
 # A run before link IDs made a new note under a negative placeholder, and its word arrays and its
 # own ID field held its note id once it was added; a run since holds its generated link ID from
 # the start. A fixture's `new-N` is what the arrays link the note by, so that one recorded before
@@ -1170,8 +1170,8 @@ def test_a_new_note_is_named_alike_by_a_capture_before_link_ids_and_a_replay_sin
 
 
 def test_an_array_linking_a_new_note_by_its_note_id_since_link_ids_is_a_difference():
-    # Its note id is not what the run links it by: another collection gives that to another note
-    # (SPEC D14), so it must not read as the new-1 the fixture's arrays hold
+    # Its note id is not what the run links it by: another collection gives that to another
+    # note, so it must not read as the new-1 the fixture's arrays hold
     box, box_link_id = 1_800_000_000_001, 4_000_000_000_000_001
 
     def linked_by(link: int) -> list[dict]:

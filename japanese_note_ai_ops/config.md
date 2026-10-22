@@ -147,14 +147,26 @@ linked to them are left to be matched again by the next run, and a numbering suc
 to add are left to be matched again too. The end message says how many new notes were added,
 how many were left out by the cancel and how many failed.
 
-Last, after every match run, cancelled or not, the sort field markers of the words the run
-touched are tidied: a numbering with a gap ("(m1)", "(m3)") is closed up, and a "(m1)", "(r1)",
-"(kun)" or "(on)" left on a note with nothing to tell it apart from is taken off. The numbers
-follow the order the notes were created in, so a note you add by hand to a numbered word is
-numbered after the others, and a numbering in some other order is put in that one. A note that
-failed to add, a duplicate the run dropped, or a new reading whose meaning could not be made
-leaves those behind. A note whose sort field holds any other marker, such as "(x1)", is left as
-it is.
+If the adding stops on an error instead, the run ends with that error, but first the words
+linked to the notes it did not add are left to be matched again, as after a cancel. A numbering
+they put on the word's other notes stays, though: the markers are not tidied after such an
+error (below). Undo may take such a run back only in parts: when the error was Anki refusing to
+merge a write into the run's undo step (as it does once another add-on's hook has written to
+the collection outside Anki's undo), each write the run makes after it is an undo step of its
+own. A crash or a forced close of Anki while the run adds leaves the words of the notes it did
+not add linked to notes that do not exist, and no later match run asks about them again; so
+does an error on a note whose note type has no block in the settings, for that note's words.
+Run "Find missing matched note ids" over the same notes to put such words back to be matched,
+then match them again.
+
+Last, after every match run, cancelled or not, unless an error stopped its adding, the sort
+field markers of the words the run touched are tidied: a numbering with a gap ("(m1)",
+"(m3)") is closed up, and a "(m1)", "(r1)", "(kun)" or "(on)" left on a note with nothing to
+tell it apart from is taken off. The numbers follow the order the notes were created in, so a
+note you add by hand to a numbered word is numbered after the others, and a numbering in some
+other order is put in that one. A note that failed to add, a duplicate the run dropped, or a
+new reading whose meaning could not be made leaves those behind. A note whose sort field holds
+any other marker, such as "(x1)", is left as it is.
 
 ### terminal- models (claude CLI)
 
@@ -599,8 +611,9 @@ above.
    choose "Move sentences to sentence notes" and "Use all notes from current search"
    (selecting every row of a large collection makes the browser slow), and Run. The end
    message names the report. A cancelled run keeps the sentence notes it added, with their
-   vocab notes; run it again for the rest. One Undo takes back the whole run, the suspension
-   included.
+   vocab notes, and so does a run an error stops while it adds; run it again for the rest. One
+   Undo takes back the whole run, the suspension included; after such an error, maybe only
+   part of it (see "pausing and cancelling a run").
 8. **Check.** Read the report. In the browser: `tag:sentence-needs-extract` (run "Extract
    words + Judge matchability", then "Match extracted words to notes" on them, and take the
    tag off), `tag:sentence-migration-conflict`, vocab notes with no example
@@ -614,6 +627,13 @@ above.
    its ID field holds none:
 
        "note:Sentence note" ("Sentence ID:{{trigger.Example sentence id}}" OR nid:{{trigger.Example sentence id}})
+
+   Put the Query Notes stage with that search, and the stages reading what it finds, inside a
+   Condition whose predicate is the text `{{trigger.Example sentence id}}`: text counts as true
+   when it is not empty, so a vocab note with no example is passed over. Its id field is empty
+   when the move gave it none, when "Refresh example sentences" emptied it, finding no example,
+   and when the note was added by hand. For such a note the search holds a bare `nid:`, which
+   is no search Anki can run, and CopyAnywhere stops the whole run at the first one.
 
    In its array the word is the element linked to the vocab note's link ID: the number in its
    `new_note_id_field` field, its note id while that holds none. A search on a tag the run moved

@@ -10,8 +10,9 @@ and what a vocab note copies from its example sentence note.
 
 The one-type layout, one block with both roles naming no other type, is what every config held
 before the split and stays valid; in it each helper answers as the code did before: the type
-is its own vocab type and its own sentence type, the example copy maps every sentence field onto
-itself, and there is no example id field unless the block names one.
+is its own vocab type and its own sentence type, and there is no example id field unless the
+block names one. Nothing copies an example there (the match op's one-type new note takes four
+sentence fields of its own accord); the example copy would map every sentence field onto itself.
 
 Free of anki and aqt, unlike utils.py (which imports anki for `Note`): blocks are read straight
 from the config dict and a note is anything with item access and `in`, so all of it is tested on
@@ -62,7 +63,7 @@ def _block(config: Mapping[str, Any], note_type_name: str) -> Optional[Mapping[s
     return block if isinstance(block, Mapping) else None
 
 
-def _name(block: Mapping[str, Any], key: str) -> str:
+def named_field(block: Mapping[str, Any], key: str) -> str:
     """What a block gives a key, "" when it gives nothing usable: an empty value is how a
     block leaves a key unconfigured (`get_match_fields` treats it as missing too)."""
     value = block.get(key)
@@ -71,11 +72,11 @@ def _name(block: Mapping[str, Any], key: str) -> str:
 
 def configured_field(config: Mapping[str, Any], note_type_name: str, key: str) -> str:
     """The field a note type's block names for `key`, "" when the type has no block or the
-    block gives nothing usable (`_name`). A value that names no field, such as a list in a
-    hand-edited config, leaves the key unconfigured: as a field name it raised TypeError in a
+    block gives nothing usable (`named_field`). A value that names no field, such as a list in
+    a hand-edited config, leaves the key unconfigured: as a field name it raised TypeError in a
     note's `in`, which in a check made before a run's notes failed the whole run."""
     block = _block(config, note_type_name)
-    return _name(block, key) if block is not None else ""
+    return named_field(block, key) if block is not None else ""
 
 
 def configured_value(
@@ -89,24 +90,24 @@ def configured_value(
 
 def _other(block: Mapping[str, Any], key: str, note_type_name: str) -> str:
     # A block naming itself describes the one-type layout, the same as naming nothing
-    named = _name(block, key)
+    named = named_field(block, key)
     return "" if named == note_type_name else named
 
 
 def is_sentence_type(config: Mapping[str, Any], note_type_name: str) -> bool:
     """Its notes hold sentences and their word arrays: its block names `word_list_field`."""
     block = _block(config, note_type_name)
-    return block is not None and bool(_name(block, "word_list_field"))
+    return block is not None and bool(named_field(block, "word_list_field"))
 
 
 def is_vocab_type(config: Mapping[str, Any], note_type_name: str) -> bool:
     """Its notes are the ones words are matched to: its block names `word_sort_field`."""
     block = _block(config, note_type_name)
-    return block is not None and bool(_name(block, "word_sort_field"))
+    return block is not None and bool(named_field(block, "word_sort_field"))
 
 
 def _has(note_type_name: str, block: Mapping[str, Any], key: str) -> str:
-    value = _name(block, key)
+    value = named_field(block, key)
     if value:
         return f'"{note_type_name}" has {key} "{value}"'
     return f'"{note_type_name}" has no {key}'
@@ -140,8 +141,8 @@ def _pair_error(config: Mapping[str, Any], sentence_type: str, vocab_type: str) 
     if error:
         return error
     if (
-        _name(sentence_block, "vocab_note_type") != vocab_type
-        or _name(vocab_block, "sentence_note_type") != sentence_type
+        named_field(sentence_block, "vocab_note_type") != vocab_type
+        or named_field(vocab_block, "sentence_note_type") != sentence_type
     ):
         return (
             f'The note types "{sentence_type}" (sentences) and "{vocab_type}" (vocab) must name'
@@ -152,22 +153,22 @@ def _pair_error(config: Mapping[str, Any], sentence_type: str, vocab_type: str) 
     # sentence type with word_sort_field would be a vocab type too (meanings written into
     # sentence notes), a vocab type with word_list_field a sentence type too (words extracted
     # from the old sentence field the vocab notes keep until the user deletes it)
-    if not _name(sentence_block, "word_list_field"):
+    if not named_field(sentence_block, "word_list_field"):
         return (
             f'"{sentence_type}" is the sentence note type of "{vocab_type}" but has no'
             " word_list_field in the settings."
         )
-    if _name(sentence_block, "word_sort_field"):
+    if named_field(sentence_block, "word_sort_field"):
         return (
             f'"{sentence_type}" is the sentence note type of "{vocab_type}" but has'
             f' word_sort_field in the settings: only the vocab note type "{vocab_type}" may.'
         )
-    if not _name(vocab_block, "word_sort_field"):
+    if not named_field(vocab_block, "word_sort_field"):
         return (
             f'"{vocab_type}" is the vocab note type of "{sentence_type}" but has no'
             " word_sort_field in the settings."
         )
-    if _name(vocab_block, "word_list_field"):
+    if named_field(vocab_block, "word_list_field"):
         return (
             f'"{vocab_type}" is the vocab note type of "{sentence_type}" but has'
             f' word_list_field in the settings: only the sentence note type "{sentence_type}"'
@@ -187,7 +188,7 @@ def _link_id_key_error(
     reads `new_note_id_field` by its key, and the user's CopyAnywhere definitions, take that
     one for the notes' ID. And an example field that is the type's own link ID field would
     have each copied example write over the note's ID, which the arrays link the note by."""
-    sentence_id = _name(block, "sentence_id_field")
+    sentence_id = named_field(block, "sentence_id_field")
     if sentence_id and not is_pair_sentence_type:
         return (
             f'"{note_type_name}" has sentence_id_field "{sentence_id}" in the settings, which'
@@ -195,9 +196,9 @@ def _link_id_key_error(
             " would be taken for the link ID field in place of new_note_id_field. Name the"
             " field as new_note_id_field instead."
         )
-    example = _name(block, "example_sentence_id_field")
+    example = named_field(block, "example_sentence_id_field")
     own_key = "sentence_id_field" if sentence_id else "new_note_id_field"
-    if example and example == _name(block, own_key):
+    if example and example == named_field(block, own_key):
         return (
             f'"{note_type_name}" has the field "{example}" as both its'
             f" example_sentence_id_field and its {own_key} in the settings: each example"
@@ -237,9 +238,9 @@ def layout_error(config: Mapping[str, Any], note_type_name: str) -> Optional[str
     for other_name, other_block in config.items():
         if other_name == note_type_name or not isinstance(other_block, Mapping):
             continue
-        if _name(other_block, "vocab_note_type") == note_type_name:
+        if named_field(other_block, "vocab_note_type") == note_type_name:
             pairs.append((other_name, note_type_name))
-        if _name(other_block, "sentence_note_type") == note_type_name:
+        if named_field(other_block, "sentence_note_type") == note_type_name:
             pairs.append((note_type_name, other_name))
     for sentence_type, vocab_type in dict.fromkeys(pairs):
         error = _pair_error(config, sentence_type, vocab_type)
@@ -270,8 +271,8 @@ def _partner(config: Mapping[str, Any], note_type_name: str) -> str:
         if other_name == note_type_name or not isinstance(other_block, Mapping):
             continue
         if note_type_name in (
-            _name(other_block, "vocab_note_type"),
-            _name(other_block, "sentence_note_type"),
+            named_field(other_block, "vocab_note_type"),
+            named_field(other_block, "sentence_note_type"),
         ):
             return other_name
     return ""
@@ -342,7 +343,7 @@ def _example_blocks(
     its fields onto themselves would quietly do nothing where a caller meant to fill a vocab
     note."""
     vocab_block = _checked_block(config, vocab_type_name)
-    if not _name(vocab_block, "word_sort_field"):
+    if not named_field(vocab_block, "word_sort_field"):
         raise LayoutError(
             f'Note type "{vocab_type_name}" is not a vocab note type: it has no word_sort_field'
             " in the settings."
@@ -356,8 +357,8 @@ def _field_pairs(
 ) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     for key in SENTENCE_KEYS:
-        sentence_field = _name(sentence_block, key)
-        vocab_field = _name(vocab_block, key)
+        sentence_field = named_field(sentence_block, key)
+        vocab_field = named_field(vocab_block, key)
         if sentence_field and vocab_field:
             pairs.append((sentence_field, vocab_field))
     return pairs
@@ -368,8 +369,9 @@ def example_field_pairs(config: Mapping[str, Any], vocab_type_name: str) -> list
     type's block and its sentence type's block name, in SENTENCE_KEYS' order.
 
     In the two-type layout, the few fields a vocab note keeps a copy of (translation, audio);
-    in the one-type layout, every configured sentence field onto itself, which is what the match
-    op copies into a new note from the note its word was found in.
+    in the one-type layout, every configured sentence field onto itself. No caller asks there:
+    the match op's one-type new note copies the sentence, furigana, kanjified and audio fields
+    of the processed note itself and leaves the translation and extraction fields alone.
     """
     _, sentence_block, vocab_block = _example_blocks(config, vocab_type_name)
     return _field_pairs(sentence_block, vocab_block)
@@ -380,7 +382,7 @@ def example_id_field(config: Mapping[str, Any], vocab_type_name: str) -> Optiona
     (`example_sentence_id_field`), None when the block names none: a one-type note is its own
     example and needs no link to itself."""
     _, _, vocab_block = _example_blocks(config, vocab_type_name)
-    return _name(vocab_block, "example_sentence_id_field") or None
+    return named_field(vocab_block, "example_sentence_id_field") or None
 
 
 def link_id_field(config: Mapping[str, Any], note_type_name: str) -> Optional[str]:
@@ -396,7 +398,9 @@ def link_id_field(config: Mapping[str, Any], note_type_name: str) -> Optional[st
     block = _block(config, note_type_name)
     if block is None:
         return None
-    return _name(block, "sentence_id_field") or _name(block, "new_note_id_field") or None
+    return (
+        named_field(block, "sentence_id_field") or named_field(block, "new_note_id_field") or None
+    )
 
 
 def copy_example(
@@ -411,7 +415,7 @@ def copy_example(
     field, and write `sentence_id` into the `example_id_field` when there is one.
 
     The id comes as an argument rather than off the note so that a test's note can be a dict;
-    it is the sentence note's link ID (link_ids.py, D14), its note id only while its ID field
+    it is the sentence note's link ID (link_ids.py), its note id only while its ID field
     holds none, and must be one: 0, a sentence note not added yet holding no ID, leads nowhere.
     The notes are keyword-only because both are the same shape: swapped, the copy would
     overwrite the sentence note without a word.
@@ -423,7 +427,7 @@ def copy_example(
     # Read once: the migration copies into every vocab note of the collection
     sentence_type, sentence_block, vocab_block = _example_blocks(config, vocab_type_name)
     pairs = _field_pairs(sentence_block, vocab_block)
-    id_field = _name(vocab_block, "example_sentence_id_field")
+    id_field = named_field(vocab_block, "example_sentence_id_field")
     missing_sentence = [field for field, _ in pairs if field not in sentence_note]
     if missing_sentence:
         raise LayoutError(
@@ -439,8 +443,8 @@ def copy_example(
         )
     if id_field and sentence_id <= 0:
         raise ValueError(
-            f"Example sentence id {sentence_id} is not a note id: the sentence note has to be"
-            " added before a vocab note can link it."
+            f"Example sentence id {sentence_id} is not a link ID: a sentence note not added yet"
+            " has to hold one in its link ID field before a vocab note can name it."
         )
     for sentence_field, vocab_field in pairs:
         vocab_note[vocab_field] = sentence_note[sentence_field]

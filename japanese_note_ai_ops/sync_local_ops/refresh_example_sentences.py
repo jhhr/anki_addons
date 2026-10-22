@@ -36,14 +36,13 @@ from ..async_api_ops.base_ops import (
 from ..async_api_ops.chain_types import ChainStep, fail_step
 from ..async_api_ops.link_lookup import link_index
 from ..async_api_ops.role_gate import notes_passing
-from ..link_ids import LinkIndex, field_search, link_id, parse_link_id
+from ..link_ids import LinkIndex, note_link_id, parse_link_id
 from ..note_roles import (
     VOCAB_ROLE,
     copy_example,
     example_id_field,
     layout_error,
     link_id_field,
-    note_type_search,
     role_error,
     sentence_type_of,
 )
@@ -101,8 +100,10 @@ def refresh_preflight_error(
 def _link_id_of(config: Mapping[str, Any], note: Note, note_type_name: str) -> int:
     """The link ID (link_ids.py) of a note of the collection, which links to it hold: its type's
     link ID field's ID, else its note id."""
-    field = link_id_field(config, note_type_name)
-    return link_id(note[field] if field and field in note else "", note.id)
+    held = note_link_id(note, link_id_field(config, note_type_name))
+    # None only for a note not added yet, and these are read from the collection
+    assert held is not None
+    return held
 
 
 def _example_note(id_text: str, sentence_index: LinkIndex) -> Optional[Note]:
@@ -120,18 +121,57 @@ def _example_note(id_text: str, sentence_index: LinkIndex) -> Optional[Note]:
         return None
 
 
-def _oldest_linking_note(config: dict, sentence_type: str, vocab_link_id: int) -> Optional[Note]:
-    """The sentence note of lowest id whose word array links the vocab note of this link ID,
-    sub-words included. The search's `*<id>*` also finds a longer ID holding it, so each found
-    array is read."""
+def _linking_notes(config: dict, sentence_type: str) -> dict[int, NoteId]:
+    """Per link ID, the sentence note of lowest id whose word array links it, sub-words
+    included, read in one SQL pass over the type's arrays. The decoded array decides: an ID is
+    matched whole, never as the digits inside a longer one, and an array that does not decode
+    links nothing.
+
+    One pass rather than a search per note: Anki cannot index a field's contents, so each
+    search of the arrays reads every note of the type, and a run can hold many notes that name
+    no example (after the move, every note the match op made)."""
     word_list_field = get_field_config(config, "word_list_field", {"name": sentence_type})
-    links = field_search(word_list_field, f"*{vocab_link_id}*")
-    for nid in sorted(mw.col.find_notes(f"{note_type_search(sentence_type)} {links}")):
-        note = mw.col.get_note(nid)
-        arr = decode_word_array(note[word_list_field])
-        if arr and any(matched_note_id(elem) == vocab_link_id for _, elem in iter_words(arr)):
-            return note
-    return None
+    notetype = mw.col.models.by_name(sentence_type)
+    ords = mw.col.models.field_map(notetype) if notetype is not None else {}
+    if notetype is None or word_list_field not in ords:
+        return {}
+    db = mw.col.db
+    assert db is not None
+    oldest: dict[int, NoteId] = {}
+    for nid, text in db.all(
+        "select id, field_at_index(flds, ?) from notes where mid = ? order by id",
+        ords[word_list_field][0],
+        notetype["id"],
+    ):
+        arr = decode_word_array(text)
+        for _, elem in iter_words(arr or []):
+            linked = matched_note_id(elem)
+            if linked is not None and linked not in oldest:
+                oldest[linked] = NoteId(nid)
+    return oldest
+
+
+def _oldest_linking_note(
+    config: dict,
+    sentence_type: str,
+    vocab_link_id: int,
+    linking_notes: dict[str, dict[int, NoteId]],
+) -> Optional[Note]:
+    """The sentence note of lowest id whose word array links the vocab note of this link ID,
+    None when no array links it. `linking_notes` holds the run's map of each sentence type
+    (`_linking_notes`), read the first time a note needs it: only a note whose example id field
+    names no sentence note does, so a run where every example resolves reads no array."""
+    by_link = linking_notes.get(sentence_type)
+    if by_link is None:
+        by_link = _linking_notes(config, sentence_type)
+        linking_notes[sentence_type] = by_link
+    nid = by_link.get(vocab_link_id)
+    if nid is None:
+        return None
+    try:
+        return mw.col.get_note(nid)
+    except NotFoundError:
+        return None
 
 
 def refresh_example_in_note(
@@ -141,14 +181,16 @@ def refresh_example_in_note(
     notes_to_update_dict: dict[NoteId, Note],
     *,
     sentence_indexes: dict[str, LinkIndex],
+    linking_notes: dict[str, dict[int, NoteId]],
 ) -> bool:
     """Copy the note's example sentence note into it again, finding another when it is gone;
     writes nothing to the collection. True when the note changed.
 
     Every link is by link ID (link_ids.py): the example id field names the sentence note by its
-    link ID, and that is what is written for a replacement; the arrays are searched for the
-    vocab note's. `sentence_indexes` holds the run's index of each sentence type, each read once
-    (link_lookup.link_index) the first time a note needs it."""
+    link ID, and that is what is written for a replacement; the arrays are read for the vocab
+    note's. `sentence_indexes` holds the run's index of each sentence type, each read once
+    (link_lookup.link_index) the first time a note needs it, and `linking_notes` the run's map
+    of which sentence note links what (`_linking_notes`), read the same way."""
     note_type = note.note_type()
     assert note_type is not None, "the bulk op lets through only notes of a refreshable type"
     vocab_type = note_type["name"]
@@ -161,7 +203,7 @@ def refresh_example_in_note(
         sentence_indexes[sentence_type] = sentence_index
     before = (list(note.fields), list(note.tags))
     example = _example_note(note[id_field], sentence_index) or _oldest_linking_note(
-        config, sentence_type, _link_id_of(config, note, vocab_type)
+        config, sentence_type, _link_id_of(config, note, vocab_type), linking_notes
     )
     if example is None:
         logger.info("%s: note %s has no example sentence note", LABEL, note.id)
@@ -193,13 +235,18 @@ async def bulk_refresh_examples_op(
     notes_to_update_dict: dict[NoteId, Note],
 ) -> BulkOpResult:
     config = mw.addonManager.getConfig(__name__) or {}
-    # One index per sentence type for the run: a search per note, through thousands of notes,
-    # would read every note of the type each time
+    # One index and one map of the arrays per sentence type for the run: a search per note,
+    # through thousands of notes, would read every note of the type each time
     sentence_indexes: dict[str, LinkIndex] = {}
+    linking_notes: dict[str, dict[int, NoteId]] = {}
     return await bulk_notes_op(
         MESSAGE,
         config,
-        functools.partial(refresh_example_in_note, sentence_indexes=sentence_indexes),
+        functools.partial(
+            refresh_example_in_note,
+            sentence_indexes=sentence_indexes,
+            linking_notes=linking_notes,
+        ),
         col,
         # The notes of a type it cannot refresh (a sentence type, the one-type layout's) are
         # left out, reported once per type

@@ -14,8 +14,8 @@ name: by the time the migration runs the vocab block names no sentence fields, a
 the vocab notes' old ones by the sentence block's names. Free of anki and aqt, so all of it is
 tested on hand-written arrays.
 
-Terms, as in the plan of this work: a *source* is a vocab note without `new_matched_jp_word`,
-one the user added, and the sentences that move are the sources'. A note with the tag is one the
+Terms: a *source* is a vocab note without `new_matched_jp_word`, one the user added, and the
+sentences that move are the sources'. A note with the tag is one the
 match op made, holding a copy of the sentence it was found in, and the migration leaves it
 alone: it gets no example and loses no tag, and a sentence only such notes hold gets no sentence
 note. Its link ID is still read, since the sources' arrays link it by that. A *sentence key* is
@@ -36,13 +36,15 @@ from typing import Any, Optional
 from ..html_stripping import strip_context_sentences
 from ..kana_conv import to_hiragana
 from ..link_ids import LinkIndex, link_id, parse_link_id, placeholder_holders
-from ..note_roles import SENTENCE_KEYS, is_vocab_type, layout_error, sentence_type_of
+from ..note_hooks import NEW_MATCHED_TAG
+from ..note_roles import SENTENCE_KEYS, is_vocab_type, layout_error, named_field, sentence_type_of
 from ..word_array import match_flags, match_targets, merge
 from ..word_array.match_flags import MatchState
 
-# The tags this concerns. The first three are the addon's own, spelled as the ops that set them
-# spell them (each hardcodes its own)
-MATCH_OP_TAG = "new_matched_jp_word"
+# The tags this concerns. The first three are the addon's own: the match op's from note_hooks,
+# which is free of anki as this module is, then two spelled as the ops that set them spell them
+# (each hardcodes its own, in a module that imports anki)
+MATCH_OP_TAG = NEW_MATCHED_TAG
 INVALID_ARRAY_TAG = "invalid_word_list_json"
 KANJIFY_MISMATCH_TAG = "kanjify_sentence_mismatch"
 NEEDS_EXTRACT_TAG = "sentence-needs-extract"
@@ -60,7 +62,7 @@ VOCAB_ID_KEY = "new_note_id_field"
 SENTENCE_ID_KEY = "sentence_id_field"
 # The vocab block's keys naming the word the link check compares elements with
 WORD_KEYS = ("word_kanjified_field", "word_normal_field", "word_reading_field")
-# The sentence block's lists of the user's tags (D13), read by the migration only
+# The sentence block's lists of the user's own tags (config.md), read by the migration only
 MOVE_TAGS_KEY = "migration_move_tags"
 COPY_TAGS_KEY = "migration_copy_tags"
 _EXTRACTION_KEY = "word_extraction_sentence_field"
@@ -145,7 +147,6 @@ class SentenceUpdate:
     link_id: int
     word_list: Optional[str]
     tags_to_add: list[str]
-    source_ids: list[int]
     vocab_ids: list[int]
 
 
@@ -239,7 +240,7 @@ class MigrationPlan:
     # Per note the plan changes (a vocab note above, or an existing sentence note whose array or
     # tags change) whose link ID field holds no link ID, empty or not: what the run writes there
     # along with its change, its note id. That is its link ID already (link_ids.link_id); in
-    # the field it travels with the note (D17)
+    # the field it travels with the note
     link_id_fills: dict[int, str]
     report: Report
 
@@ -547,10 +548,6 @@ class _Target:
         assert self.origin is not None
         return f"the sentence of {self.origin.id}"
 
-    @property
-    def report_id(self) -> int:
-        return self.existing.note_id if self.existing is not None else self.age_id
-
 
 def plan_migration(
     vocab_notes: Iterable[VocabRecord],
@@ -580,7 +577,8 @@ def plan_migration(
     A new sentence note gets an ID generated from its origin's (`sentence|<origin's link ID>`,
     so the same records plan the same IDs) that no sentence note holds, which its vocab notes
     then name. The op refuses to run while two notes of either type hold one ID; given such
-    records anyway, an ID names its oldest holder, as `LinkIndex` answers.
+    records anyway, an ID names the holder keeping it, as `LinkIndex` answers: the one whose own
+    note id the ID is, else the oldest.
     """
     user_tags = _UserTags(
         _tag_list(move_tags, MOVE_TAGS_KEY), _tag_list(copy_tags, COPY_TAGS_KEY)
@@ -733,7 +731,7 @@ def _combine_into(target: _Target, source: _Vocab) -> None:
         _combine_level(combined, aligned.array, events)
         # As merge_arrays checks its own result: only a bug can fail this, and the check is
         # what keeps such a bug out of the field
-        if _raw(combined) != _raw(base):
+        if merge.raw_text(combined) != merge.raw_text(base):
             raise ValueError("the combined array does not reconstruct the sentence")
     except ValueError as e:
         target.pending.append(("combine_failed", source.id, f"{e} ({target.label})"))
@@ -759,10 +757,6 @@ def _placeholders_copied(target: _Target, source: _Vocab) -> None:
     # its placeholders resolved for nothing
     for case, detail in source.placeholder_lines:
         target.pending.append((case, source.id, f"{detail} ({target.label})"))
-
-
-def _raw(arr: list) -> str:
-    return "".join(elem[0] for elem in arr)
 
 
 def _combine_level(base: list, other: list, events: list[tuple[str, str]]) -> None:
@@ -1090,7 +1084,6 @@ def _plan(
                 link_id=target.link_id,
                 word_list=word_list,
                 tags_to_add=tags_to_add,
-                source_ids=[s.id for s in target.sources],
                 vocab_ids=list(target.vocab_ids),
             )
         )
@@ -1149,7 +1142,7 @@ def _plan(
 
 def _named_fields(block: Mapping[str, Any], keys: Iterable[str]) -> list[tuple[str, str]]:
     """(key, field name) for each of `keys` the block names a field for."""
-    return [(key, block[key]) for key in keys if isinstance(block.get(key), str) and block[key]]
+    return [(key, named_field(block, key)) for key in keys if named_field(block, key)]
 
 
 def _missing(wanted: Iterable[tuple[str, str]], fields: Collection[str]) -> list[str]:

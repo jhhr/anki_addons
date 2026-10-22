@@ -163,11 +163,10 @@ class GetSentencesForNoteTests(unittest.TestCase):
     def tearDown(self):
         cm.col_find_notes, cm.col_get_notes = self.real_find, self.real_get
 
-    def sentences(self, note, exclude_self=False, cache=True):
+    def sentences(self, note, cache=True):
         return cm.get_sentences_for_note(
             CONFIG,
             note,
-            exclude_self=exclude_self,
             sentence_cache=self.cache if cache else None,
         )
 
@@ -192,30 +191,6 @@ class GetSentencesForNoteTests(unittest.TestCase):
         self.assertEqual(self.sentences(note), first)
         self.assertEqual(len(self.searches), 1)
 
-    def test_the_two_call_shapes_do_not_poison_each_other(self):
-        """`exclude_self` decides only whether this note's own sentence goes on the front.
-
-        Caching the returned value rather than the other notes' sentences would serve one
-        caller's answer to the other - and the answers differ by exactly the sentence the
-        prompt is about.
-        """
-        note = FakeNote(1, "この文", "this sentence")
-        with_self = self.sentences(note, exclude_self=False)
-        without_self = self.sentences(note, exclude_self=True)
-        self.assertEqual(with_self[0], {"jp_sentence": "この文", "en_sentence": "this sentence"})
-        self.assertEqual(without_self, with_self[1:])
-        # ...and the order does not matter either
-        other_note = FakeNote(4, "よそ", "elsewhere")
-        self.found = [2]
-        self.assertEqual(
-            self.sentences(other_note, exclude_self=True),
-            [{"jp_sentence": "にほんごの文", "en_sentence": "a Japanese sentence"}],
-        )
-        self.assertEqual(
-            self.sentences(other_note, exclude_self=False)[0],
-            {"jp_sentence": "よそ", "en_sentence": "elsewhere"},
-        )
-
     def test_the_caller_cannot_edit_what_the_cache_holds(self):
         note = FakeNote(1, "この文", "this sentence")
         self.sentences(note).append({"jp_sentence": "extra", "en_sentence": "extra"})
@@ -228,7 +203,6 @@ class GetSentencesForNoteTests(unittest.TestCase):
             self.sentences(new_note),
             [{"jp_sentence": "あたらしい", "en_sentence": "new"}],
         )
-        self.assertEqual(self.sentences(new_note, exclude_self=True), [])
         self.assertEqual(self.searches, [])
 
     def test_without_a_cache_it_scans_every_time_exactly_as_before(self):
@@ -271,6 +245,20 @@ class GetSentencesForNoteTests(unittest.TestCase):
             [s["en_sentence"] for s in sentences[1:]], ["a Japanese sentence", "another one"]
         )
 
+    def test_the_cache_holds_the_others_only_so_each_ask_gets_its_own_sentence(self):
+        """The own sentence comes from the caller or from the note it hands in, which can be the
+        run's edited copy: caching the whole answer would serve the first ask's to the next."""
+        given = {"jp_sentence": "渡された文", "en_sentence": "a given sentence"}
+        note = FakeNote(1, "この文", "this sentence")
+        first = cm.get_sentences_for_note(
+            CONFIG, note, sentence_cache=self.cache, own_sentence=given
+        )
+        edited = FakeNote(1, "直した文", "an edited sentence")
+        again = self.sentences(edited)
+        self.assertEqual(again[0], {"jp_sentence": "直した文", "en_sentence": "an edited sentence"})
+        self.assertEqual(again[1:], first[1:])
+        self.assertEqual(len(self.searches), 1)
+
 
 def array_note(note_id, arr, translation="", word="猫", reading="ねこ"):
     note = FakeNote(note_id, "猫と猫", translation)
@@ -301,11 +289,10 @@ class HighlightedSentenceTests(GetSentencesForNoteTests):
     """A note holding a word array gives its sentence with the word it links to this note in <b>,
     so a sentence using the word twice says which occurrence the meaning is for."""
 
-    def sentences(self, note, exclude_self=False, cache=True):
+    def sentences(self, note, cache=True):
         return cm.get_sentences_for_note(
             WORD_CONFIG,
             note,
-            exclude_self=exclude_self,
             sentence_cache=self.cache if cache else None,
         )
 
@@ -445,7 +432,8 @@ class NotFound(Exception):
 class TwoTypeCollection:
     """The collection behind clean_meaning's `col_find_notes` / `col_get_notes`. The search
     reads the terms the sentence searches are made of (a `"field:*text*"` term a substring, as
-    in Anki), and a fetch of an id with no note raises, as Anki's get_note does."""
+    in Anki), and a fetch of an id with no note raises, as Anki's get_note does, unless asked
+    to leave it out (`skip_gone`, as the note cache asks collection_access)."""
 
     def __init__(self, *notes: TypedNote) -> None:
         self.notes = {note.id: note for note in notes}
@@ -466,13 +454,13 @@ class TwoTypeCollection:
             and all(field in note and text in note[field] for field, text in terms)
         ]
 
-    def get_notes(self, note_ids):
+    def get_notes(self, note_ids, *, skip_gone=False):
         ids = list(note_ids)
         self.fetches.append(ids)
         missing = [nid for nid in ids if nid not in self.notes]
-        if missing:
+        if missing and not skip_gone:
             raise NotFound(missing)
-        return [self.notes[nid] for nid in ids]
+        return [self.notes[nid] for nid in ids if nid in self.notes]
 
     def find_note_id(self, config, note_type_name, held, col=None):
         """link_lookup.find_note_id: the note of the type holding the link ID, by the type's
@@ -528,10 +516,6 @@ class TwoTypeSentencesTests(unittest.TestCase):
     def test_the_search_names_the_sentence_type_and_leaves_the_example_out(self):
         self.sentences(self.vocab)
         self.assertEqual(self.col.searches, ['"note:Sentence" "s-array:*10*" -nid:20'])
-
-    def test_excluded_the_own_sentence_is_not_even_read(self):
-        self.assertEqual(self.sentences(self.vocab, exclude_self=True), [OTHER_SENTENCE])
-        self.assertEqual(self.col.fetches, [[21]])
 
     def test_a_note_naming_no_example_has_only_the_others(self):
         # Every sentence note linking it is one of the others then, its example among them

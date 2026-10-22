@@ -498,8 +498,10 @@ def make_meanings_in_note(
             logger.debug(f"word '{word_key}' already processed, skipping")
             return True
 
+        # Each field term quoted, as in clean_meaning.get_other_meaning_notes: a field's name
+        # may hold spaces, which split an unquoted term in several.
         meaning_notes_query = (
-            f"{word_sort_field}:re:m\\d+ -{word_sort_field}:re:x\\d+"
+            f'"{word_sort_field}:re:m\\d+" -"{word_sort_field}:re:x\\d+"'
             f' -nid:{note.id} "{word_reading_field}:{note[word_reading_field]}"'
             f' ("{word_normal_field}:{note[word_normal_field]}" OR'
             f' "{word_field}:{note[word_field]}")'

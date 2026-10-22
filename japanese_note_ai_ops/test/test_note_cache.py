@@ -2,7 +2,8 @@
 
 Anki's `get_note` raises `NotFoundError` for such an id, and a batch fetched in one turn raises
 with it, which the cache passed through while saying it did not: a match run rating a word
-linked to a note deleted since then failed there instead of leaving the word unrated.
+linked to a note deleted since then failed there instead of leaving the word unrated. The cache
+asks collection_access to leave such an id out of the turn (`skip_gone`).
 """
 
 import asyncio
@@ -33,29 +34,29 @@ class FakeNote:
 
 
 class Collection:
-    """The fetch seam of note_cache: a batch holding an id with no note raises, as get_note
-    does for that id, and fails the whole batch with it."""
+    """The fetch seam of note_cache (collection_access): a batch holding an id with no note
+    raises, as get_note does for that id, and fails the whole batch with it, unless asked to
+    leave such an id out of the batch (`skip_gone`)."""
 
     def __init__(self, *notes: FakeNote) -> None:
         self.notes = {note.id: note for note in notes}
         self.fetches: "list[list[int]]" = []
 
-    def get_notes(self, ids) -> list:
+    def get_notes(self, ids, *, skip_gone=False) -> list:
         ids = list(ids)
         self.fetches.append(ids)
-        if any(nid not in self.notes for nid in ids):
+        if not skip_gone and any(nid not in self.notes for nid in ids):
             raise NotFound(ids)
-        return [self.notes[nid] for nid in ids]
+        return [self.notes[nid] for nid in ids if nid in self.notes]
 
-    async def get_notes_async(self, ids) -> list:
-        return self.get_notes(ids)
+    async def get_notes_async(self, ids, *, skip_gone=False) -> list:
+        return self.get_notes(ids, skip_gone=skip_gone)
 
 
 class CacheTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.collection = Collection(FakeNote(1), FakeNote(2))
         for patch in (
-            mock.patch.object(nc, "NotFoundError", NotFound),
             mock.patch.object(nc, "get_notes", self.collection.get_notes),
             mock.patch.object(nc, "get_notes_async", self.collection.get_notes_async),
         ):
@@ -69,14 +70,14 @@ class GoneNoteTests(CacheTestCase):
         found = asyncio.run(self.cache.get_notes([1, 99, 2]))
 
         self.assertEqual(sorted(found), [1, 2])
-        # The batch, then each alone once it raised
-        self.assertEqual(self.collection.fetches, [[1, 99, 2], [1], [99], [2]])
+        # One turn, the gone one left out of it
+        self.assertEqual(self.collection.fetches, [[1, 99, 2]])
 
     def test_the_blocking_fetch_leaves_it_out_the_same(self):
         found = self.cache.get_notes_blocking([1, 99, 2])
 
         self.assertEqual(sorted(found), [1, 2])
-        self.assertEqual(self.collection.fetches, [[1, 99, 2], [1], [99], [2]])
+        self.assertEqual(self.collection.fetches, [[1, 99, 2]])
 
     def test_the_notes_found_are_cached_and_the_gone_one_asked_for_again(self):
         asyncio.run(self.cache.get_notes([1, 99]))

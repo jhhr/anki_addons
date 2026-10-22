@@ -46,7 +46,7 @@ class LookupTestCase(unittest.TestCase):
         self.fetched: "list[list[int]]" = []
         self.real_get_notes = nc.get_notes_async
 
-        async def fake_get_notes_async(note_ids):
+        async def fake_get_notes_async(note_ids, *, skip_gone=False):
             ids = list(note_ids)
             self.fetched.append(ids)
             return [FakeNote(note_id) for note_id in ids]
@@ -331,8 +331,8 @@ TWO_TYPE = {
 class WordArraySearchTests(unittest.TestCase):
     """The other way round: from a selected vocab note to the arrays holding its word, which
     the single-word rematch and the matched-status tags search. They are its sentence type's
-    notes, searched by that type's array field (SPEC 6 P4); a vocab note's old array field of
-    the same name is not one of them."""
+    notes, searched by that type's array field; a vocab note's old array field of the same name
+    is not one of them."""
 
     def setUp(self):
         self.queries: "list[str]" = []

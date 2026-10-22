@@ -1,6 +1,6 @@
-"""What the note hooks in `__init__.py` do (note_hooks.py): which ops an added note gets, which
-notes translate on leaving their translation field, which added notes have their cards
-suspended.
+"""What the note hooks in `__init__.py` do (note_hooks.py): which added notes the add hook skips
+and which ops the others get, which notes translate on leaving their translation field, which
+added notes have their cards suspended.
 
 `__init__.py` cannot be imported by a test, so its hooks keep only the reading of the note and
 the config; these are the decisions they take from them. The one-type layout must answer as the
@@ -11,9 +11,10 @@ cleanup's adding) is tested in a real collection, test_replay/test_migrate_to_se
 
 from __future__ import annotations
 
+import ast
 import unittest
 
-from addon_modules import load_ops_module
+from addon_modules import ADDON_ROOT, load_ops_module
 
 hooks = load_ops_module("note_hooks", subdir="")
 
@@ -61,7 +62,43 @@ def broken_config() -> dict:
 
 
 def added(config, name, tags=(), op_adding=False):
-    return hooks.ops_on_added_note(config, name, list(tags), op_adding=op_adding)
+    """What the add hook runs: nothing on a note it skips, else the note's ops."""
+    if hooks.skips_added_note(list(tags), op_adding):
+        return ()
+    return hooks.ops_on_added_note(config, name)
+
+
+class SkippedNoteTests(unittest.TestCase):
+    """The add hook's first question, answered from the tags and a thread-local only."""
+
+    def test_a_note_the_match_op_made_is_skipped_in_any_case(self):
+        for tag in ("new_matched_jp_word", "New_Matched_JP_Word", "NEW_MATCHED_JP_WORD"):
+            with self.subTest(tag=tag):
+                self.assertTrue(hooks.skips_added_note(["other", tag], False))
+
+    def test_a_note_an_op_adds_is_skipped_untagged(self):
+        self.assertTrue(hooks.skips_added_note([], True))
+
+    def test_a_note_a_person_adds_is_not(self):
+        # The tag itself, as Anki's has_tag compares: not a longer tag holding it, nor its child
+        for tags in ([], ["other"], ["new_matched_jp_word_2"], ["new_matched_jp_word::x"]):
+            with self.subTest(tags=tags):
+                self.assertFalse(hooks.skips_added_note(tags, False))
+
+    def test_the_add_hook_asks_it_before_anything_else(self):
+        """Read off the source, as `__init__.py` cannot be imported by a test: a note an op
+        adds must be answered before the hook opens a log file or reads the note type or the
+        config, which on a bulk add once cost minutes (the hook's comment)."""
+        tree = ast.parse((ADDON_ROOT / "__init__.py").read_text(encoding="utf-8"))
+        hook = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "run_op_on_add_note"
+        )
+        self.assertEqual(
+            ast.unparse(hook.body[0]).splitlines(),
+            ["if skips_added_note(note.tags, in_bulk_op()):", "    return"],
+        )
 
 
 class AddedNoteTests(unittest.TestCase):
@@ -77,7 +114,7 @@ class AddedNoteTests(unittest.TestCase):
         self.assertEqual(added(two_type_config(), SENTENCE), (hooks.EXTRACT_WORDS,))
 
     def test_two_type_a_vocab_note_gets_nothing(self):
-        # Vocab notes come from the match op only (D3); one added by hand is not cleaned either
+        # Vocab notes come from the match op only; one added by hand is not cleaned either
         self.assertEqual(added(two_type_config(), VOCAB), ())
         self.assertEqual(added(two_type_config(), "Kanji draw"), ())
 

@@ -433,6 +433,7 @@ SEARCH_KEYWORDS = frozenset(
     }
 )
 
+
 def field_search(field_name: str, text: str) -> str:
     """`"<field>:<text>"`, a search term for the notes whose field `field_name` matches `text`.
 
@@ -449,21 +450,3 @@ def field_search(field_name: str, text: str) -> str:
             " search of its own."
         )
     return '"' + search_escape(field_name) + ":" + text + '"'
-
-
-def link_ids_search(field_name: str, link_ids: Iterable[int]) -> str:
-    """A search term for the notes whose field holds one of these link IDs, exactly:
-    `"<field>:re:^(?:1|2)$"`.
-
-    Anchored, since a regex matches anywhere in the field (`re:123` also finds 91234); a regex,
-    since it is the one way to look for several values in one search. It finds the IDs held in
-    the field only: a note whose field holds none holds its note id, which `nid:` finds.
-    """
-    ids = sorted(set(link_ids))
-    if not ids:
-        # `^(?:)$` would find every note whose field is empty
-        raise ValueError("No link IDs to search for")
-    not_ids = [number for number in ids if not is_link_id(number)]
-    if not_ids:
-        raise ValueError(f"Not link IDs: {not_ids}")
-    return field_search(field_name, "re:^(?:" + "|".join(str(number) for number in ids) + ")$")

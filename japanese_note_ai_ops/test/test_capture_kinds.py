@@ -704,9 +704,9 @@ class SentenceNoteCache:
 
 
 class TwoTypeExampleSentenceTests(MatchHarness):
-    """A word's notes' example sentences in the main prompt, in the two-type layout (SPEC 6
-    P6): each from the note's example sentence note, made from that note's array with the
-    note's own word in <b> as a one-type note's is made from its own array; "" without one."""
+    """A word's notes' example sentences in the main prompt, in the two-type layout: each from
+    the note's example sentence note, made from that note's array with the note's own word in
+    <b> as a one-type note's is made from its own array; "" without one."""
 
     def setUp(self) -> None:
         super().setUp()

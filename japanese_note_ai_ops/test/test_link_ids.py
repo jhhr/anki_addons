@@ -287,7 +287,7 @@ class LinkIndexTests(unittest.TestCase):
 
 class IndexNewLinkIdTests(unittest.TestCase):
     """The IDs a run hands its new notes, from its index of their type: none a note held when
-    the index was read, none handed out twice (SPEC 10, "Uniqueness")."""
+    the index was read, none handed out twice."""
 
     def test_a_free_key_gets_its_plain_id(self):
         index = link_ids.LinkIndex.from_rows([(A, "")])
@@ -405,7 +405,7 @@ def as_written(rows: list, plan) -> list:
 
 
 class PlanIdFillsTests(unittest.TestCase):
-    """What Fill link IDs writes into one type's link ID fields (SPEC D17)."""
+    """What Fill link IDs writes into one type's link ID fields."""
 
     def test_a_field_holding_no_id_gets_the_note_id_and_one_holding_an_id_of_its_own_nothing(self):
         rows = [(A, ""), (B, "0"), (C, "-1700000000123"), (D, str(GENERATED)), (E, str(E))]
@@ -533,29 +533,6 @@ class FieldSearchTests(unittest.TestCase):
         for name in ["id", "nids", "Note ID", "tags", "word"]:
             with self.subTest(name):
                 self.assertEqual(link_ids.field_search(name, "1"), f'"{name}:1"')
-
-
-class LinkIdsSearchTests(unittest.TestCase):
-    def test_an_anchored_regex_of_the_ids_in_order(self):
-        self.assertEqual(
-            link_ids.link_ids_search("Word ID", [GENERATED, A, A]),
-            f'"Word ID:re:^(?:{A}|{GENERATED})$"',
-        )
-
-    def test_one_id(self):
-        self.assertEqual(link_ids.link_ids_search("ID", [7]), '"ID:re:^(?:7)$"')
-
-    def test_the_field_name_is_escaped(self):
-        self.assertEqual(link_ids.link_ids_search("a_b", [7]), '"a\\_b:re:^(?:7)$"')
-
-    def test_no_ids_raise_rather_than_find_every_empty_field(self):
-        with self.assertRaises(ValueError):
-            link_ids.link_ids_search("ID", [])
-
-    def test_numbers_no_note_can_hold_raise(self):
-        for numbers in ([0], [-5, 7], [LIMIT]):
-            with self.subTest(numbers), self.assertRaises(ValueError):
-                link_ids.link_ids_search("ID", numbers)
 
 
 if __name__ == "__main__":

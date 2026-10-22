@@ -50,7 +50,7 @@ from aqt.utils import tooltip
 
 from .call_logging import start_call_log
 from .configuration import REGENERATE_TAG
-from .link_ids import field_search, link_id
+from .link_ids import field_search, note_link_id
 from .note_roles import LayoutError, link_id_field, note_type_search, sentence_type_of
 from .word_array import generator
 from .word_array.match_flags import (
@@ -135,8 +135,9 @@ def tagged_compounds(col: Collection, config: dict) -> list[Compound]:
         if not word or not list_field:
             logger.warning("nid:%s is tagged, but has no word or no word array field", note_id)
             continue
-        id_field = link_id_field(config, name)
-        held = link_id(note[id_field] if id_field and id_field in note else "", note.id)
+        held = note_link_id(note, link_id_field(config, name))
+        # None only for a note not added yet, which no search finds
+        assert held is not None
         compounds.append(Compound(held, word, arrays_type, list_field))
     return compounds
 

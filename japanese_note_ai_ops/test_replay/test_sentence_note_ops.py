@@ -5,8 +5,8 @@ NotesRunSpec as a script runs it.
 
 The vocab notes keep a copy of their example sentence note's translation and audio, and its id
 (note_roles.copy_example). The refresh copies it again, finds another example for a note whose
-example is gone (the oldest sentence note whose array links it: a search for `*<id>*` also
-finds a longer id holding the digits, so the array is read), and tags a note with none.
+example is gone (the oldest sentence note whose array links it, from the arrays read once per
+run: a longer id holding the digits is no link), and tags a note with none.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import replay
 from anki_shared.testing import real_anki
 from japanese_note_ai_ops.async_api_ops import base_ops, run_errors
 from japanese_note_ai_ops.async_api_ops.translate_field import bulk_translate_notes_op
+from japanese_note_ai_ops.sync_local_ops import refresh_example_sentences
 from japanese_note_ai_ops.sync_local_ops.refresh_example_sentences import (
     MISSING_TAG,
     refresh_preflight_error,
@@ -205,7 +206,7 @@ def test_a_vocab_note_copies_its_example_again(col):
 
 def test_a_gone_example_is_replaced_by_the_oldest_sentence_note_linking_the_note(col):
     dog = vocab(col, "犬")
-    # Oldest, and found by `*<id>*`, but what it links is a longer id holding dog's digits
+    # Oldest, and its array holds dog's digits, but inside a longer id, which is no link to dog
     longer = sentence(col, "犬小屋。", [word("犬小屋", "犬小屋", [dog.id * 10 + 7])], "Kennel.")
     # A sub-word's link counts: the oldest that really links the note
     linking = sentence(
@@ -270,6 +271,39 @@ def test_a_gone_example_is_replaced_by_the_oldest_sentence_note_linking_the_note
     # Named by its own link ID, not its note id
     assert fields(col, dog.id)["Example sentence id"] == str(OTHER_SENTENCE_LINK_ID)
     assert fields(col, dog.id)["Example translation"] == "The dog runs."
+
+
+def test_a_run_reads_the_sentence_arrays_once_for_every_note_without_an_example(
+    col, monkeypatch
+):
+    # After the move every note the match op made names no example; one search per note read
+    # every sentence note's array each time
+    dog, cat, bird = vocab(col, "犬"), vocab(col, "猫"), vocab(col, "鳥")
+    sentence(col, "犬小屋。", [word("犬小屋", "犬小屋", [dog.id * 10 + 7])])
+    both = sentence(
+        col, "犬と猫。", [word("犬", "犬", [dog.id]), word("猫", "猫", [cat.id])], "Dog and cat."
+    )
+    sentence(col, "猫だ。", [word("猫", "猫", [cat.id])], "A cat.")
+    reads: list = []
+    real = refresh_example_sentences._linking_notes
+
+    def counted(config, sentence_type):
+        reads.append(sentence_type)
+        return real(config, sentence_type)
+
+    monkeypatch.setattr(refresh_example_sentences, "_linking_notes", counted)
+
+    refresh(col, [dog.id, cat.id, bird.id])
+
+    assert reads == [SENTENCE]
+    assert fields(col, dog.id)["Example sentence id"] == str(both.id)
+    assert fields(col, cat.id)["Example sentence id"] == str(both.id)
+    assert fields(col, cat.id)["Example translation"] == "Dog and cat."
+    assert col.get_note(bird.id).has_tag(MISSING_TAG)
+    # A run whose notes all name an example reads no array
+    reads.clear()
+    refresh(col, [dog.id, cat.id])
+    assert reads == []
 
 
 def test_a_note_no_sentence_links_is_cleared_and_tagged(col):
