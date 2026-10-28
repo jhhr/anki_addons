@@ -98,6 +98,13 @@ out; name it anything else and it ships unless `exclude` lists it. An addon that
 `ADDON_README.md` ships that as its user guide and leaves its `README.md`, then the
 developers' one, out.
 
+Anki installs a zip from a file into `addons21/<package>`, the manifest's `package`; from
+AnkiWeb it uses the add-on's id instead. `dist --local-names` writes the same zips into
+`dist/local/` with `package` set to this device's folder from `build.local.json`, for one's own
+devices that have no clone. Installed there, an addon lands in the folder it has here, which
+is the name Addon Config Sync files its config under. Those zips carry one device's folder
+names and are not for publishing.
+
 ## Tests without Anki
 
 An addon module cannot be imported unless `anki` and `aqt` resolve and `aqt.mw` answers at

@@ -38,6 +38,11 @@ next to this file) overrides it:
 
 Both keys are optional. `addons_dir` ranks below --addons-dir and ANKI_ADDONS_DIR.
 
+`dist --local-names` packages each addon under that same folder name instead of its
+`package`, into dist/local/. Installed from the file on a device that has no clone, the
+addon then lands in the folder this one uses, which is the name Addon Config Sync files its
+config under.
+
 Stdlib only. Windows uses directory junctions, which need no admin rights.
 """
 
@@ -58,6 +63,9 @@ from typing import Optional
 ROOT = Path(__file__).resolve().parent
 SHARED_ROOT = ROOT / "anki_shared"
 DIST_DIR = ROOT / "dist"
+# `dist --local-names` output. Kept apart from the release zips because these carry one
+# device's folder names, and a copy installed from one by anybody else would land in them.
+LOCAL_DIST_DIR = DIST_DIR / "local"
 # Per-device preferences; see the module docstring. Never committed.
 LOCAL_CONFIG = ROOT / "build.local.json"
 
@@ -802,12 +810,16 @@ def package_entries(addon: Addon) -> list[tuple[Path, str]]:
     return entries
 
 
-def cmd_dist(addons: list[Addon]) -> None:
-    DIST_DIR.mkdir(exist_ok=True)
+def cmd_dist(addons: list[Addon], local_names: bool = False) -> None:
+    out_dir = LOCAL_DIST_DIR if local_names else DIST_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     for addon in addons:
-        out = DIST_DIR / f"{addon.path.name}-{addon.version}.ankiaddon"
+        out = out_dir / f"{addon.path.name}-{addon.version}.ankiaddon"
+        # Anki installs a file into addons21/<package>, so this is the whole of --local-names.
+        # (From AnkiWeb it installs into the add-on's id whatever the manifest says.)
+        package = addon.dev_dir_name if local_names else addon.package
         manifest = {
-            "package": addon.package,
+            "package": package,
             "name": addon.name,
             "human_version": addon.version,
         }
@@ -824,7 +836,8 @@ def cmd_dist(addons: list[Addon]) -> None:
                 z.writestr("shared/__init__.py", "")
 
         size_mb = out.stat().st_size / 1e6
-        print(f"{out.name}: {len(entries)} files, {size_mb:.1f} MB")
+        installs_as = f", installs as addons21/{package}" if local_names else ""
+        print(f"{out.name}: {len(entries)} files, {size_mb:.1f} MB{installs_as}")
         if size_mb > 25:
             print("  ! large - check AnkiWeb's current upload limit before uploading")
 
@@ -890,7 +903,14 @@ def main() -> int:
     ap.add_argument("command", choices=["link", "install", "vendor", "dist", "check"])
     ap.add_argument("addons", nargs="*", help="addon dir names; default all")
     ap.add_argument("--addons-dir", type=Path, default=None)
+    ap.add_argument(
+        "--local-names",
+        action="store_true",
+        help="dist: package each addon under its build.local.json folder name, into dist/local",
+    )
     args = ap.parse_args()
+    if args.local_names and args.command != "dist":
+        ap.error("--local-names only applies to dist")
 
     guard_repo_root()
     addons = discover(args.addons)
@@ -903,7 +923,7 @@ def main() -> int:
     elif args.command == "dist":
         if cmd_check(addons):
             return 1
-        cmd_dist(addons)
+        cmd_dist(addons, local_names=args.local_names)
     elif args.command == "check":
         return cmd_check(addons)
     return 0

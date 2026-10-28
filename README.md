@@ -51,6 +51,7 @@ gitignored and both keys are optional:
 | `python build.py link [addon...]` | just the `shared/` links |
 | `python build.py check` | fail if an addon imports a shared package it did not declare |
 | `python build.py dist [addon...]` | write `dist/<addon>-<version>.ankiaddon` |
+| `python build.py dist --local-names [addon...]` | the same into `dist/local/`, for your own devices without a clone: each zip installs into the folder `build.local.json` names, so configs synced by Addon Config Sync match |
 
 An addon's `README.md` is for whoever works on it. When the addon also has an
 `ADDON_README.md`, that is the user guide, and `dist` ships it in place of `README.md`.

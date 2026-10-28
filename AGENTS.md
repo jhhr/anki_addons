@@ -127,6 +127,7 @@ cloud environment itself has to provide is in
 | `python build.py install [addon...]` | `link` plus a junction per addon in `addons21`; Anki closed |
 | `python build.py vendor [addon...]` | rebuild `<addon>/lib` from `requirements.txt` for all platforms; needs `uv` |
 | `python build.py dist [addon...]` | `check`, then write `dist/<addon>-<version>.ankiaddon` |
+| `python build.py dist --local-names [addon...]` | the same into `dist/local/`, each zip installing into the folder `build.local.json` names |
 
 Dev dependencies install in two steps because `pytest-anki2` must go in with `--no-deps`;
 see the README. Tests under `anki_shared/jp_text_processing` are run from that directory
