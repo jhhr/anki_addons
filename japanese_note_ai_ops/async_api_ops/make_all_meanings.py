@@ -23,6 +23,7 @@ from ..configuration import (
     MakeMeaningsResult,
     WordAndSentences,
 )
+from ..note_roles import VOCAB_ROLE
 from ..sync_local_ops.mdx_dictionary import MDXLookupError, mdx_helper
 from ..utils import get_field_config
 from . import capture_notes
@@ -32,6 +33,7 @@ from .collection_access import (
     get_notes as col_get_notes,
 )
 from .diagnostics import StageTimer, log_stage
+from .role_gate import notes_of_role
 from .chain_types import ChainStep
 from .base_ops import (
     AsyncTaskProgressUpdater,
@@ -496,8 +498,10 @@ def make_meanings_in_note(
             logger.debug(f"word '{word_key}' already processed, skipping")
             return True
 
+        # Each field term quoted, as in clean_meaning.get_other_meaning_notes: a field's name
+        # may hold spaces, which split an unquoted term in several.
         meaning_notes_query = (
-            f"{word_sort_field}:re:m\\d+ -{word_sort_field}:re:x\\d+"
+            f'"{word_sort_field}:re:m\\d+" -"{word_sort_field}:re:x\\d+"'
             f' -nid:{note.id} "{word_reading_field}:{note[word_reading_field]}"'
             f' ("{word_normal_field}:{note[word_normal_field]}" OR'
             f' "{word_field}:{note[word_field]}")'
@@ -640,7 +644,7 @@ def bulk_make_meanings_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, VOCAB_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,
@@ -695,7 +699,7 @@ def bulk_merge_meanings_op(
         config,
         op,
         col,
-        notes,
+        notes_of_role(config, notes, VOCAB_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict=notes_to_add_dict,

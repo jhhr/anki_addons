@@ -16,6 +16,8 @@ from ..async_api_ops.base_ops import (
 )
 from ..async_api_ops.clean_meaning import get_other_meaning_notes
 from ..async_api_ops.match_words_to_notes import deduplicate_notes_list
+from ..async_api_ops.role_gate import notes_of_role
+from ..note_roles import VOCAB_ROLE
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +89,7 @@ def bulk_deduplicate_existing_meaning_notes_op(
         config,
         deduplicate_existing_meaning_notes_for_note,
         col,
-        notes,
+        notes_of_role(config, notes, VOCAB_ROLE),
         edited_nids,
         progress_updater,
         notes_to_add_dict,
