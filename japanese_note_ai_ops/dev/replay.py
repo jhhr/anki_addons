@@ -3,17 +3,18 @@
 A fixture is what a replay of one capture run needs, as three JSON files a person can review:
 
 - corpus.json: the collection as the run found it, cut down to the notes it read, with their
-  note types and decks; the config it ran with; the generated meanings it read; the dictionary
-  lookups it made. Note ids are synthetic, in every field that holds one. With CopyAnywhere's
-  config (`copy_anywhere`), also what its add definitions read that the run did not: the notes
-  their searches find, from the collection the run ran against, and the media files they open
-  (`media`) (`export_with_copy_anywhere`).
+  note types and decks (and a stand-in for a type its config pairs with one of those and the
+  run read no note of, `_stand_in_notetypes`); the config it ran with; the generated meanings
+  it read; the dictionary lookups it made. Note ids are synthetic, in every field that holds
+  one. With CopyAnywhere's config (`copy_anywhere`), also what its add definitions read that
+  the run did not: the notes their searches find, from the collection the run ran against, and
+  the media files they open (`media`) (`export_with_copy_anywhere`).
 - cassette.json: every AI call's answer, by its request key (capture_store.request_key: the
   call's kind and the values its prompt was built from, so a reworded prompt still finds it),
   in the order the run received them.
 - expected.json: the notes as the run left them, normalized (`normalized_notes`): the ids a
-  replay cannot know, the new notes' and their placeholders' and the placeholders a failed add
-  leaves in the word arrays, replaced by symbols. The file
+  replay cannot know, the new notes' note ids and link IDs (placeholders, in a fixture recorded
+  before link IDs) and those of the notes whose add failed, replaced by symbols. The file
   holds only the notes the run added or changed, and the keys of those it removed; a note it
   holds no entry for is as the corpus has it (`Fixture.read` puts the whole list together).
 
@@ -92,6 +93,11 @@ SYNTHETIC_UNKNOWN_BASE = 1_500_000_000_000
 # A note id in a field: 13 digits standing alone. Anki's ids are milliseconds since 1970, 13
 # digits from 2001 to 2286
 ID_RE = re.compile(r"(?<![\d.])(\d{13})(?![\d.])")
+# A link ID the addon generated (link_ids.new_link_id) in a field: 16 digits standing alone, all
+# of [10^15, 2^53) being 16 digits long. Keyed by the link ID of the note it was made from, its
+# note id while its field is empty, which a corpus makes synthetic: a note a replay makes can get
+# another ID than the note its capture run made
+GENERATED_ID_RE = re.compile(r"(?<![\d.])(\d{16})(?![\d.])")
 # Note types the addon's code names, which a fixture keeps: renaming one would change what runs
 HARDCODED_NOTETYPES = frozenset({"Japanese vocab note", "Kanji draw"})
 # The config key naming the deck new notes go into, in a note type's config
@@ -103,6 +109,14 @@ MATCH_OP = "bulk_match_words_to_notes"
 # which name their decks, tags and note types
 PRIVATE_CONFIG_KEYS = frozenset({"claude_cli_path"})
 PRIVATE_CONFIG_SUFFIX = "_query"
+# A note type block's values a replay never reads that name things of one person's: the user's
+# own tags the sentence migration carries (sentence_migration's MOVE_TAGS_KEY, COPY_TAGS_KEY)
+PRIVATE_BLOCK_KEYS = frozenset({"migration_move_tags", "migration_copy_tags"})
+# The keys by which a note type's block names the other type of its two-type layout
+# (note_roles): a sentence type's names its vocab type, a vocab type's its sentence type
+PARTNER_TYPE_KEYS = ("vocab_note_type", "sentence_note_type")
+# What a note type of the user's is called in a fixture, numbered
+GENERIC_NOTETYPE = "Note type"
 # CopyAnywhere's key for its definitions, in its addon config
 COPY_DEFINITIONS_KEY = "copy_definitions"
 # Where a replay's logs go: this folder beside each addon's own `logs`, in its user_files. A
@@ -394,7 +408,7 @@ def export_fixture(
     type_names = _names(
         [notetypes[mid]["name"] for mid in run_mids]
         + [notetypes[mid]["name"] for mid in sorted(notetypes) if mid not in run_mids],
-        "Note type",
+        GENERIC_NOTETYPE,
         HARDCODED_NOTETYPES,
     )
     run_types = {notetypes[mid]["name"] for mid in run_mids}
@@ -450,6 +464,19 @@ def export_fixture(
         )
     expected_notes = normalized_notes(after, new_ids, ids=ids, failed=failed)
 
+    corpus_config = _renamed_config(config, type_names, decks, run_types)
+    corpus_notetypes = [
+        {
+            "name": type_names[info["name"]],
+            "fields": info["fields"],
+            "sort_field": info["sort_field"],
+            "templates": info["templates"],
+        }
+        for _, info in sorted(notetypes.items())
+    ]
+    corpus_notetypes += _stand_in_notetypes(
+        corpus_config, {notetype["name"] for notetype in corpus_notetypes}
+    )
     corpus = {
         "format": FORMAT,
         "op": "match_words",
@@ -459,18 +486,8 @@ def export_fixture(
             "outcome": run["outcome"],
             "versions": json.loads(run["versions_json"] or "null"),
         },
-        "config": _renamed_config(
-            config, {name: type_names[name] for name in run_types}, decks
-        ),
-        "notetypes": [
-            {
-                "name": type_names[info["name"]],
-                "fields": info["fields"],
-                "sort_field": info["sort_field"],
-                "templates": info["templates"],
-            }
-            for _, info in sorted(notetypes.items())
-        ],
+        "config": corpus_config,
+        "notetypes": corpus_notetypes,
         "decks": sorted(set(deck_rename.values())),
         "notes": corpus_notes,
         "meanings": {key: value for key, value in sorted(meanings.items()) if value is not None},
@@ -518,24 +535,117 @@ class _DeckNames:
         return self._unseen[name]
 
 
-def _renamed_config(config: dict, type_names: dict, decks: _DeckNames) -> dict:
-    """The run's config with its note type keys and their decks under the fixture's names. A
-    note type config of a type the run never saw is dropped: its name is the user's. So are
-    the values a replay never reads that name the user's things (`PRIVATE_CONFIG_KEYS`)."""
+def _renamed_config(
+    config: dict, type_names: Mapping[str, str], decks: _DeckNames, recorded: Iterable[str]
+) -> dict:
+    """The run's config with its note type keys and their decks under the fixture's names.
+    `type_names` names every note type of the corpus, `recorded` are those the run recorded
+    notes of. A note type config of a type the run never saw is dropped: its name is the
+    user's. So are the values a replay never reads that name the user's things
+    (`PRIVATE_CONFIG_KEYS`, and in a block `PRIVATE_BLOCK_KEYS`).
+
+    But the two types of a two-type layout go together (`_linked_types`): a run over sentence
+    notes that read and added no vocab note recorded nothing of the vocab type, and without its
+    block the layout check failed every sentence note of the replay. The names a block gives
+    its partner (`PARTNER_TYPE_KEYS`) are renamed as the keys are; a partner the corpus has no
+    name for gets one of its own, and `_stand_in_notetypes` its note type."""
+    linked = _linked_types(config, recorded)
+    names = dict(type_names)
+    for name in linked:
+        if name not in names:
+            names[name] = name if name in HARDCODED_NOTETYPES else _unused_name(names.values())
     renamed: dict[str, Any] = {}
     for key, value in config.items():
         if isinstance(value, dict):
-            if key not in type_names:
+            if key not in linked:
                 continue
-            value = dict(value)
+            value = {name: item for name, item in value.items() if name not in PRIVATE_BLOCK_KEYS}
             if value.get(DECK_CONFIG_KEY):
                 value[DECK_CONFIG_KEY] = decks(value[DECK_CONFIG_KEY])
-            renamed[type_names[key]] = value
+            for partner_key in PARTNER_TYPE_KEYS:
+                partner = value.get(partner_key)
+                if isinstance(partner, str) and partner:
+                    value[partner_key] = names[partner]
+            renamed[names[key]] = value
         elif not (
             key.startswith("//") or key in PRIVATE_CONFIG_KEYS or key.endswith(PRIVATE_CONFIG_SUFFIX)
         ):
             renamed[key] = value
     return renamed
+
+
+def _linked_types(config: Mapping[str, Any], recorded: Iterable[str]) -> list[str]:
+    """The note types whose blocks a fixture's config keeps: the `recorded` ones and every type
+    linked to one through the two-type layout, the type a kept block names
+    (`PARTNER_TYPE_KEYS`) and a block naming a kept type, until none is added, so a layout the
+    user got wrong is kept whole and fails the replay's layout check as it failed the run's.
+    Then the types only a kept block's value names, which have no block. In the config's order,
+    so the names handed out are the same in every export of one run."""
+    blocks = {key: value for key, value in config.items() if isinstance(value, dict)}
+
+    def partners(block: Mapping[str, Any]) -> list[str]:
+        values = [block.get(key) for key in PARTNER_TYPE_KEYS]
+        return [value for value in values if isinstance(value, str) and value]
+
+    linked = set(recorded)
+    grown = True
+    while grown:
+        grown = False
+        for key, block in blocks.items():
+            named = partners(block)
+            if key in linked:
+                added = set(named) - linked
+            else:
+                added = {key} if linked.intersection(named) else set()
+            if added:
+                linked |= added
+                grown = True
+    ordered = [key for key in blocks if key in linked]
+    ordered += [name for key in ordered for name in partners(blocks[key]) if name not in blocks]
+    return list(dict.fromkeys(ordered))
+
+
+def _unused_name(used: Iterable[str]) -> str:
+    """A generic note type name that none of `used` is, numbered past the names `_names`
+    hands out, which count from 1."""
+    taken = set(used)
+    number = len(taken) + 1
+    while f"{GENERIC_NOTETYPE} {number}" in taken:
+        number += 1
+    return f"{GENERIC_NOTETYPE} {number}"
+
+
+def _stand_in_notetypes(config: Mapping[str, Any], present: Iterable[str]) -> list[dict]:
+    """A note type for each block of the fixture's config whose type is not among `present`,
+    the corpus's: a two-type partner the run recorded no note of (`_renamed_config`). It has the
+    fields its block names, so the run reads and writes the notes it makes in it as in the
+    capture run's collection: the match op makes a new vocab note in the vocab type the config
+    names, which a run whose only new note failed to add recorded nothing of, and without the
+    type the replay could not make the note at all. Its other fields were never read."""
+    known = set(present)
+    stand_ins = []
+    for name, block in config.items():
+        if not isinstance(block, dict) or name in known:
+            continue
+        fields = list(
+            dict.fromkeys(
+                value
+                for key, value in block.items()
+                if key.endswith("_field") and isinstance(value, str) and value
+            )
+        )
+        if not fields:
+            continue
+        sort_field = block.get("word_sort_field")
+        stand_ins.append(
+            {
+                "name": name,
+                "fields": fields,
+                "sort_field": fields.index(sort_field) if sort_field in fields else 0,
+                "templates": [],
+            }
+        )
+    return stand_ins
 
 
 def _renamed_copy_anywhere(
@@ -828,15 +938,24 @@ def _cassette_entries(calls: Iterable[sqlite3.Row]) -> list[dict]:
 # --- normalizing ---------------------------------------------------------------------------
 
 
-# A new note's placeholder in a field: make_new_note_id's negative number, standing alone
+# A legacy placeholder in a field: the negative number a new note was named by, standing alone,
+# before new notes had link IDs of their own
 PLACEHOLDER_RE = re.compile(r"(?<![\d-])-\d{7}(?!\d)")
 
 
+def _ids_masked(value: str) -> str:
+    """`value` with every id that differs from a capture run to its replay masked, note ids,
+    generated link IDs and placeholders: what new notes are ordered by. Masked alike, so that a
+    new note holding its note id (a run before link IDs) reads as one holding its link ID."""
+    return PLACEHOLDER_RE.sub("#", GENERATED_ID_RE.sub("#", ID_RE.sub("#", value)))
+
+
 def _failed_adds(connection: sqlite3.Connection, run_id: Optional[int] = None) -> list[int]:
-    """The placeholders of a run's notes whose add failed (`note.add` with an `add_error`), in
-    the order of the notes' content as the cleanup proposed them, ids and placeholders masked:
-    the same order in every run of the same work, whatever order the adds came in. Every run's
-    in the store without `run_id` (a replay's own store holds its one run)."""
+    """The link IDs (placeholders, in a run before link IDs) of a run's notes whose add failed
+    (`note.add` with an `add_error`), in the order of the notes' content as the cleanup
+    proposed them, ids masked (`_ids_masked`): the same order in every run of the same work,
+    whatever order the adds came in. Every run's in the store without `run_id` (a replay's own
+    store holds its one run)."""
     where, params = ("", ()) if run_id is None else (" AND run_id = ?", (run_id,))
     placeholders = []
     for (payload_json,) in connection.execute(
@@ -857,9 +976,7 @@ def _failed_adds(connection: sqlite3.Connection, run_id: Optional[int] = None) -
 
     def content(placeholder: int) -> str:
         fields = (proposed.get(placeholder) or {}).get("fields", {})
-        masked = {
-            name: PLACEHOLDER_RE.sub("#", ID_RE.sub("#", value)) for name, value in fields.items()
-        }
+        masked = {name: _ids_masked(value) for name, value in fields.items()}
         return json.dumps(masked, ensure_ascii=False, sort_keys=True)
 
     return sorted(set(placeholders), key=content)
@@ -872,46 +989,57 @@ def normalized_notes(
     failed: Sequence[int] = (),
 ) -> list[dict]:
     """Notes as a replay can compare them: each `{"id", "notetype", "deck", "fields", "tags"}`,
-    `new_notes` the run's added notes (id -> the placeholder it replaced, or None).
+    `new_notes` the run's added notes (id -> what its `note.add` event names it by: its link
+    ID, a negative placeholder in a run before link IDs, or None).
 
-    A new note's id is whatever the collection handed out, and its placeholder was random, so
-    both become symbols: `new-N`, numbered in the order of the notes' content (ids masked),
-    and `placeholder:new-N`, wherever they appear. `failed` are the placeholders of the notes
-    whose add failed, in a fixed order (`_failed_adds`): the word arrays keep them on purpose,
-    and they become `placeholder:failed-N`. `ids`, given, maps every other id in a field
-    (`_IdMap.text`); a replay's are synthetic already. Tags sorted; the list in note order.
+    A new note's id is whatever the collection handed out, and its link ID or placeholder
+    differs from a capture run to its replay too (GENERATED_ID_RE), so each becomes a symbol
+    wherever it appears, numbered in the order of the notes' content (`_ids_masked`). `new-N`
+    is what the word arrays link the note by: its link ID, or in a run before link IDs its note
+    id, which the arrays held once it was added, so a fixture recorded then replays as it did.
+    The other is `nid:new-N` (an array linking a new note by its note id differs) or
+    `placeholder:new-N`. `failed` are the link IDs or placeholders of the notes whose add
+    failed, in a fixed order (`_failed_adds`): `failed-N` and `placeholder:failed-N`. `ids`,
+    given, maps every other id in a field (`_IdMap.text`); a replay's are synthetic already.
+    Tags sorted; the list in note order.
     """
     notes = list(notes)
 
     def content(note: Mapping[str, Any]) -> str:
-        masked = {name: ID_RE.sub("#", value) for name, value in note["fields"].items()}
+        masked = {name: _ids_masked(value) for name, value in note["fields"].items()}
         return json.dumps([note["notetype"], masked], ensure_ascii=False, sort_keys=True)
 
     new = sorted((note for note in notes if note["id"] in new_notes), key=content)
-    symbols = {int(note["id"]): f"new-{index + 1}" for index, note in enumerate(new)}
-    placeholders = {
-        str(placeholder): f"placeholder:{symbols[nid]}"
-        for nid, placeholder in new_notes.items()
-        if placeholder is not None and nid in symbols
-    }
-    placeholders.update(
-        {str(placeholder): f"placeholder:failed-{n + 1}" for n, placeholder in enumerate(failed)}
-    )
+    keys = {int(note["id"]): f"new-{index + 1}" for index, note in enumerate(new)}
+    # The new notes' note ids, and the link IDs and placeholders of the new and failed notes
+    note_ids: dict[int, str] = {}
+    linked: dict[str, str] = {}
+    for nid, key in keys.items():
+        held = new_notes.get(nid)
+        if held is not None and held > 0:
+            note_ids[nid], linked[str(held)] = f"nid:{key}", key
+        else:
+            note_ids[nid] = key
+            if held is not None:
+                linked[str(held)] = f"placeholder:{key}"
+    for n, failed_id in enumerate(failed):
+        symbol = f"failed-{n + 1}" if failed_id > 0 else f"placeholder:failed-{n + 1}"
+        linked[str(failed_id)] = symbol
 
     def text(value: str) -> str:
         if ids is not None:
-            value = ids.text(value, keep=symbols)  # type: ignore[attr-defined]
+            value = ids.text(value, keep=note_ids)  # type: ignore[attr-defined]
         else:
-            value = ID_RE.sub(lambda m: symbols.get(int(m.group(1)), m.group(1)), value)
-        for placeholder, symbol in placeholders.items():
-            value = re.sub(rf"(?<![\d-]){re.escape(placeholder)}(?!\d)", symbol, value)
+            value = ID_RE.sub(lambda m: note_ids.get(int(m.group(1)), m.group(1)), value)
+        for linking, symbol in linked.items():
+            value = re.sub(rf"(?<![\d-]){re.escape(linking)}(?!\d)", symbol, value)
         return value
 
     normalized = []
     for note in notes:
         nid = int(note["id"])
-        if nid in symbols:
-            key = symbols[nid]
+        if nid in keys:
+            key = keys[nid]
         elif ids is not None:
             key = str(ids(nid))
         else:
@@ -1156,6 +1284,10 @@ def build_collection(
 # Background notes' ids, clear of the corpus's and of the ids its fields name
 BACKGROUND_BASE = 2_000_000_000_000
 BACKGROUND_LINK_BASE = 3_000_000_000_000
+# And the link IDs their fields hold for the ones the addon generated (GENERATED_ID_RE), 16 digits
+# below 2^53 like those: copied as they were, two notes would hold one ID, and the match op
+# refuses to run while two do
+BACKGROUND_GENERATED_BASE = 8_000_000_000_000_000
 # Where a background note's Japanese goes: the Hangul syllables, a block no word, reading or
 # sentence a run asks about has a character in
 _HANGUL_FIRST, _HANGUL_COUNT = 0xAC00, 11172
@@ -1166,11 +1298,13 @@ def _is_japanese(char: str) -> bool:
     return 0x3040 <= code <= 0x30FF or 0x3400 <= code <= 0x9FFF or 0xFF66 <= code <= 0xFF9F
 
 
-def _background_text(text: str, links: Iterator[int]) -> str:
-    """`text` with every Japanese character moved into Hangul, one to one, and every note id
-    replaced by one no note has: the same length and shape (the same HTML, the same JSON of a
-    word array), so a scan pays for it as for a real note, and nothing the run looks for in it."""
+def _background_text(text: str, links: Iterator[int], generated: Iterator[int]) -> str:
+    """`text` with every Japanese character moved into Hangul, one to one, and every note id and
+    generated link ID replaced by one no note has: the same length and shape (the same HTML, the
+    same JSON of a word array), so a scan pays for it as for a real note, and nothing the run
+    looks for in it."""
     text = ID_RE.sub(lambda _: str(next(links)), text)
+    text = GENERATED_ID_RE.sub(lambda _: str(next(generated)), text)
     return "".join(
         chr(_HANGUL_FIRST + ord(char) % _HANGUL_COUNT) if _is_japanese(char) else char
         for char in text
@@ -1187,6 +1321,7 @@ def background_notes(corpus: Mapping[str, Any], count: int) -> list[dict]:
     if not templates or count <= 0:
         return []
     links = iter(range(BACKGROUND_LINK_BASE, BACKGROUND_LINK_BASE + 10**12, 10))
+    generated = iter(range(BACKGROUND_GENERATED_BASE, BACKGROUND_GENERATED_BASE + 10**12, 10))
     notes = []
     for index in range(count):
         template = templates[index % len(templates)]
@@ -1197,7 +1332,7 @@ def background_notes(corpus: Mapping[str, Any], count: int) -> list[dict]:
                 "deck": template["deck"],
                 "guid": f"bg{index:09d}",
                 "fields": {
-                    name: _background_text(value, links)
+                    name: _background_text(value, links, generated)
                     for name, value in template["fields"].items()
                 },
                 "tags": list(template["tags"]),

@@ -242,7 +242,7 @@ class WordIndex:
         retrieve six notes in total. Spelled out, it asks for notes that carry a meaning marker
         and no exclusion marker, share this note's reading, and match it in either word field:
 
-            sort:re:m\\d+ -sort:re:x\\d+ -nid:N "reading:R" ("normal:V" OR "kanjified:W")
+            "sort:re:m\\d+" -"sort:re:x\\d+" -nid:N "reading:R" ("normal:V" OR "kanjified:W")
 
         Each of those terms is a field this index already holds. The `re:` terms become the two
         module regexes above, the field terms become the same collation-folded exact match the

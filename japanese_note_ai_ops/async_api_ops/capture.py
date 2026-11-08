@@ -411,8 +411,9 @@ def _current_log_path(state: _Installed) -> Optional[str]:
 # (`read`), or for a selected note where the run loaded it (`selected`). A run writes nothing to
 # the collection before its cleanup, so the first fetch of a note is every fetch of it.
 READ_STAGES = ("selected", "read")
-# The others: `proposed`, what the cleanup is about to write (a new note under its placeholder
-# id); `final`, what the collection holds after the cleanup, an added note under its real id.
+# The others: `proposed`, what the cleanup is about to write (a new note under the link ID it
+# was made with); `final`, what the collection holds after the cleanup, an added note under its
+# real id.
 STAGES = READ_STAGES + ("proposed", "final")
 
 
@@ -489,7 +490,7 @@ def snapshot_note(stage: str, note_id: int, record: Callable[[], Mapping[str, An
 
     The record is plain JSON (`capture_notes.note_record` makes it from an Anki note), stored
     once as a blob however many runs or stages see it unchanged. `note_id` is the note's id, or
-    a new note's placeholder id (negative) before it is added. Never raises.
+    a new note's link ID before it is added. Never raises.
     """
     notes = _current_notes()
     state = _active()
@@ -536,8 +537,10 @@ def unread_references() -> list[int]:
 
 
 def note_added(placeholder: Optional[int], note_id: int) -> None:
-    """The run added note `note_id`, which its word arrays named `placeholder` until then: a
-    `note.added` event, and the note is never fetched as one the run read. Never raises."""
+    """The run added note `note_id`, which its word arrays and its proposed snapshot name by
+    `placeholder`, the link ID it was made with (the payload keeps the key's old name, which
+    the replay's exporter reads): a `note.added` event, and the note is never fetched as one
+    the run read. Never raises."""
     notes = _current_notes()
     if notes is None:
         return

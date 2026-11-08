@@ -16,6 +16,7 @@ import asyncio
 import threading
 import time
 import unittest
+from unittest import mock
 
 from addon_modules import load_ops_module, mw
 
@@ -123,6 +124,38 @@ class SerialisationTests(CollectionAccessTestCase):
         ca.get_notes([1, 2, 3, 4])
         self.assertEqual(self.col.most_at_once, 1)
         self.assertEqual(self.col.fetched, [1, 2, 3, 4])
+
+    def test_a_gone_note_is_left_out_of_the_one_turn_when_asked(self):
+        """skip_gone, which the run's note cache passes: the other notes come back from the
+        same turn, the gone one logged. Without it the gone note's NotFoundError fails the
+        batch, as it always did."""
+
+        class Gone(Exception):
+            """anki.errors.NotFoundError, which the suite's stubs make a class no code raises."""
+
+        fetch = self.col.get_note
+
+        def get_note(note_id):
+            if note_id == 99:
+                raise Gone(note_id)
+            return fetch(note_id)
+
+        self.col.get_note = get_note
+        entry_points = {
+            "get_notes": lambda **kw: ca.get_notes([1, 99, 2], **kw),
+            "get_notes_async": lambda **kw: asyncio.run(ca.get_notes_async([1, 99, 2], **kw)),
+        }
+        with mock.patch.object(ca, "NotFoundError", Gone):
+            for name, fetch_notes in entry_points.items():
+                with self.subTest(name):
+                    _, turns_before = conc.collection_pressure.totals()
+                    with self.assertLogs(ca.logger, "WARNING") as logs:
+                        self.assertEqual(fetch_notes(skip_gone=True), ["note1", "note2"])
+                    _, turns_after = conc.collection_pressure.totals()
+                    self.assertEqual(turns_after - turns_before, 1)
+                    self.assertIn("Note 99 is not in the collection", "\n".join(logs.output))
+                    with self.assertRaises(Gone):
+                        fetch_notes()
 
     def test_an_error_reaches_the_caller(self):
         def boom():

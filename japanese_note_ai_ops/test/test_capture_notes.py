@@ -24,6 +24,8 @@ ca = load_ops_module("collection_access")
 api = load_ops_module("api_client")
 
 CONFIG = {"Vocab": {"new_note_id_field": "new-id"}}
+# The link ID a new note is made with (link_ids.new_link_id: 16 digits)
+NEW_ID = 4321098765432109
 
 
 class Note:
@@ -145,15 +147,20 @@ class NoteRecordTests(CaptureNotesTestCase):
             ],
         )
 
-    def test_a_new_note_goes_by_its_placeholder_or_a_made_up_id(self):
-        with_placeholder = Note(0, {"Word": "飲む", "new-id": "-4242"})
+    def test_a_new_note_goes_by_its_link_id_or_a_made_up_id(self):
+        with_link_id = Note(0, {"Word": "飲む", "new-id": str(NEW_ID)})
         without = Note(0, {"Word": "見る"}, type_name="Other")
+        # A legacy placeholder is no link ID
+        legacy = Note(0, {"Word": "食べる", "new-id": "-4242"})
 
-        capture_notes.snapshot_new_notes("proposed", [with_placeholder, without], CONFIG)
+        capture_notes.snapshot_new_notes(
+            "proposed", [with_link_id, without, legacy], CONFIG
+        )
 
-        [(first, _, _), (second, _, _)] = self.snapshots()
-        self.assertEqual(first, -4242)
+        [(first, _, _), (second, _, _), (third, _, _)] = self.snapshots()
+        self.assertEqual(first, NEW_ID)
         self.assertLess(second, -(10**14))
+        self.assertLess(third, -(10**14))
 
 
 class LostRecordTests(CaptureNotesTestCase):
@@ -210,7 +217,7 @@ class ReferenceTests(CaptureNotesTestCase):
         self.assertEqual(self.events("note.missing"), [("note.missing", 9, {"note_id": 9})])
 
     def test_an_added_note_is_never_fetched_as_read(self):
-        added = Note(11, {"Word": "飲む", "new-id": "-4242"})
+        added = Note(11, {"Word": "飲む", "new-id": str(NEW_ID)})
         col = Collection(added)
         capture_notes.record_added([added], CONFIG)
         capture_notes.found([11])
@@ -218,9 +225,10 @@ class ReferenceTests(CaptureNotesTestCase):
         capture_notes.fetch_unread(col)
 
         self.assertEqual(col.fetched, [])
+        # The link ID it was made with, under the payload's old key
         self.assertEqual(
             self.events("note.added"),
-            [("note.added", 11, {"note_id": 11, "placeholder": -4242})],
+            [("note.added", 11, {"note_id": 11, "placeholder": NEW_ID})],
         )
 
     def test_the_final_state_is_read_from_the_collection_and_the_removed_noted(self):

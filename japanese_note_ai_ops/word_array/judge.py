@@ -312,13 +312,13 @@ def plan_judgements(arr: list, states: Iterable[MatchState] = JUDGE_NEW) -> Judg
 
 
 def set_auto(plan: JudgePlan) -> list[int]:
-    """Judge the plan's particles and copulas `dontmatch`; returns the note ids that unlinked."""
+    """Judge the plan's particles and copulas `dontmatch`; returns the link IDs that unlinked."""
     unlinked = [set_dont_match(elem) for elem in plan.auto]
     return [note_id for note_id in unlinked if note_id is not None]
 
 
 def apply_word_response(elem: list, response: Any) -> Optional[int]:
-    """Judge `elem` as the response decided; returns the note id a `dontmatch` unlinked. A
+    """Judge `elem` as the response decided; returns the link ID a `dontmatch` unlinked. A
     response without a decision raises ValueError and changes nothing."""
     decision = response.get(DECISION_FIELD) if isinstance(response, dict) else None
     if decision == DONT_MATCH:

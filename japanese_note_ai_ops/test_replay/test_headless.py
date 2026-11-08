@@ -3,6 +3,7 @@ that raises included."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -72,3 +73,23 @@ def test_a_session_puts_back_what_it_replaced(tmp_path):
         session.close()
     finally:
         run_errors.deliver_with(None)
+
+
+def test_a_two_type_layout_s_notes_to_match_are_its_sentence_notes(tmp_path):
+    # The vocab type keeps its old sentence fields, under the sentence block's names, until the
+    # user deletes them: the array a vocab note still holds is not one a match run works on
+    col = real_anki.open_collection(tmp_path / "collection.anki2")
+    try:
+        real_anki.make_note_type(col, "Sentences", ["Sentence", "Words"])
+        real_anki.make_note_type(col, "Vocab", ["Word", "Words"])
+        array = json.dumps([["本", "名詞", "本", "ほん", ["match"], []]], ensure_ascii=False)
+        sentence = real_anki.add_note(col, "Sentences", {"Sentence": "本", "Words": array})
+        real_anki.add_note(col, "Vocab", {"Word": "本", "Words": array})
+        config = {
+            "Sentences": {"vocab_note_type": "Vocab", "word_list_field": "Words"},
+            "Vocab": {"sentence_note_type": "Sentences", "word_sort_field": "Word"},
+        }
+
+        assert headless.notes_to_match(col, config) == [sentence.id]
+    finally:
+        col.close()

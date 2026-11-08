@@ -24,6 +24,8 @@ import threading
 from functools import partial
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional, Sequence
 
+from ..link_ids import parse_link_id
+from ..note_roles import link_id_field
 from . import capture
 
 if TYPE_CHECKING:
@@ -31,10 +33,6 @@ if TYPE_CHECKING:
     from anki.notes import Note
 
 logger = logging.getLogger(__name__)
-
-# The placeholder a new note is named by in the word arrays until it is added: a negative int
-# in this field of its note type's config (match_words_to_notes' new_note_id_field)
-PLACEHOLDER_FIELD_KEY = "new_note_id_field"
 
 # What a notes run records beyond its notes, named in its `environment` event, so an exporter
 # can tell a run that looked nothing up from one captured before lookups were recorded. Add a
@@ -70,39 +68,41 @@ def snapshot_notes(stage: str, notes: Iterable["Note"]) -> None:
         capture.snapshot_note(stage, int(note.id), partial(note_record, note))
 
 
-def placeholder_id(note: "Note", config: Mapping[str, Any]) -> Optional[int]:
-    """The placeholder id a new note carries in its note type's `new_note_id_field`, or None
-    when its type configures none or the field holds no number."""
+def new_note_link_id(note: "Note", config: Mapping[str, Any]) -> Optional[int]:
+    """The link ID a new note carries in its type's link ID field (note_roles.link_id_field)
+    from the moment it is made, which is what the word arrays link it by before and after it
+    is added; None when its type names no such field or the field holds no ID."""
     try:
         note_type = note.note_type()
-        model_config = config.get(note_type["name"]) if note_type else None
-        field = model_config.get(PLACEHOLDER_FIELD_KEY) if isinstance(model_config, dict) else None
+        field = link_id_field(config, note_type["name"]) if note_type else None
         if not field or field not in note:
             return None
-        return int(note[field])
-    except (KeyError, TypeError, ValueError):
+        return parse_link_id(note[field])
+    except (KeyError, TypeError):
         return None
 
 
 def snapshot_new_notes(
     stage: str, notes: Sequence["Note"], config: Mapping[str, Any]
 ) -> None:
-    """Record notes not added yet, each under its placeholder id; one without a placeholder
-    under a made-up id past any a run makes, so it is still recorded."""
+    """Record notes not added yet, each under its link ID; one without one under a made-up
+    negative id, which no note and no link ID is, so it is still recorded."""
     if not capture.notes_on():
         return
     for index, note in enumerate(notes):
-        placeholder = placeholder_id(note, config)
-        note_id = placeholder if placeholder is not None else -(10**15) - index
+        held = new_note_link_id(note, config)
+        note_id = held if held is not None else -(10**15) - index
         capture.snapshot_note(stage, note_id, partial(note_record, note))
 
 
 def record_added(notes: Iterable["Note"], config: Mapping[str, Any]) -> None:
-    """The notes the cleanup just added: which placeholder each replaces (`note.added`)."""
+    """The notes the cleanup just added: the link ID each was made with, which the arrays and
+    the proposed snapshot name it by, and the id it got (`note.added`; the payload's key is
+    still "placeholder", which the replay's exporter reads)."""
     if not capture.notes_on():
         return
     for note in notes:
-        capture.note_added(placeholder_id(note, config), int(note.id))
+        capture.note_added(new_note_link_id(note, config), int(note.id))
 
 
 def reference_notes(note_ids: Iterable[int]) -> None:
@@ -246,7 +246,7 @@ def record_note_add(
     capture.event(
         "note.add",
         {
-            "placeholder": placeholder_id(note, config),
+            "placeholder": new_note_link_id(note, config),
             "seconds": round(seconds, 5),
             "merge_seconds": None if merge_seconds is None else round(merge_seconds, 5),
             "undo_before": undo_before,

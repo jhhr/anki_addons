@@ -2,8 +2,8 @@
 
 The cleanup adds each new note with `col.add_note`, which fires `note_will_be_added`, so every
 other addon's add hook runs inside the run's add phase, and then merges the add into the run's
-one undo entry. Here a stand-in op prepares one new note as the match op does, placeholder id
-and all, and `selected_notes_op` runs it through a real `CollectionOp`. The run records its
+one undo entry. Here a stand-in op prepares one new note as the match op does, link ID and
+all, and `selected_notes_op` runs it through a real `CollectionOp`. The run records its
 notes (config `capture_notes`) into a store in the test's directory, so what the add cost, what
 the merge cost and what the undo queue did are read back from it.
 
@@ -25,12 +25,12 @@ import pytest
 from anki_shared.testing import real_anki
 from anki_shared.word_array.field_text import decode_word_array, format_word_array
 from japanese_note_ai_ops.async_api_ops import base_ops, capture
-from japanese_note_ai_ops.async_api_ops.match_words_to_notes import update_fake_note_ids
 
 from .conftest import COPIED, FIELDS, NOTETYPE
 
 WAIT = 30000
-PLACEHOLDER = "-1234567"
+# The link ID the match op generates for a new note, which it holds from before the add
+LINK_ID = "4321098765432109"
 UNDO_LABEL = "Adding one note for 1 notes."
 
 
@@ -117,7 +117,7 @@ def one_new_note(word: str):
         note = col.new_note(model)
         note[FIELDS["word_kanjified_field"]] = word
         note[FIELDS["word_sort_field"]] = word
-        note[FIELDS["new_note_id_field"]] = PLACEHOLDER
+        note[FIELDS["new_note_id_field"]] = LINK_ID
         return pos, {word: [note]}, notes_to_update_dict, []
 
     return bulk_adds_one
@@ -178,42 +178,45 @@ def test_the_add_hook_runs_in_the_add_phase_and_the_run_stays_one_undo_step(
     # The add, the hook's field and the cleanup are one undo step, the run's own
     assert real_mw.col.undo_status().undo == UNDO_LABEL
     [add] = events(store, "note.add")
-    assert add["placeholder"] == int(PLACEHOLDER)
+    assert add["placeholder"] == int(LINK_ID)
     assert add["add_error"] is None and add["merge_error"] is None
     assert add["seconds"] > 0 and add["merge_seconds"] is not None
     [loop] = [p for p in events(store, "phase") if p["label"] == "cleanup: add_note loop"]
     assert loop["added"] == 1 and loop["add_seconds"] >= add["seconds"] - 1e-3
 
 
-def test_a_hook_writing_the_id_field_leaves_the_placeholder_to_be_resolved(
+def test_a_hook_writing_the_id_field_leaves_the_new_note_its_link_id(
     anki_session, real_mw, config, copy_anywhere_config, store, shown
 ):
-    """The field is the one record of the new note's placeholder, and the resolving reads it
-    after the add. With the hook's 0 in it the resolving looked for nothing, and the sentence
-    stayed linked to a placeholder no note would ever hold."""
+    """The field holds the link ID the arrays link the new note by, from before the add, and
+    nothing rewrites them after it. The hook's 0 there, which the add writes to the collection,
+    made the note's link ID its note id, which no array links: the ID is put back and the note
+    saved again holding it (base_ops.link_id_kept), within the run's one undo step."""
     from copy_anywhere.hooks import note_hooks
 
     config()
     # A sentence linking the word to the note about to be added, as the cleanup saves it
     # before the adding
-    array = format_word_array([["猫", "noun", "猫", "ねこ", [int(PLACEHOLDER), 4], []]])
+    array = format_word_array([["猫", "noun", "猫", "ねこ", [int(LINK_ID), 4], []]])
     sentence_fields = {FIELDS["word_sort_field"]: "店", FIELDS["word_list_field"]: array}
     trigger = real_anki.add_note(real_mw.col, NOTETYPE, sentence_fields)
     copy_anywhere_config(copy_definitions=[own_id_into_the_id_field()])
     note_hooks.init_note_hooks()
 
-    run(anki_session, real_mw, one_new_note("猫"), [trigger.id], update_fake_note_ids)
+    run(anki_session, real_mw, one_new_note("猫"), [trigger.id])
 
     assert shown["exceptions"] == []
     [added_id] = [nid for nid in real_mw.col.find_notes(f'"note:{NOTETYPE}"') if nid != trigger.id]
     linked = decode_word_array(real_mw.col.get_note(trigger.id)[FIELDS["word_list_field"]])
-    assert linked is not None and linked[0][4] == [added_id, 4]
-    # Left holding its own id, which is also what the definition is after
-    assert real_mw.col.get_note(added_id)[FIELDS["new_note_id_field"]] == str(added_id)
-    # The capture names the placeholder the note went in with, not what the hook wrote
+    assert linked is not None and linked[0][4] == [int(LINK_ID), 4]
+    assert real_mw.col.get_note(added_id)[FIELDS["new_note_id_field"]] == LINK_ID
+    # The hook did write over it: the note was saved again
+    [kept] = [p for p in events(store, "phase") if p["label"] == "cleanup: link IDs kept"]
+    assert kept["notes"] == 1
+    # The capture names the link ID the note went in with, not what the hook wrote
     [add] = events(store, "note.add")
-    assert add["placeholder"] == int(PLACEHOLDER)
-    assert events(store, "note.added") == [{"placeholder": int(PLACEHOLDER), "note_id": added_id}]
+    assert add["placeholder"] == int(LINK_ID)
+    assert events(store, "note.added") == [{"placeholder": int(LINK_ID), "note_id": added_id}]
     assert real_mw.col.undo_status().undo == UNDO_LABEL
 
 

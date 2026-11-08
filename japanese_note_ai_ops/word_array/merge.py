@@ -27,7 +27,7 @@ misread (小枝 read しょうえだ). A step only carries where exactly one old
 of the region still hold that key. Two candidates is the case the migration already decided not to
 guess at: the judge can judge such a word again and match_words_to_notes can find its note again
 from the sentence, and a coin toss here cannot be undone. Whatever is dropped is reported with
-the note id it had, for the caller to log - a lost link is the only part of this worth anyone's
+the link ID it had, for the caller to log - a lost link is the only part of this worth anyone's
 attention.
 """
 
@@ -80,7 +80,7 @@ def merge_arrays(old: list, new: list) -> Merge:
             result.array += _carry(old[i1:i2], new[j1:j2], result)
             result.changed += j2 - j1
 
-    if _raw(result.array) != _raw(new):
+    if raw_text(result.array) != raw_text(new):
         raise ValueError("the merged array does not reconstruct the sentence")
     return result
 
@@ -93,7 +93,8 @@ def _key(elem: list) -> Key:
     return (elem[0], elem[1], elem[2], elem[3], tuple(_key(sub) for sub in elem[5]))
 
 
-def _raw(arr: list) -> str:
+def raw_text(arr: list) -> str:
+    """The text the top-level elements spell (word_array/README.md), `<b>` tags left out."""
     return "".join(elem[0] for elem in arr)
 
 

@@ -1,14 +1,15 @@
 import asyncio
 import json
 import logging
-import random
 import re
+from collections.abc import Mapping
 from typing import (
     Any,
     Callable,
     Coroutine,
     Iterable,
     Literal,
+    NamedTuple,
     Optional,
     Sequence,
     TypedDict,
@@ -25,6 +26,7 @@ from rapidfuzz.distance import Levenshtein  # type: ignore
 from ..configuration import (
     MEANING_MAPPED_TAG,
     NO_DICTIONARY_ENTRY_TAG,
+    EnAndJPSentence,
     GeneratedMeaningsDictType,
     GeneratedMeaningType,
     MultiMeaningMatchedWordType,
@@ -32,7 +34,31 @@ from ..configuration import (
     RawMultiMeaningWordType,
     RawOneMeaningWordType,
 )
+from ..html_stripping import strip_html
 from ..kana_conv import to_hiragana
+from ..link_ids import (
+    DuplicateLinkIdsError,
+    LinkIndex,
+    duplicates_error,
+    is_link_id,
+    link_id,
+    note_link_id,
+    parse_link_id,
+)
+from ..note_hooks import NEW_MATCHED_TAG
+from ..note_roles import (
+    SENTENCE_KEYS,
+    SENTENCE_ROLE,
+    VOCAB_ROLE,
+    LayoutError,
+    copy_example,
+    example_id_field,
+    link_id_field,
+    named_field,
+    note_type_search,
+    sentence_type_of,
+    vocab_type_of,
+)
 from ..shared.jp_text_processing.kana.check_word_reading_type import (
     WordReadingType,
     check_word_reading_type,
@@ -71,8 +97,11 @@ from .collection_access import (
     find_notes as col_find_notes,
     get_note as col_get_note,
     get_notes as col_get_notes,
+    run_on_collection,
 )
+from .link_lookup import LinkIndexCache
 from .note_cache import NoteCache
+from .role_gate import note_type_name, notes_of_role
 from .sentence_cache import SentenceCache
 from .sort_field_markers import WordNote, parse_sort_field, tidy_word_markers, word_key
 from .word_index import WordFields, WordIndex, WordIndexCache, sort_base_note_ids
@@ -158,35 +187,6 @@ def check_marker_note_on_or_kun(
     return check_note_processed_furigana_field(marker_note, word_processed_furigana_field)
 
 
-def make_new_note_id(note: Note) -> int:
-    """
-    Generate a new note ID based on the note's fields.
-    This is used to ensure that new notes have unique IDs.
-
-    Args:
-        note (Note): The note to generate the ID for.
-
-    Returns:
-        int: A unique ID for the note represented as a negative integer.
-    """
-    if not note:
-        return 0
-    # Use a simple random negative number for fake IDs
-    return -random.randint(1000000, 9999999)
-
-
-def linked_note_id(note: Note, new_note_id_field: str) -> Optional[int]:
-    """The id a word array links `note` by, as the main prompt's MATCH writes it: its own once
-    it has been added, until then the placeholder in `new_note_id_field`. None for a note not
-    added that holds no placeholder. For the capture context; never raises."""
-    try:
-        if note.id > 0:
-            return int(note.id)
-        return int(note[new_note_id_field])
-    except Exception:
-        return None
-
-
 # How a rematching run treats words that are already linked to a note.
 WithProcessed = Literal["only_unprocessed", "only_processed", "both"]
 
@@ -207,104 +207,46 @@ FinalWordTuple = Union[
 ProcessedWordTuples = dict[int, ProcessedWordTuple]
 
 
-def update_fake_note_ids(
-    new_notes: Sequence[Note],
-    config: dict,
-    progress_updater: AsyncTaskProgressUpdater,
-) -> dict[NoteId, Note]:
-    """
-    Update the fake note IDs in the notes to be the actual note IDs.
+class _ArrayLinks(NamedTuple):
+    """Where the word arrays linking a vocab note type's notes are: in the notes of its
+    sentence type (note_roles.sentence_type_of), under that type's word_list_field. What the
+    cleanup searches to unlink a new note it did not add, or to repoint a duplicate's links."""
 
-    The placeholder sits in `new_note_id_field` until the note is saved and every array
-    pointing at it has been rewritten; then the field is left holding the note's own id
-    rather than emptied. That id is what the card and its popovers read to know which word
-    of a sentence belongs to the note under review -- the reviewer has no other way to ask.
+    # Put before a search's terms. In the two-type layout the sentence type's `note:` term:
+    # the vocab notes keep their old array field until the user deletes it, under the same
+    # name, and it is never read as an array. Empty in the one-type layout, whose searches
+    # have never named a type: a new note copied from a candidate of another configured type
+    # is of that type, and the arrays linking it are of the processed note's
+    type_term: str
+    word_list_field: str
 
-    The field is also the only record of which placeholder a note replaces, and it is read
-    here, after the add. An add hook of another addon can write it in between;
-    `base_ops.placeholder_kept` is what hands the note over holding its placeholder regardless.
+    @property
+    def one_type(self) -> bool:
+        """The vocab type is its own sentence type: its notes hold the arrays themselves."""
+        return not self.type_term
 
-    paran: new_notes (Sequence[Note]): The notes added, each with its id. A note whose add
-        failed is never given here (add_new_notes), so its placeholder stays where it is.
-    paran: config (dict): The addon configuration.
-    paran: progress_updater (AsyncTaskProgressUpdater): Progress reporter.
-    returns: dict[NoteId, Note]: A dictionary mapping the original note IDs to the updated notes.
-    """
-    notes_to_update_dict: dict[NoteId, Note] = {}
-    if not new_notes:
-        return notes_to_update_dict
-    if not config:
-        logger.error("Error: Missing addon configuration")
-        return notes_to_update_dict
-    total_notes = len(new_notes)
-    progress_updater.update_new_note_processing_progress(
-        total_notes=total_notes,
-    )
-    for index, new_note in enumerate(new_notes):
-        note_type = new_note.note_type()
-        if not note_type:
-            logger.error(f"Error: Note {new_note.id} has no note type")
-            continue
-        new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
-        word_list_field = get_field_config(config, "word_list_field", note_type)
-        if not new_note_id_field or not word_list_field:
-            logger.error("Error: Missing required fields in config")
-            return notes_to_update_dict
-        if new_note_id_field in new_note and word_list_field in new_note:
-            # Find other notes whose word_list_field contains the fake note ID. Only a
-            # placeholder is worth searching for: once this has run the field holds the note's
-            # own id, and an id the note already has needs no rewriting anywhere.
-            fake_note_id = new_note[new_note_id_field]
-            referencing_note_ids = (
-                col_find_notes(f'"{word_list_field}:*{fake_note_id}*"')
-                if fake_note_id.startswith("-")
-                else []
-            )
-            referencing_notes = []
-            # First get any notes already added to update_notes_dict matching any referencing IDs
-            previous_nids = []
-            for nid in referencing_note_ids:
-                if nid in notes_to_update_dict:
-                    referencing_notes.append(notes_to_update_dict[nid])
-                    previous_nids.append(nid)
-            referencing_note_ids = [nid for nid in referencing_note_ids if nid not in previous_nids]
-            # Fetch the rest from the collection
-            referencing_notes.extend(col_get_notes(referencing_note_ids))
-            for referencing_note in referencing_notes:
-                if new_note_id_field in referencing_note:
-                    # Update the word_list_field to point to the actual new note ID
-                    referencing_note[word_list_field] = re.sub(
-                        rf'"?{fake_note_id}"?',
-                        f"{new_note.id}",
-                        referencing_note[word_list_field],
-                    )
-                    if referencing_note.id not in notes_to_update_dict:
-                        # Note was updated, add it to the updated notes dict, if not already there
-                        notes_to_update_dict[referencing_note.id] = referencing_note
-            # The note's own id says the references have been updated, where a placeholder says
-            # they have not. Written even when nothing referenced the note, which is how a new
-            # note no other sentence linked used to be left holding its placeholder for good.
-            new_note[new_note_id_field] = str(new_note.id)
-            progress_updater.update_new_note_processing_progress(
-                total_notes=total_notes,
-                new_notes_processed=index + 1,
-            )
-
-    # Every new note now holding its own id is done being rewritten, so it can be saved
-    for new_note in new_notes:
-        if (
-            new_note_id_field in new_note
-            and new_note[new_note_id_field] == str(new_note.id)
-            and new_note.id not in notes_to_update_dict
-        ):
-            notes_to_update_dict[new_note.id] = new_note
-
-    return notes_to_update_dict
+    def holds_array(self, note: Note, new_note_id_field: str) -> bool:
+        """Whether a note a search found is one the match op writes arrays into. Every note
+        the two-type layout's search finds is of the sentence type, which has no
+        new_note_id_field; in the one-type layout a note of another type whose field has the
+        array field's name has always been told apart by having no new_note_id_field."""
+        if self.word_list_field not in note:
+            return False
+        return not self.one_type or new_note_id_field in note
 
 
-# How many placeholders one collection search looks for. Each is a term of an OR, and SQLite
+def _array_links(config: dict, vocab_type_name: str) -> _ArrayLinks:
+    """Raises as get_field_config does, and LayoutError (note_roles) for a broken layout."""
+    sentence_type = sentence_type_of(config, vocab_type_name)
+    word_list_field = get_field_config(config, "word_list_field", {"name": sentence_type})
+    if sentence_type == vocab_type_name:
+        return _ArrayLinks("", word_list_field)
+    return _ArrayLinks(note_type_search(sentence_type) + " ", word_list_field)
+
+
+# How many link IDs one collection search looks for. Each is a term of an OR, and SQLite
 # refuses a query whose expression tree is more than 1000 deep, which a long OR chain becomes.
-PLACEHOLDERS_PER_SEARCH = 50
+LINK_IDS_PER_SEARCH = 50
 
 
 def clear_unadded_note_ids(
@@ -312,17 +254,16 @@ def clear_unadded_note_ids(
     config: dict,
     progress_updater: AsyncTaskProgressUpdater,
 ) -> dict[NoteId, Note]:
-    """Put the words linked to new notes that were never added back to be matched again.
+    """Put the words linked to new notes the cleanup did not add back to be matched again.
 
-    For the notes a cancel of the adding left out. Their placeholders are already in word
-    arrays saved to the collection, and no note will ever hold them. Each is found as
-    update_fake_note_ids finds one, but by one search for many placeholders; the substring
-    search also finds a longer placeholder that contains a shorter one, and the exact ids
-    compared in the decoded array (match_targets.clear_placeholder_ids) leave that note be.
-    A note whose add failed is not in `unadded_notes`: its placeholder is left for debugging,
-    though only until the next match run, which resets it as a placeholder no note holds.
-    The markers preparing them put on the other notes of their words are the tidying's to
-    take off (tidy_sort_field_markers).
+    For the notes a cancel of the adding left out, and those whose add failed. Each was linked
+    by the link ID it was made with (link_ids.py), in word arrays already saved to the
+    collection, and no note will ever hold it: the ID was generated to be one no note of its
+    type held and no other new note of the run got. Found by one search for many IDs; the
+    substring search also finds a longer number that contains one of them, and the exact ids
+    compared in the decoded array (match_targets.clear_link_ids) leave that note be. The
+    markers preparing them put on the other notes of their words are the tidying's to take
+    off (tidy_sort_field_markers).
 
     Returns the notes changed, for the cleanup to save: those with words cleared, and any
     whose field turned out not to be an array, left as it is and only tagged.
@@ -333,45 +274,51 @@ def clear_unadded_note_ids(
     if not config:
         logger.error("Error: Missing addon configuration")
         return notes_to_update_dict
-    # By the fields of the note type the references are in: word_list_field to search and
-    # rewrite, new_note_id_field to tell a note the match op writes arrays into, as
-    # update_fake_note_ids does. Each a dict as an ordered set: a cancel can leave thousands
-    # of notes, too many for list lookups, and the searches go in the order they were prepared
-    placeholders_by_fields: dict[tuple[str, str], dict[int, None]] = {}
+    # By where the references are (_array_links: the sentence type and its word_list_field
+    # to search and rewrite) and the vocab type's new_note_id_field, which tells a note the
+    # match op writes arrays into in the one-type layout. Each a dict as an ordered set: a
+    # cancel can leave thousands of notes, too many for list lookups, and the searches go in
+    # the order they were prepared
+    ids_by_fields: dict[tuple[_ArrayLinks, str], dict[int, None]] = {}
     for note in unadded_notes:
         note_type = note.note_type()
         if not note_type:
             logger.error(f"Error: A new note not added has no note type: {note.fields}")
             continue
-        new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
-        word_list_field = get_field_config(config, "word_list_field", note_type)
-        if not new_note_id_field or not word_list_field:
+        try:
+            new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
+            links = _array_links(config, note_type["name"])
+        except Exception as e:
+            # A note type the config lacks (the adding raised on it): the others are unlinked
+            logger.error(f"Error: A new note not added cannot be unlinked: {e}")
+            continue
+        if not new_note_id_field or not links.word_list_field:
             logger.error("Error: Missing required fields in config")
             continue
-        if new_note_id_field not in note:
-            logger.error(f"Error: A new note not added has no field {new_note_id_field}")
+        id_field = link_id_field(config, note_type["name"]) or new_note_id_field
+        if id_field not in note:
+            logger.error(f"Error: A new note not added has no field {id_field}")
             continue
-        try:
-            placeholder = int(note[new_note_id_field])
-        except ValueError:
-            placeholder = 0
-        if placeholder >= 0:
-            logger.warning(f"A new note not added holds no placeholder id: {note.fields}")
+        # What the field holds, never the note id a link ID falls back to: a note not added
+        # has none, and the words linked to any other note are not this one's to clear
+        held = parse_link_id(note[id_field])
+        if held is None:
+            logger.warning(f"A new note not added holds no link ID: {note.fields}")
             continue
-        fields = (word_list_field, new_note_id_field)
-        placeholders_by_fields.setdefault(fields, {})[placeholder] = None
+        ids_by_fields.setdefault((links, new_note_id_field), {})[held] = None
 
-    total_notes = sum(len(placeholders) for placeholders in placeholders_by_fields.values())
+    total_notes = sum(len(held_ids) for held_ids in ids_by_fields.values())
     progress_updater.update_unadded_note_clearing_progress(total_notes=total_notes)
     notes_cleared = 0
     words_cleared = 0
-    for (word_list_field, new_note_id_field), placeholder_set in placeholders_by_fields.items():
-        placeholders = list(placeholder_set)
-        cleared_ids = frozenset(placeholders)
-        for start in range(0, len(placeholders), PLACEHOLDERS_PER_SEARCH):
-            chunk = placeholders[start : start + PLACEHOLDERS_PER_SEARCH]
-            terms = " OR ".join(f'"{word_list_field}:*{placeholder}*"' for placeholder in chunk)
-            referencing_note_ids = col_find_notes(f"({terms})")
+    for (links, new_note_id_field), id_set in ids_by_fields.items():
+        word_list_field = links.word_list_field
+        held_ids = list(id_set)
+        cleared_ids = frozenset(held_ids)
+        for start in range(0, len(held_ids), LINK_IDS_PER_SEARCH):
+            chunk = held_ids[start : start + LINK_IDS_PER_SEARCH]
+            terms = " OR ".join(f'"{word_list_field}:*{held}*"' for held in chunk)
+            referencing_note_ids = col_find_notes(f"{links.type_term}({terms})")
             # A note an earlier search already changed is taken as it now is, not re-read
             referencing_notes: list[Note] = []
             unread_nids: list[NoteId] = []
@@ -382,10 +329,7 @@ def clear_unadded_note_ids(
                     unread_nids.append(nid)
             referencing_notes.extend(col_get_notes(unread_nids))
             for referencing_note in referencing_notes:
-                if (
-                    word_list_field not in referencing_note
-                    or new_note_id_field not in referencing_note
-                ):
+                if not links.holds_array(referencing_note, new_note_id_field):
                     continue
                 arr = decode_word_array_field(
                     referencing_note,
@@ -395,7 +339,7 @@ def clear_unadded_note_ids(
                 )
                 if arr is None:
                     continue
-                changed = match_targets.clear_placeholder_ids(arr, cleared_ids)
+                changed = match_targets.clear_link_ids(arr, cleared_ids)
                 if changed:
                     referencing_note[word_list_field] = format_word_array(arr)
                     notes_to_update_dict[referencing_note.id] = referencing_note
@@ -518,6 +462,10 @@ def deduplicate_notes_list(
     clustered transitively. For each cluster, keep the note with the smallest meaning number, copy
     in the longest english meaning and its jp meaning, remove the other notes, and remap their
     references in both the processed notes and any other existing notes that point to them.
+    The notes are vocab notes and the references are in their sentence type's arrays
+    (_array_links); in the two-type layout the notes themselves hold none. A note is referred
+    to by its link ID (link_ids.py), a note not added yet by the one it was made with, and an
+    array is repointed in its decoded elements, exact ids compared (match_targets.replace_link_id).
 
     param: notes_to_filter: Notes to filter (new or existing).
     param: config: The addon configuration.
@@ -535,13 +483,12 @@ def deduplicate_notes_list(
     log_prefix = "--deduplicate_notes_list--"
     fuzzy_match_threshold = 88.0
 
-    def get_note_reference(note: Note, reference_field: str) -> str:
-        """Return fake ID reference if present, otherwise fallback to real note.id."""
-        if reference_field in note and note[reference_field]:
-            return str(note[reference_field])
-        if note.id > 0:
-            return str(note.id)
-        return ""
+    def get_note_reference(note: Note, reference_field: str) -> Optional[int]:
+        """What the arrays link the note by: its link ID, the field's ID else its note id, so
+        anything else the field holds is no reference to it (a "0" there, searched for and
+        replaced as text, hit every 0 in the arrays). A note not added yet: the ID it was made
+        with, None with none."""
+        return note_link_id(note, reference_field)
 
     def fuzzy_similarity_score(text_a: str, text_b: str) -> float:
         """Return a fuzzy prefix similarity score in [0, 100]."""
@@ -595,8 +542,8 @@ def deduplicate_notes_list(
     if not grouped:
         return list(notes_to_filter), notes_to_update_dict
 
-    # (ref_to_replace, replacement_ref, word_list_field)
-    merge_mappings: list[tuple[str, str, str]] = []
+    # (ref_to_replace, replacement_ref, where the arrays referring to it are)
+    merge_mappings: list[tuple[int, int, _ArrayLinks]] = []
     deleted_note_obj_ids: set[int] = set()
     # (keep_note, canonical_en_meaning, canonical_jp_meaning, en_field, jp_field)
     meaning_overrides: list[tuple[Note, str, str, str, str]] = []
@@ -613,12 +560,15 @@ def deduplicate_notes_list(
             continue
         english_meaning_field = get_field_config(config, "english_meaning_field", note_type)
         jp_meaning_field = get_field_config(config, "meaning_field", note_type)
-        word_list_field = get_field_config(config, "word_list_field", note_type)
         new_note_id_field = get_field_config(config, "new_note_id_field", note_type)
+        # The vocab block's new_note_id_field is its link ID field: sentence_id_field would take
+        # its place, but layout_error refuses it on a vocab block (MatchFields.new_note_id_field)
+        reference_field = link_id_field(config, note_type["name"]) or new_note_id_field
+        links = _array_links(config, note_type["name"])
         if (
             not english_meaning_field
             or not jp_meaning_field
-            or not word_list_field
+            or not links.word_list_field
             or not new_note_id_field
         ):
             logger.error(f"{log_prefix} Prefix '{prefix}' is missing required fields")
@@ -680,11 +630,10 @@ def deduplicate_notes_list(
             cluster.sort(key=lambda x: x[0])
             _keep_meaning_num, keep_note, _ = cluster[0]
 
-            keep_ref = get_note_reference(keep_note, new_note_id_field)
-            if not keep_ref:
+            keep_ref = get_note_reference(keep_note, reference_field)
+            if keep_ref is None:
                 logger.error(
-                    f"{log_prefix} Missing reference ID (fake or real) for"
-                    f" keep note in prefix '{prefix}'"
+                    f"{log_prefix} Missing link ID for keep note in prefix '{prefix}'"
                 )
                 continue
 
@@ -706,19 +655,18 @@ def deduplicate_notes_list(
             ))
 
             for _meaning_num, dup_note, _ in cluster[1:]:
-                dup_ref = get_note_reference(dup_note, new_note_id_field)
-                if not dup_ref:
+                dup_ref = get_note_reference(dup_note, reference_field)
+                if dup_ref is None:
                     logger.error(
-                        f"{log_prefix} Missing reference ID (fake or real) for"
-                        f" dup note in prefix '{prefix}'"
+                        f"{log_prefix} Missing link ID for dup note in prefix '{prefix}'"
                     )
                     continue
 
                 logger.debug(
                     f"{log_prefix} Deduplicating notes in prefix '{prefix}':"
-                    f" keep fake ID {keep_ref}, remove fake ID {dup_ref}"
+                    f" keep link ID {keep_ref}, remove link ID {dup_ref}"
                 )
-                merge_mappings.append((dup_ref, keep_ref, word_list_field))
+                merge_mappings.append((dup_ref, keep_ref, links))
                 deleted_note_obj_ids.add(id(dup_note))
 
     if not merge_mappings and not meaning_overrides:
@@ -747,7 +695,22 @@ def deduplicate_notes_list(
 
     filtered_notes = [note for note in notes_to_filter if id(note) not in deleted_note_obj_ids]
     processed_note_ids = {note.id for note in notes_to_filter if note.id > 0}
-    for index, (dup_ref, keep_ref, word_list_field) in enumerate(merge_mappings):
+
+    def repointed(ref_note: Note, word_list_field: str, dup_ref: int, keep_ref: int) -> bool:
+        """Whether the note's array linked the duplicate, and now links the note kept. The
+        text holding the ID's digits is only the prefilter: a field that is no array is left
+        as it is, and tagged (decode_word_array_field)."""
+        if word_list_field not in ref_note or str(dup_ref) not in ref_note[word_list_field]:
+            return False
+        arr = decode_word_array_field(
+            ref_note, word_list_field, notes_to_update_dict, f"{log_prefix} note {ref_note.id}--"
+        )
+        if arr is None or not match_targets.replace_link_id(arr, dup_ref, keep_ref):
+            return False
+        ref_note[word_list_field] = format_word_array(arr)
+        return True
+
+    for index, (dup_ref, keep_ref, links) in enumerate(merge_mappings):
         # The cleanup's cancel of its note adding, which runs this first: no note is added
         # after it, so the rest of the merging would be for nothing. Every note comes back,
         # the duplicates included: a caller that adds them anyway leaves no reference
@@ -758,25 +721,22 @@ def deduplicate_notes_list(
                 f"{log_prefix} Cancelled after {index} of {total} merges, no notes dropped"
             )
             return list(notes_to_filter), notes_to_update_dict
-        dup_ref_pattern = rf'"?{re.escape(dup_ref)}"?'
-        for ref_note in filtered_notes:
-            if word_list_field in ref_note and dup_ref in ref_note[word_list_field]:
-                ref_note[word_list_field] = re.sub(
-                    dup_ref_pattern, keep_ref, ref_note[word_list_field]
-                )
-                if ref_note.id > 0:
-                    notes_to_update_dict[ref_note.id] = ref_note
+        word_list_field = links.word_list_field
+        # The notes filtered hold arrays of their own only in the one-type layout. A vocab
+        # note of the two-type layout has none, though it can keep its old array field under
+        # the sentence type's field name: not rewritten, as it is not read
+        own_arrays = filtered_notes if links.one_type else []
+        for ref_note in own_arrays:
+            if repointed(ref_note, word_list_field, dup_ref, keep_ref) and ref_note.id > 0:
+                notes_to_update_dict[ref_note.id] = ref_note
 
-        referencing_nids = col_find_notes(f'"{word_list_field}:*{dup_ref}*"')
+        referencing_nids = col_find_notes(f'{links.type_term}"{word_list_field}:*{dup_ref}*"')
         for ref_nid in referencing_nids:
             if ref_nid in processed_note_ids:
                 continue
             pending = notes_to_update_dict.get(ref_nid)
             ref_note = pending if pending is not None else col_get_note(ref_nid)
-            if word_list_field in ref_note and dup_ref in ref_note[word_list_field]:
-                ref_note[word_list_field] = re.sub(
-                    dup_ref_pattern, keep_ref, ref_note[word_list_field]
-                )
+            if repointed(ref_note, word_list_field, dup_ref, keep_ref):
                 notes_to_update_dict[ref_note.id] = ref_note
 
         if progress_updater is not None:
@@ -819,9 +779,11 @@ def json_result_corrector(json_result: str) -> str:
     return json_result + "]}"
 
 
-# The field names MatchOpArgs carries, all read from the note type's config
+# The field names MatchOpArgs carries, all read from the config
 class MatchFields(TypedDict):
-    """The note type's field names a match op reads, one per configured key."""
+    """The field names a match op reads, one per configured key: SENTENCE_MATCH_FIELD_KEYS of
+    the processed note's type, the rest of the type its words are notes of (get_match_fields).
+    In the two-type layout word_list_field is the sentence type's, never a vocab note's."""
 
     word_list_field: str
     word_kanjified_field: str
@@ -838,16 +800,41 @@ class MatchFields(TypedDict):
     meaning_audio_field: str
     part_of_speech_field: str
     english_meaning_field: str
+    # The vocab type's link ID field (note_roles.link_id_field): where a new note's link ID goes
+    # and what a listed or matched note is linked by. sentence_id_field would take its place,
+    # but layout_error refuses it on a vocab block, and on the one-type layout's
     new_note_id_field: str
 
 
 # Read off MatchFields so the config keys and the type cannot drift apart.
 MATCH_FIELD_KEYS: tuple[str, ...] = tuple(MatchFields.__annotations__)
 
+# The MatchFields keys naming the processed note's own fields, its sentence and its array
+SENTENCE_MATCH_FIELD_KEYS: frozenset[str] = frozenset({
+    "word_list_field",
+    "sentence_field",
+    "sentence_audio_field",
+    "furigana_sentence_field",
+    "kanjified_sentence_field",
+})
+
 
 def get_match_fields(config: dict, note_type: NotetypeDict) -> Optional[MatchFields]:
-    """The note type's field names for MatchOpArgs, or None when any is not configured."""
-    fields = {key: get_field_config(config, key, note_type) for key in MATCH_FIELD_KEYS}
+    """The field names for MatchOpArgs, or None when any is not configured.
+
+    `note_type` is the processed note's, a sentence type: SENTENCE_MATCH_FIELD_KEYS come from
+    its block, the rest from its vocab type's (note_roles.vocab_type_of), which is the same
+    block in the one-type layout. A key missing from the block it is read from raises, as it
+    always has: in the two-type layout a sentence key only the vocab block names is a config
+    error. A broken layout raises LayoutError.
+    """
+    vocab_type: NotetypeDict = {"name": vocab_type_of(config, note_type["name"])}
+    fields = {
+        key: get_field_config(
+            config, key, note_type if key in SENTENCE_MATCH_FIELD_KEYS else vocab_type
+        )
+        for key in MATCH_FIELD_KEYS
+    }
     missing = [key for key, field_name in fields.items() if not field_name]
     if missing:
         logger.error(f"Error: Missing fields in config: {', '.join(missing)}")
@@ -871,13 +858,21 @@ class _WordArrayMatchOpArgs(TypedDict, total=False):
     prompt_sentence: str
     match_qualities: dict[int, int]
     # The target's element in the array (match_targets.word_path), which the meanings call's
-    # capture context records: word_index counts only the run's targets
+    # capture context records and a new note's link ID is keyed by: word_index counts only the
+    # run's targets
     word_path: Optional[list[int]]
+    # The run's index of the vocab type, which hands out the link ID of a note made for the
+    # word (LinkIndex.new_link_id); put in by match_single_word_in_word_tuple before it makes
+    # one (_with_vocab_link_index)
+    vocab_link_index: LinkIndex
 
 
 class MatchOpArgs(_WordArrayMatchOpArgs, MatchFields):
     current_note: Note
+    # The processed note's type, and by name the type its words are notes of
+    # (note_roles.vocab_type_of), the same in the one-type layout
     note_type: NotetypeDict
+    vocab_note_type: str
     word_index: int
     part_of_speech: str
     multi_meaning_index: Optional[int]
@@ -891,7 +886,212 @@ class MatchOpArgs(_WordArrayMatchOpArgs, MatchFields):
     word_note_index: WordIndex
     note_cache: NoteCache
     sentence_cache: SentenceCache
+    # The run's link indexes (link_lookup): a candidate's example sentence note is found by
+    # its link ID through the sentence type's
+    link_index_cache: LinkIndexCache
     cancel_state: CancelState
+
+
+def _two_type_vocab_type(match_op_args: MatchOpArgs) -> Optional[str]:
+    """The name of the vocab type the word's notes are of in the two-type layout, None in the
+    one-type layout, where they are of the processed note's own type. Args naming no
+    vocab_note_type are of the one-type layout."""
+    vocab_type = match_op_args.get("vocab_note_type")
+    if not vocab_type or vocab_type == match_op_args["note_type"]["name"]:
+        return None
+    return vocab_type
+
+
+def _sentence_link_id(config: dict, match_op_args: MatchOpArgs) -> int:
+    """The link ID of the note being processed, which a new note's link ID is keyed by and, in
+    the two-type layout, the new vocab note names its example by (note_roles.copy_example).
+
+    There, an empty link ID field of the sentence note is first filled with its note id, the
+    ID it has anyway, so that it travels with the note when it is exported: the note is saved
+    by this run in any case, since its array gets the new note's ID. A field holding anything
+    else is left as it is. In the one-type layout nothing names an example, and the note is
+    left as it was."""
+    current_note = match_op_args["current_note"]
+    field = link_id_field(config, match_op_args["note_type"]["name"])
+    if (
+        _two_type_vocab_type(match_op_args) is not None
+        and field
+        and field in current_note
+        and not current_note[field].strip()
+    ):
+        current_note[field] = str(current_note.id)
+    held = note_link_id(current_note, field)
+    # None only for a note not added yet; the processed note is read from the collection
+    assert held is not None
+    return held
+
+
+def _new_link_id(match_op_args: MatchOpArgs, sentence_link_id: int) -> int:
+    """The link ID of the vocab note made for the target, generated (link_ids.py) before it is
+    added, so that the array links it while it is prepared and nothing is rewritten after the
+    add. Keyed `vocab|<sentence link ID>|<word path>|<word>|<reading>`: the sentence and the
+    word's place in its array tell apart every note a run makes, so the same sentence makes the
+    same IDs on a rerun or a replay. Handed out by the run's index of the vocab type
+    (`vocab_link_index`): an ID no vocab note holds, and that no other note of the run got. A
+    caller naming no word path (only tests do) keys by none."""
+    path = ".".join(str(index) for index in match_op_args.get("word_path") or ())
+    key = "|".join(
+        ("vocab", str(sentence_link_id), path, match_op_args["word"], match_op_args["reading"])
+    )
+    return match_op_args["vocab_link_index"].new_link_id(key)
+
+
+async def _with_vocab_link_index(config: dict, match_op_args: MatchOpArgs) -> MatchOpArgs:
+    """`match_op_args` holding the run's index of the vocab type, which hands out the link ID
+    of a note about to be made: awaited here, on the event loop, since the note is made in a
+    pool thread. The run read the index before its first request (refuse_duplicate_link_ids),
+    so this waits for nothing; asked for only when a note is to be made."""
+    vocab_type = _two_type_vocab_type(match_op_args) or match_op_args["note_type"]["name"]
+    match_op_args["vocab_link_index"] = await match_op_args["link_index_cache"].get(
+        config, vocab_type
+    )
+    return match_op_args
+
+
+def _note_type_by_name(name: str) -> NotetypeDict:
+    """The note type a two-type layout's new notes are made in, read on the collection's thread
+    as the run's other reads are. A LayoutError names a vocab type the collection lacks."""
+    note_type = run_on_collection(f"note type {name}", lambda: mw.col.models.by_name(name))
+    if note_type is None:
+        raise LayoutError(
+            f'Note type "{name}", which the settings make the vocab note type, does not exist.'
+        )
+    return note_type
+
+
+def _sentence_type_fields(config: dict, sentence_type_name: str) -> list[str]:
+    """The fields the sentence type's block names for a sentence and its array. In the two-type
+    layout the vocab type keeps fields of these names, holding the sentence and array a vocab
+    note had before the split, until the user deletes them."""
+    block = config.get(sentence_type_name)
+    if not isinstance(block, Mapping):
+        return []
+    names = [named_field(block, key) for key in ("word_list_field", *SENTENCE_KEYS)]
+    return [name for name in names if name]
+
+
+def _own_sentence(config: dict, match_op_args: MatchOpArgs) -> EnAndJPSentence:
+    """What a two-type vocab note being made is cleaned with as its own sentence (clean_meaning's
+    own_sentence): the target's, its occurrence in <b> as the main prompt showed it, and the
+    processed sentence note's translation, by the sentence type's field name. The new note's
+    example id names that sentence note already, but read from there the <b> would go on the
+    word's first occurrence: nothing links a note that is not added yet."""
+    current_note = match_op_args["current_note"]
+    translation_field = get_field_config(
+        config, "translated_sentence_field", match_op_args["note_type"]
+    )
+    return EnAndJPSentence(
+        jp_sentence=match_op_args.get("prompt_sentence") or match_op_args["sentence"],
+        en_sentence=(
+            strip_html(current_note[translation_field]) if translation_field in current_note else ""
+        ),
+    )
+
+
+def _example_sentence_id(note: Note, id_field: Optional[str]) -> Optional[int]:
+    """The link ID (link_ids.py) a two-type vocab note's example id field names its example
+    sentence note by, None when it names none: no such field, empty, or no link ID. The
+    sentence note's own ID field's value whenever that holds one, so never fetched as a note
+    id (_example_sentence_notes)."""
+    if not id_field or id_field not in note:
+        return None
+    return parse_link_id(note[id_field].strip())
+
+
+async def _example_sentence_notes(
+    config: dict,
+    sentence_type: str,
+    example_ids: Iterable[Optional[int]],
+    link_index_cache: LinkIndexCache,
+    notes_to_update_dict: dict[NoteId, Note],
+    note_cache: NoteCache,
+    log_prefix: str,
+) -> dict[int, Note]:
+    """The sentence notes holding these link IDs that exist, by link ID. Each is resolved by the
+    run's index of the sentence type, then read as this run has edited it, which is how a
+    one-type candidate's own array is read, else through the run's note cache, in one turn with
+    the collection. An ID no sentence note holds is left out unread, and so is a note deleted
+    since the index was read: the cache leaves out an id with no note."""
+    wanted = list(dict.fromkeys(held for held in example_ids if held is not None))
+    if not wanted:
+        return {}
+    index = await link_index_cache.get(config, sentence_type)
+    holders = {held: cast(NoteId, nid) for held, nid in index.note_ids(wanted).items()}
+    for held in wanted:
+        if held not in holders:
+            logger.warning(f"{log_prefix}No sentence note holds example link ID {held}")
+    note_ids = list(dict.fromkeys(holders.values()))
+    found = {nid: notes_to_update_dict[nid] for nid in note_ids if nid in notes_to_update_dict}
+    to_fetch = [nid for nid in note_ids if nid not in found]
+    found.update(await note_cache.get_notes(to_fetch))
+    for nid in to_fetch:
+        if nid not in found:
+            logger.warning(f"{log_prefix}Example sentence note {nid} is gone")
+    return {held: found[nid] for held, nid in holders.items() if nid in found}
+
+
+def _sentence_note_example(
+    example: Optional[Note],
+    fields: MatchFields,
+    word: str,
+    reading: str,
+    word_link_id: Optional[int],
+) -> str:
+    """A two-type candidate's example sentence in the main prompt: its example sentence note's,
+    made from that note's array as a one-type note's is made from its own, so a migrated note
+    shows the text it showed before. "" when it has none, as a generated meaning has: no note,
+    or one holding no array, which leaves nothing to mark the word in (a sentence note stores no
+    <b>: which of its words is bold depends on the vocab note showing it).
+    `word_link_id` is the candidate's link ID, which the array's element of its word holds."""
+    sentence_field = fields["furigana_sentence_field"]
+    word_list_field = fields["word_list_field"]
+    if example is None or sentence_field not in example or word_list_field not in example:
+        return ""
+    if not match_flags.decode_word_array(example[word_list_field]):
+        return ""
+    return match_targets.example_sentence(
+        example[sentence_field], example[word_list_field], word, reading, word_link_id
+    )
+
+
+def _give_sentence(
+    config: dict, match_op_args: MatchOpArgs, new_note: Note, sentence_link_id: int
+) -> Optional[EnAndJPSentence]:
+    """Give a new note the sentence its word was found in, for both new-note builders, each of
+    which first blanks what its note must not keep. Returns the cleaning's `own_sentence`.
+
+    In the one-type layout the processed note's four sentence fields, as a new note always got
+    them, and None: the cleaning reads them off the note, and an own sentence handed in would
+    change its prompts. In the two-type layout a vocab note holds no sentence, only its
+    example's translation, audio and link ID, the sentence note being processed, which is in
+    the collection (note_roles.copy_example), and the cleaning gets the target's sentence
+    (`_own_sentence`). The builders call this before any other note is renamed for the new
+    one: a field the settings name and a note lacks raises here."""
+    current_note = match_op_args["current_note"]
+    vocab_type = _two_type_vocab_type(match_op_args)
+    if vocab_type is None:
+        sentence_field = match_op_args["sentence_field"]
+        sentence_audio_field = match_op_args["sentence_audio_field"]
+        furigana_sentence_field = match_op_args["furigana_sentence_field"]
+        kanjified_sentence_field = match_op_args["kanjified_sentence_field"]
+        new_note[sentence_field] = current_note[sentence_field]
+        new_note[sentence_audio_field] = current_note[sentence_audio_field]
+        new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
+        new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
+        return None
+    copy_example(
+        config,
+        vocab_type,
+        sentence_note=current_note,
+        sentence_id=sentence_link_id,
+        vocab_note=new_note,
+    )
+    return _own_sentence(config, match_op_args)
 
 
 def create_new_note_without_matching(
@@ -920,15 +1120,11 @@ def create_new_note_without_matching(
     word_processed_furigana_field = match_op_args["word_processed_furigana_field"]
     word_sort_field = match_op_args["word_sort_field"]
     meaning_field = match_op_args["meaning_field"]
-    sentence_field = match_op_args["sentence_field"]
-    sentence_audio_field = match_op_args["sentence_audio_field"]
     furigana_sentence_field = match_op_args["furigana_sentence_field"]
-    kanjified_sentence_field = match_op_args["kanjified_sentence_field"]
     part_of_speech_field = match_op_args["part_of_speech_field"]
     english_meaning_field = match_op_args["english_meaning_field"]
     new_note_id_field = match_op_args["new_note_id_field"]
 
-    current_note = match_op_args["current_note"]
     note_type = match_op_args["note_type"]
     notes_to_add_dict = match_op_args["notes_to_add_dict"]
     notes_to_update_dict = match_op_args["notes_to_update_dict"]
@@ -938,15 +1134,16 @@ def create_new_note_without_matching(
     word_note_index = match_op_args["word_note_index"]
     sentence_cache = match_op_args["sentence_cache"]
     note_cache = match_op_args["note_cache"]
+    vocab_type = _two_type_vocab_type(match_op_args)
+    sentence_link_id = _sentence_link_id(config, match_op_args)
 
-    new_note = Note(col=mw.col, model=note_type)
+    new_note = Note(
+        col=mw.col, model=note_type if vocab_type is None else _note_type_by_name(vocab_type)
+    )
     new_note[word_kanjified_field] = word
     new_note[word_normal_field] = word
     new_note[word_reading_field] = reading
-    new_note[sentence_field] = current_note[sentence_field]
-    new_note[sentence_audio_field] = current_note[sentence_audio_field]
-    new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
-    new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
+    own_sentence = _give_sentence(config, match_op_args, new_note, sentence_link_id)
     new_note_furigana = make_furigana_from_reading(word, reading)
     new_note[word_furigana_field] = new_note_furigana
     logger.debug(
@@ -972,7 +1169,7 @@ def create_new_note_without_matching(
     )
     logger.debug(f"{log_prefix}New note reading type for word {word}: {new_note_reading_type}")
     new_note[word_sort_field] = word
-    new_note.add_tag("new_matched_jp_word")
+    new_note.add_tag(NEW_MATCHED_TAG)
     # Query for a note with a (kun)/(on) or (rX) marker in the sort field, we'll want to
     # set the marker in this note appropriately based on that:
     # - if there is (kun) --> this should be (on), or other way around
@@ -1200,11 +1397,13 @@ def create_new_note_without_matching(
             if largest_r_number == 0:
                 update_marker_notes_with_r1(marker_notes)
 
-    new_note[furigana_sentence_field] = sentence
+    if vocab_type is None:
+        new_note[furigana_sentence_field] = sentence
     new_note[meaning_field] = ""
     new_note[part_of_speech_field] = match_op_args["part_of_speech"]
     new_note[english_meaning_field] = ""
-    new_note_id = make_new_note_id(new_note)
+    # Its link ID from now on: the array links it by this, and it keeps it once added
+    new_note_id = _new_link_id(match_op_args, sentence_link_id)
     new_note[new_note_id_field] = str(new_note_id)
     create_meaning_result = clean_meaning_in_note(
         config=config,
@@ -1216,6 +1415,7 @@ def create_new_note_without_matching(
         word_note_index=word_note_index,
         sentence_cache=sentence_cache,
         note_cache=note_cache,
+        own_sentence=own_sentence,
     ).changed
     new_note[word_sort_field] = new_note[word_sort_field].replace(") (", ")(").replace("  ", " ")
     # Only if the meaning creation was successful do we add the note to the notes to add dict and
@@ -1279,8 +1479,10 @@ def upsert_meaning_marker(sort_field_value: str, meaning_number: int, fallback_w
 
 def link_word_to_note(match_op_args: MatchOpArgs, note: Note) -> ProcessedWordTuple:
     """Link the target word to `note`, as a MATCH does: its word tuple names the note's sort
-    field and id, or the placeholder id it carries until it is added (as an int, which
-    update_fake_note_ids rewrites as it does a MATCH's string)."""
+    field and its link ID (link_ids.note_link_id, in the vocab type's new_note_id_field): an
+    added note's, or the one a note not added yet was made with, which it keeps once added.
+    None, and the word left as it was, for a note not added that holds none, which nothing can
+    link."""
     word = match_op_args["word"]
     reading = match_op_args["reading"]
     multi_meaning_index = match_op_args.get("multi_meaning_index")
@@ -1288,7 +1490,13 @@ def link_word_to_note(match_op_args: MatchOpArgs, note: Note) -> ProcessedWordTu
     word_sort_field = match_op_args["word_sort_field"]
     if note.id > 0 and note.id in notes_to_update_dict:
         note = notes_to_update_dict[note.id]
-    note_id = note.id if note.id > 0 else int(note[match_op_args["new_note_id_field"]])
+    note_id = note_link_id(note, match_op_args["new_note_id_field"])
+    if note_id is None:
+        logger.error(
+            f"Note {note[word_sort_field]!r} is not added and holds no link ID: the word"
+            f" {word} is not linked to it"
+        )
+        return None
     word_tuple: ProcessedWordTuple = (
         (word, reading, multi_meaning_index, note[word_sort_field], note_id)
         if multi_meaning_index is not None
@@ -1327,7 +1535,6 @@ def create_new_note_from_matched_note(
     word = match_op_args["word"]
     reading = match_op_args["reading"]
     multi_meaning_index = match_op_args.get("multi_meaning_index")
-    current_note = match_op_args["current_note"]
     notes_to_add_dict = match_op_args["notes_to_add_dict"]
     notes_to_update_dict = match_op_args["notes_to_update_dict"]
     all_generated_meanings_dict = match_op_args["all_generated_meanings_dict"]
@@ -1335,10 +1542,6 @@ def create_new_note_from_matched_note(
 
     word_list_field = match_op_args["word_list_field"]
     meaning_audio_field = match_op_args["meaning_audio_field"]
-    sentence_field = match_op_args["sentence_field"]
-    sentence_audio_field = match_op_args["sentence_audio_field"]
-    furigana_sentence_field = match_op_args["furigana_sentence_field"]
-    kanjified_sentence_field = match_op_args["kanjified_sentence_field"]
     meaning_field = match_op_args["meaning_field"]
     english_meaning_field = match_op_args["english_meaning_field"]
     word_sort_field = match_op_args["word_sort_field"]
@@ -1348,19 +1551,29 @@ def create_new_note_from_matched_note(
         note_to_copy = notes_to_update_dict[note_to_copy.id]
     logger.debug(f"{log_prefix} Starting")
 
+    vocab_type = _two_type_vocab_type(match_op_args)
+    sentence_link_id = _sentence_link_id(config, match_op_args)
+    # The copy holds the copied note's link ID too until its own is written in, below
     new_note = copy_into_new_note(note_to_copy)
-    # Don't copy tags and the word list field to the new note
+    # Don't copy tags, the meaning's audio and the copied note's sentence to the new note
     new_note.set_tags_from_str("")
-    new_note[word_list_field] = ""
     new_note[meaning_audio_field] = ""
-    new_note.add_tag("new_matched_jp_word")
-    new_note[sentence_field] = current_note[sentence_field]
-    new_note[sentence_audio_field] = current_note[sentence_audio_field]
-    new_note[furigana_sentence_field] = current_note[furigana_sentence_field]
-    new_note[kanjified_sentence_field] = current_note[kanjified_sentence_field]
+    new_note.add_tag(NEW_MATCHED_TAG)
+    if vocab_type is None:
+        new_note[word_list_field] = ""
+    else:
+        # The copy brings along the copied note's example and, while the vocab type keeps the
+        # fields, the sentence and array it held before the split: another note's sentence,
+        # blanked before the example is copied from the sentence note being processed
+        for field in _sentence_type_fields(config, match_op_args["note_type"]["name"]):
+            if field in new_note:
+                new_note[field] = ""
+    own_sentence = _give_sentence(config, match_op_args, new_note, sentence_link_id)
     new_note[meaning_field] = jp_meaning.strip() if jp_meaning else ""
     new_note[english_meaning_field] = en_meaning.strip() if en_meaning else ""
-    new_note_id = make_new_note_id(new_note)
+    # Its link ID from now on, in place of the copied note's: the array links it by this, and
+    # it keeps it once added
+    new_note_id = _new_link_id(match_op_args, sentence_link_id)
     new_note[new_note_id_field] = str(new_note_id)
     # Process the meaning again with clean_meaning_in_note to get the best possible
     # meaning
@@ -1381,6 +1594,7 @@ def create_new_note_from_matched_note(
         other_meaning_notes=matching_notes,
         sentence_cache=match_op_args.get("sentence_cache"),
         note_cache=match_op_args.get("note_cache"),
+        own_sentence=own_sentence,
     )
     if cleaned.same_sense_as is not None:
         # The new meaning is one a note of the word holds: the word is linked to that note and
@@ -1396,7 +1610,7 @@ def create_new_note_from_matched_note(
             f"{log_prefix} New meaning repeats a note's sense, linked the word instead:"
             f" {word_tuple}"
         )
-        return True
+        return word_tuple is not None
     # If we're copying a note, we need to ensure the meaning number is at least 2
     # as the first meaning should be (m1)
     largest_meaning_index = max(largest_meaning_index, 2)
@@ -1618,8 +1832,10 @@ async def match_single_word_in_word_tuple(
     meaning_field = match_op_args["meaning_field"]
     furigana_sentence_field = match_op_args["furigana_sentence_field"]
     english_meaning_field = match_op_args["english_meaning_field"]
-    new_note_id_field = match_op_args["new_note_id_field"]
     word_list_field = match_op_args["word_list_field"]
+    # The vocab type's link ID field: what an example's array links a listed note by, to mark
+    # its word there, and what the word is linked by when it matches the note
+    new_note_id_field = match_op_args["new_note_id_field"]
     prompt_sentence = match_op_args.get("prompt_sentence") or sentence
     match_qualities = match_op_args.get("match_qualities")
 
@@ -1724,13 +1940,34 @@ async def match_single_word_in_word_tuple(
                 create_new_note_without_matching,
                 config=config,
                 log_prefix=log_prefix,
-                match_op_args=match_op_args,
+                match_op_args=await _with_vocab_link_index(config, match_op_args),
             )
 
         if matching_new_notes:
             # If we have notes to add that match the word, we should add them to the list of notes
             # to check against, so we are comparing against both existing notes and new notes
             matching_notes.extend(matching_new_notes)
+
+        # In the two-type layout a note's example sentence is its example sentence note's, read
+        # for every note whose meaning is listed in one turn with the collection
+        vocab_type = _two_type_vocab_type(match_op_args)
+        id_field: Optional[str] = None
+        example_notes: dict[int, Note] = {}
+        if vocab_type is not None:
+            id_field = example_id_field(config, vocab_type)
+            example_notes = await _example_sentence_notes(
+                config,
+                sentence_type_of(config, vocab_type),
+                [
+                    _example_sentence_id(note, id_field)
+                    for note in matching_notes
+                    if meaning_field in note and note[meaning_field]
+                ],
+                match_op_args["link_index_cache"],
+                notes_to_update_dict,
+                match_op_args["note_cache"],
+                log_prefix,
+            )
 
         # Get all the meanings from the notes to check against the sentence
         meanings: list[tuple[str, int, Optional[NoteId], str, str, str]] = []
@@ -1754,13 +1991,25 @@ async def match_single_word_in_word_tuple(
                     note[english_meaning_field] if english_meaning_field in note else ""
                 )
                 match_word = note[word_kanjified_field] if word_kanjified_field in note else ""
-                other_sentence = match_targets.example_sentence(
-                    note[furigana_sentence_field] if furigana_sentence_field in note else "",
-                    note[word_list_field] if word_list_field in note else "",
-                    match_word,
-                    note[word_reading_field] if word_reading_field in note else "",
-                    note.id,
-                )
+                if vocab_type is None:
+                    other_sentence = match_targets.example_sentence(
+                        note[furigana_sentence_field] if furigana_sentence_field in note else "",
+                        note[word_list_field] if word_list_field in note else "",
+                        match_word,
+                        note[word_reading_field] if word_reading_field in note else "",
+                        note_link_id(note, new_note_id_field),
+                    )
+                else:
+                    example_id = _example_sentence_id(note, id_field)
+                    if example_id is None:
+                        logger.debug(f"{log_prefix}Note {note.id} names no example sentence note")
+                    other_sentence = _sentence_note_example(
+                        example_notes.get(example_id) if example_id is not None else None,
+                        match_op_args,
+                        match_word,
+                        note[word_reading_field] if word_reading_field in note else "",
+                        note_link_id(note, new_note_id_field),
+                    )
                 if meaning:
                     sort_field = note[word_sort_field]
                     # Get the meaning number, if any from sort field, in the form (m1), (m2), etc.
@@ -1787,7 +2036,7 @@ async def match_single_word_in_word_tuple(
                     )
                     meanings.append(meaning_entry)
                     meaning_sources[id(meaning_entry)] = {
-                        "note_id": linked_note_id(note, new_note_id_field),
+                        "note_id": note_link_id(note, new_note_id_field),
                         "m_number": matched_meaning_number,
                         "gen_index": None,
                     }
@@ -1853,7 +2102,7 @@ async def match_single_word_in_word_tuple(
             "word_path": match_op_args.get("word_path"),
             "meanings": [meaning_sources.get(id(entry)) for entry in meanings],
             "copy_note_id": (
-                linked_note_id(note_to_copy, new_note_id_field) if note_to_copy else None
+                note_link_id(note_to_copy, new_note_id_field) if note_to_copy else None
             ),
         }
         meanings_str = match_targets.meanings_listing(listed_meanings)
@@ -2124,7 +2373,7 @@ None of the meanings fit, so you create a new one.
                     jp_meaning=jp_meaning,
                     en_meaning=en_meaning,
                     log_prefix=log_prefix,
-                    match_op_args=match_op_args,
+                    match_op_args=await _with_vocab_link_index(config, match_op_args),
                 )
             else:
                 logger.debug(
@@ -2162,7 +2411,7 @@ None of the meanings fit, so you create a new one.
                         jp_meaning=gen_meaning["jp_meaning"],
                         en_meaning=gen_meaning["en_meaning"],
                         log_prefix=log_prefix,
-                        match_op_args=match_op_args,
+                        match_op_args=await _with_vocab_link_index(config, match_op_args),
                     )
                 else:
                     logger.debug(
@@ -2189,27 +2438,14 @@ None of the meanings fit, so you create a new one.
                     f" word {word} with reading {reading}"
                 )
                 return False
-            # Add the matched note to processed_word_tuples
-            matched_note_id = (
-                matched_note.id if matched_note.id > 0 else matched_note[new_note_id_field]
-            )
-            new_word_tuple = (
-                (
-                    word,
-                    reading,
-                    multi_meaning_index,
-                    matched_note[word_sort_field],
-                    matched_note_id,
-                )
-                if multi_meaning_index is not None
-                else (word, reading, matched_note[word_sort_field], matched_note_id)
-            )
+            # Add the matched note to processed_word_tuples, by its link ID: an added note's,
+            # or the one a note this run made was made with
+            new_word_tuple = link_word_to_note(match_op_args, matched_note)
             logger.debug(
                 f"{log_prefix}Setting processed word tuple at index {word_index}, with tuple"
                 f" {new_word_tuple}"
             )
-            processed_word_tuples[word_index] = new_word_tuple
-            return True
+            return new_word_tuple is not None
         else:
             logger.debug(
                 f"{log_prefix}Error: Unexpected invalid meaning object for word {word} with"
@@ -2228,19 +2464,30 @@ async def rate_linked_word(
     cancel_state: CancelState,
     log_prefix: str,
     word_path: Optional[list[int]] = None,
+    *,
+    link_index: LinkIndex,
 ) -> Optional[int]:
     """Ask the secondary prompt how well the meaning of the note a word is already linked to fits
     its occurrence, returning the match_quality, or None when there was no meaning to rate or no
     valid rating came back. `word_path` (match_targets.word_path) is only recorded, in the call's
-    capture context."""
+    capture context.
+
+    The word's `match_data` holds the note's link ID (link_ids.py), resolved by `link_index`, the
+    run's index of the vocab type: fetched as a note id, a generated ID finds no note and a note
+    id that is not its note's link ID can find another note."""
     log_prefix = f"{log_prefix}rate--word:'{target.word}'--reading:'{target.reading}'--"
-    note_id = match_flags.matched_note_id(target.elem)
-    if note_id is None or note_id <= 0:
-        logger.debug(f"{log_prefix}No real note id to rate: {target.elem[4]}")
+    linked = match_flags.matched_note_id(target.elem)
+    if linked is None or not is_link_id(linked):
+        logger.debug(f"{log_prefix}No link ID to rate: {target.elem[4]}")
         return None
-    note = notes_to_update_dict.get(cast(NoteId, note_id))
+    holder = link_index.note_id(linked)
+    if holder is None:
+        logger.warning(f"{log_prefix}No vocab note holds link ID {linked}, left unrated")
+        return None
+    note_id = cast(NoteId, holder)
+    note = notes_to_update_dict.get(note_id)
     if note is None:
-        note = (await note_cache.get_notes([cast(NoteId, note_id)])).get(cast(NoteId, note_id))
+        note = (await note_cache.get_notes([note_id])).get(note_id)
     if note is None:
         logger.warning(f"{log_prefix}Linked note {note_id} not found, left unrated")
         return None
@@ -2298,10 +2545,14 @@ def plan_word_array_matching(
     sentence_cache: SentenceCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]],
     log_prefix: str,
+    link_index_cache: LinkIndexCache,
     states: Iterable[MatchState] = (MatchState.MATCH,),
 ) -> Optional[NotePlan]:
     """Plan matching the words of a note's word array in `states`, by default the ones the
     judge made `["match"]` (see match_targets.states_to_match).
+
+    `link_index_cache` holds the run's link indexes (link_lookup), which resolve a linked word
+    to its note when it is rated and a listed note's example sentence note.
 
     Each occurrence is its own task (match_single_word_in_word_tuple). Its result is kept
     by target index, and once every task is done the matched ids go into the elements'
@@ -2310,16 +2561,17 @@ def plan_word_array_matching(
     is nothing to match.
 
     The save is also the plan's flush, so that a cancelled run still saves what the finished
-    tasks found: matches to existing notes, and the placeholder ids of new notes, which cleanup
-    still adds and which nothing would refer to otherwise. Unfinished words stay `["match"]`,
-    for the next run. The save runs once, whichever comes first.
+    tasks found: matches to existing notes, and the link IDs of new notes, which cleanup still
+    adds and which nothing would refer to otherwise. Unfinished words stay `["match"]`, for
+    the next run. The save runs once, whichever comes first.
 
     Words linked to a note without a match_quality, `[note_id]`, are rated by the secondary
     prompt in the same run (rate_linked_word), unless `states` has them matched again.
 
-    A new note's placeholder id an earlier run left in the array is first swapped for the id of
-    the note that was added (see match_targets.resolve_placeholder_ids), so a rematch doesn't
-    take it for a word of its own, and the array saved.
+    A legacy placeholder, left in the array by a run from before new notes had link IDs, is
+    first swapped for the link ID of the note that was added (see
+    match_targets.resolve_placeholder_ids), so a rematch doesn't take it for a word of its own,
+    and the array saved.
     """
     rate_states = match_targets.states_to_rate(states)
 
@@ -2342,6 +2594,7 @@ def plan_word_array_matching(
             logger.error(f"{log_prefix}Error: Missing match words model or fields in config")
         progress_updater.increment_counts(notes_done=1)
         return None
+    vocab_note_type = vocab_type_of(config, note_type["name"])
 
     def save_note():
         current_note = notes_to_update_dict.get(note.id, note)
@@ -2351,18 +2604,26 @@ def plan_word_array_matching(
             edited_nids.append(current_note.id)
 
     if placeholders:
+        # A legacy placeholder is held, in its new_note_id_field, by the vocab note made for
+        # it. In the one-type layout that can be the processed note itself, made by an earlier
+        # run; a sentence note never is. The array gets the holder's link ID: the field holds
+        # no link ID but the placeholder, so that is its note id (link_ids.link_id), as it is
+        # until "Fill link IDs" writes it into the field
         new_note_id_field = fields["new_note_id_field"]
+        vocab_type_term = note_type_search(vocab_note_type)
+        can_hold_own = vocab_note_type == note_type["name"]
 
-        def notes_holding(fake_id: int) -> list[NoteId]:
-            if new_note_id_field in note and note[new_note_id_field] == str(fake_id):
-                return [note.id]
-            return list(
-                col_find_notes(f'''"note:{note_type["name"]}" "{new_note_id_field}:{fake_id}"''')
-            )
+        def holders(fake_id: int) -> list[int]:
+            placeholder = str(fake_id)
+            own = note[new_note_id_field] if new_note_id_field in note else ""
+            if can_hold_own and own == placeholder:
+                return [link_id(placeholder, note.id)]
+            found = col_find_notes(f'{vocab_type_term} "{new_note_id_field}:{placeholder}"')
+            return [link_id(placeholder, nid) for nid in found]
 
-        resolved = match_targets.resolve_placeholder_ids(arr, notes_holding)
+        resolved = match_targets.resolve_placeholder_ids(arr, holders)
         if resolved:
-            logger.debug(f"{log_prefix}Resolved {resolved} new note placeholder ids")
+            logger.debug(f"{log_prefix}Resolved {resolved} legacy new note placeholder ids")
             save_note()
             targets = gather(states)
             rate_targets = gather(rate_states) if rate_states else []
@@ -2396,6 +2657,7 @@ def plan_word_array_matching(
                     **fields,
                     current_note=note,
                     note_type=note_type,
+                    vocab_note_type=vocab_note_type,
                     word_index=target_index,
                     part_of_speech=target.part_of_speech,
                     multi_meaning_index=None,
@@ -2412,11 +2674,12 @@ def plan_word_array_matching(
                     word_note_index=word_note_index,
                     note_cache=note_cache,
                     sentence_cache=sentence_cache,
+                    link_index_cache=link_index_cache,
                     cancel_state=cancel_state,
                 ),
             )
             # What the word got, whichever of the many ways out of the match it took: the
-            # tuple save_finished writes into the element, the placeholder of a new note, or
+            # tuple save_finished writes into the element, the link ID of a new note, or
             # nothing. The calls that decided it are in the same task
             if capture.notes_on():
                 capture.event(
@@ -2438,6 +2701,8 @@ def plan_word_array_matching(
         target_index: int,
     ) -> bool:
         target = rate_targets[target_index]
+        # The words link notes of the vocab type, by their link IDs
+        vocab_index = await link_index_cache.get(config, vocab_note_type)
         # A word target's capture task, as in match_op
         with capture.task_scope(f"{target.word}|{target.reading}"):
             quality = await rate_linked_word(
@@ -2450,6 +2715,7 @@ def plan_word_array_matching(
                 cancel_state=cancel_state,
                 log_prefix=log_prefix,
                 word_path=match_targets.word_path(arr, target.elem),
+                link_index=vocab_index,
             )
             if capture.notes_on():
                 capture.event(
@@ -2547,6 +2813,7 @@ def match_words_to_notes_for_note(
     word_note_index_cache: WordIndexCache,
     note_cache: NoteCache,
     sentence_cache: SentenceCache,
+    link_index_cache: LinkIndexCache,
     limit_words_and_readings: Optional[list[RawOneMeaningWordType]] = None,
     reprocess_words: Optional[WithProcessed] = None,
 ) -> Optional[NotePlan]:
@@ -2585,6 +2852,8 @@ def match_words_to_notes_for_note(
             instead of all words in the note.
         reprocess_words (str|None): When limit_words_and_readings is provided, which
             already-processed words to rematch as well. None matches unprocessed only.
+        link_index_cache (LinkIndexCache): The run's link indexes, shared by every note,
+            each read by the first task that needs it (plan_word_array_matching).
     """
     if not note:
         logger.error("Error: No note provided for matching words")
@@ -2646,7 +2915,36 @@ def match_words_to_notes_for_note(
             replace_existing,
             reprocess_words if limit_words_and_readings else None,
         ),
+        link_index_cache=link_index_cache,
     )
+
+
+async def refuse_duplicate_link_ids(
+    config: dict, notes: Sequence[Note], link_index_cache: LinkIndexCache
+) -> None:
+    """Raises DuplicateLinkIdsError, before the run's first request, while two notes of a type
+    the notes' words are notes of hold one link ID (link_ids.duplicates_error): the run would
+    link a word matched to either of them by an ID that names the one keeping it
+    (link_ids.LinkIndex: the holder whose own note id the ID is, else the oldest), and hand its
+    own new notes IDs beside it. A note whose type has no vocab type (a broken layout, a type
+    the settings lack) is left to fail as it plans, as it always has.
+
+    Each vocab type's index is read into the run's cache, which serves the rest of the run:
+    the ratings and the new notes' IDs."""
+    vocab_types: dict[str, None] = {}
+    for name in dict.fromkeys(note_type_name(note) for note in notes):
+        if not name:
+            continue
+        try:
+            vocab_types[vocab_type_of(config, name)] = None
+        except LayoutError:
+            continue
+    for vocab_type in vocab_types:
+        index = await link_index_cache.get(config, vocab_type)
+        error = duplicates_error(vocab_type, link_id_field(config, vocab_type), index)
+        if error is not None:
+            logger.error(error)
+            raise DuplicateLinkIdsError(error)
 
 
 async def bulk_match_words_to_notes(
@@ -2700,6 +2998,12 @@ async def bulk_match_words_to_notes(
     # And again, on the same argument: which notes mention a note id cannot change while the
     # run is going, and one measured run asked that question 257 times about 60 note ids
     sentence_cache = SentenceCache()
+    # And the link IDs of a type's notes, which resolve every linked word and example sentence
+    # id the run reads and hand out its new notes' IDs: one pass over the type's notes for the
+    # whole run
+    link_index_cache = LinkIndexCache()
+    sentence_notes = notes_of_role(config, notes, SENTENCE_ROLE)
+    await refuse_duplicate_link_ids(config, sentence_notes, link_index_cache)
 
     def inner_op(
         config: dict,
@@ -2732,6 +3036,7 @@ async def bulk_match_words_to_notes(
             sentence_cache=sentence_cache,
             limit_words_and_readings=limit_words_and_readings,
             reprocess_words=reprocess_words,
+            link_index_cache=link_index_cache,
         )
 
     def on_end():
@@ -2764,7 +3069,7 @@ async def bulk_match_words_to_notes(
         config=config,
         bulk_inner_op=inner_op,
         col=col,
-        notes=notes,
+        notes=sentence_notes,
         edited_nids=edited_nids,
         progress_updater=progress_updater,
         notes_to_add_dict=notes_to_add_dict,
@@ -2797,8 +3102,7 @@ def match_words_to_notes_from_selected(
         nids,
         parent,
         AsyncTaskProgressUpdater(title=spec.title),
-        spec.new_notes_op,
-        spec.filter_new_notes_op,
+        filter_new_notes_op=spec.filter_new_notes_op,
         unadded_notes_op=spec.unadded_notes_op,
         tidy_markers_op=spec.tidy_markers_op,
         chain=chain,
@@ -2807,16 +3111,33 @@ def match_words_to_notes_from_selected(
 
 def match_words_spec() -> NotesRunSpec:
     """The match op's run, as the menu starts it and as a script does (`NotesRunSpec`). Built
-    when called, so that it takes the module's functions as they are then."""
+    when called, so that it takes the module's functions as they are then. No new_notes_op:
+    a new note holds its link ID from the moment it is made, so nothing is rewritten after it
+    is added."""
     return NotesRunSpec(
         done_text="Matched words to notes",
         title="Async AI op: Matching words to notes",
         bulk_op=bulk_match_words_to_notes,
-        new_notes_op=update_fake_note_ids,
         filter_new_notes_op=deduplicate_notes_list,
         unadded_notes_op=clear_unadded_note_ids,
         tidy_markers_op=tidy_sort_field_markers,
     )
+
+
+class WordMatchQuery(NamedTuple):
+    """A vocab note's word and reading, and where the arrays that can hold the word are: its
+    sentence type's notes (note_roles.sentence_type_of), the same type in the one-type layout."""
+
+    word: str
+    reading: str
+    # The sentence type's `note:` term and its word_list_field
+    type_term: str
+    word_list_field: str
+
+    def search(self, word_regex: str) -> str:
+        """The search for the notes whose array matches `word_regex`
+        (match_flags.word_array_query_regex)."""
+        return f'{self.type_term} "{self.word_list_field}:re:{word_regex}"'
 
 
 def get_note_word_match_query(
@@ -2824,14 +3145,15 @@ def get_note_word_match_query(
     note: Note,
     note_type: NotetypeDict,
     log_prefix: str,
-) -> Optional[tuple[str, str, str]]:
+) -> Optional[WordMatchQuery]:
     """
-    Extract target word, reading, and word list field name from a note for word-match queries.
+    The word-match query of a vocab note: its word and reading, read with its own type's
+    fields, and its sentence type's array field. None, logged, when the note lacks a field.
 
-    Returns:
-        (target_word, target_reading, word_list_field) or None on error.
+    Raises as get_field_config does, and LayoutError (note_roles) for a broken layout.
     """
-    word_list_field = get_field_config(config, "word_list_field", note_type)
+    sentence_type = sentence_type_of(config, note_type["name"])
+    word_list_field = get_field_config(config, "word_list_field", {"name": sentence_type})
     word_kanjified_field = get_field_config(config, "word_kanjified_field", note_type)
     word_reading_field = get_field_config(config, "word_reading_field", note_type)
     if word_kanjified_field is None or word_kanjified_field not in note:
@@ -2844,9 +3166,12 @@ def get_note_word_match_query(
             f"{log_prefix}Error: Note is missing the word reading field '{word_reading_field}'"
         )
         return None
-    target_word = note[word_kanjified_field]
-    target_reading = note[word_reading_field]
-    return target_word, target_reading, word_list_field
+    return WordMatchQuery(
+        word=note[word_kanjified_field],
+        reading=note[word_reading_field],
+        type_term=note_type_search(sentence_type),
+        word_list_field=word_list_field,
+    )
 
 
 def match_single_word_to_notes_from_selected(
@@ -2887,7 +3212,8 @@ def match_single_word_to_notes_from_selected(
         limit_word_and_reading_dict: dict[NoteId, list[RawOneMeaningWordType]] = {}
         all_notes_to_process_dict: dict[NoteId, Note] = {}
         log_prefix = "Match single word to notes--"
-        for cur_note in notes:
+        # The selection is of vocab notes, whose words are looked for in the sentence notes
+        for cur_note in notes_of_role(config, notes, VOCAB_ROLE):
             note_type = cur_note.note_type()
             if note_type is None:
                 logger.error(f"{log_prefix}Error: note_type() call failed for {cur_note.id}")
@@ -2896,7 +3222,7 @@ def match_single_word_to_notes_from_selected(
             note_word_info = get_note_word_match_query(config, cur_note, note_type, log_prefix)
             if note_word_info is None:
                 continue
-            target_word, target_reading, word_list_field = note_word_info
+            target_word, target_reading = note_word_info.word, note_word_info.reading
 
             single_word_and_reading: RawOneMeaningWordType = (target_word, target_reading)
             target_word_regex = word_array_query_regex(
@@ -2908,8 +3234,9 @@ def match_single_word_to_notes_from_selected(
                 f"{log_prefix}Single-word-only mode: Querying for notes with word '{target_word}'"
                 f" and reading '{target_reading}' using regex '{target_word_regex}'"
             )
-            # Not excluding the initial note nid in this, so it can match itself too
-            query = f'''"note:{note_type["name"]}" "{word_list_field}:re:{target_word_regex}"'''
+            # Not excluding the initial note nid in this, so it can match itself too (in the
+            # one-type layout, where it holds an array)
+            query = note_word_info.search(target_word_regex)
             logger.debug(f"{log_prefix} Single-word-only mode: Querying for notes with: '{query}'")
             matching_nids = col_find_notes(query)
             logger.debug(
@@ -2941,16 +3268,13 @@ def match_single_word_to_notes_from_selected(
             reprocess_words=reprocess_words,
         )
 
-    new_notes_op = update_fake_note_ids
-    filter_new_notes_op = deduplicate_notes_list
     return selected_notes_op(
         done_text,
         bulk_op,
         nids,
         parent,
         progress_updater,
-        new_notes_op,
-        filter_new_notes_op,
+        filter_new_notes_op=deduplicate_notes_list,
         unadded_notes_op=clear_unadded_note_ids,
         tidy_markers_op=tidy_sort_field_markers,
         chain=chain,

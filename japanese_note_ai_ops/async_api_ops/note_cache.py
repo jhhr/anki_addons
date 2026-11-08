@@ -86,8 +86,10 @@ class NoteCache:
     async def get_notes(self, note_ids: "Iterable[NoteId]") -> "dict[NoteId, Note]":
         """The notes for these ids, taking one turn with the collection for the ones missing.
 
-        Ids the collection has no note for are absent from the result rather than raising, so
-        a caller can treat this exactly like the `get_notes_async` it replaces.
+        Ids the collection has no note for are absent from the result rather than raising, which
+        every caller is written for: a word linked to a note deleted since, say, is left
+        unrated. Anki's `get_note` raises `NotFoundError` for such an id, which would fail the
+        whole batch; collection_access leaves it out of the same one turn instead (`skip_gone`).
         """
         ids = list(note_ids)
         if not ids:
@@ -107,7 +109,7 @@ class NoteCache:
         if missing:
             # One turn for all of them, as before: taking and releasing the collection per note
             # lets every other waiting caller in between.
-            for note in await get_notes_async(missing):
+            for note in await get_notes_async(missing, skip_gone=True):
                 found[note.id] = self._store(note)
             self.fetched += len(missing)
         self._report()
@@ -118,7 +120,7 @@ class NoteCache:
 
         The synchronous ops run in `asyncio.to_thread` workers and reach the collection
         through the blocking wrappers, so they cannot await this. Same cache, same one turn
-        for whatever is missing.
+        for whatever is missing, and an id with no note left out the same way.
         """
         ids = list(note_ids)
         if not ids:
@@ -136,7 +138,7 @@ class NoteCache:
         self.hits += len(found)
 
         if missing:
-            for note in get_notes(missing):
+            for note in get_notes(missing, skip_gone=True):
                 found[note.id] = self._store(note)
             self.fetched += len(missing)
         self._report()
