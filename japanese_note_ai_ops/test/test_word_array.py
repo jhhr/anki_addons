@@ -213,6 +213,53 @@ class WordArrayTests(unittest.TestCase):
         )
         self.assertNotEqual(find_word(arr, "に就いて"), [])
 
+    def test_a_verb_form_is_a_conjunction_where_its_place_says_so(self):
+        for sentence, form, reading in [
+            ("加[くわ]えて、空気[くうき]が乾燥[かんそう]している。", "加えて", "くわえて"),
+            ("加[くわ]えてまともな指示[しじ]が無[な]い。", "加えて", "くわえて"),
+            ("豊[ゆた]かさ、加[くわ]えて、鮮明[せんめい]な文体[ぶんたい]。", "加えて", "くわえて"),
+            ("従[したが]って両者[りょうしゃ]に差[さ]がある。", "従って", "したがって"),
+            ("因[よ]って、彼[かれ]は死[し]んだ。", "因って", "よって"),
+            ("然[しか]らば、行[い]こう。", "然らば", "しからば"),
+        ]:
+            with self.subTest(sentence=sentence):
+                word = find_word(self.generator.generate(sentence), form)
+                self.assertEqual(word[1:4], ["conjunction", form, reading])
+
+    def test_ni_kuwaete_is_the_conjunction_and_no_word_of_its_own(self):
+        # One note for the two: に is a particle before it, and に加え is its written style
+        for sentence in [
+            "給料[きゅうりょう]に加[くわ]えて賞与[しょうよ]も出[で]る。",
+            "給料[きゅうりょう]に加[くわ]え、賞与[しょうよ]も出[で]る。",
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertEqual(
+                    find_word(arr, "加えて")[1:4], ["conjunction", "加えて", "くわえて"]
+                )
+                self.assertEqual(find_word(arr, "に加えて"), [])
+                self.assertEqual(find_word(arr, "に加え"), [])
+
+    def test_a_verb_with_its_argument_or_going_on_stays_the_verb(self):
+        for sentence in [
+            "塩[しお]を加[くわ]えて煮[に]る。",
+            "鍋[なべ]に加[くわ]えて煮[に]る。",
+            "鍋[なべ]に加[くわ]え、煮[に]る。",
+            "水[みず]を、加[くわ]えて混[ま]ぜる。",
+            "卵[たまご]を割[わ]る。加[くわ]えて混[ま]ぜる。",
+            "彼[かれ]に加[くわ]えて欲[ほ]しい。",
+            "彼[かれ]に加[くわ]えて。",
+        ]:
+            with self.subTest(sentence=sentence):
+                arr = self.generator.generate(sentence)
+                self.assertEqual(find_word(arr, "加える")[1], "verb")
+                self.assertEqual(find_word(arr, "加えて"), [])
+
+    def test_a_kana_verb_at_a_clause_start_is_no_conjunction(self):
+        # し、知らない is a stammer, though JMdict has し as a conjunction
+        arr = self.generator.generate("し、知[し]らない。")
+        self.assertEqual(find_word(arr, "し"), [])
+
     def test_one_spelling_per_jmdict_entry(self):
         # Kana or other okurigana for the entry's kanji: the spelling with the most kanji
         for sentence, form, written in [

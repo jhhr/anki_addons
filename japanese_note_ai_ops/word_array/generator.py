@@ -991,15 +991,84 @@ def spelled_alike(written: str, spelling: str) -> bool:
 CLAUSE_BREAKS = (("補助記号", "句点"), ("補助記号", "読点"), ("補助記号", "括弧開"), ("空白",))
 
 
+def at_clause_start(words: list[Word], i: int) -> bool:
+    if i == 0:
+        return True
+    prev = words[i - 1]
+    return prev.kind == "punct" and any(prev.head.pos[: len(b)] == b for b in CLAUSE_BREAKS)
+
+
 def opens_clause(c: Candidate, words: list[Word]) -> bool:
     """A JMdict conjunction opening a sentence or clause, which is one whatever it is made of:
     でも, だから, つー+か, て+か. Not after a closing bracket (｢前略｣ですが)."""
-    if "conj" not in c.pos:
-        return False
-    if c.i == 0:
+    return "conj" in c.pos and at_clause_start(words, c.i)
+
+
+# に + a conjunction that is the same word with what it adds to named, so one note and not two:
+# 給料に加えて is 加えて, and に加え its written style. JMdict's entries for the whole are no words
+# of the text (`is_word_match`).
+CONJUNCTIONS_AFTER_NI = {"加えて": "加えて", "加え": "加えて"}
+NI_CONJUNCTION_ENTRIES = {"に" + written for written in CONJUNCTIONS_AFTER_NI}
+# A verb's object or goal before a comma: 水を、加えて is still the verb
+ARGUMENT_PARTICLES = ("を", "に", "へ")
+
+
+def _is_particle(w: Word, surfaces: tuple[str, ...]) -> bool:
+    return w.head.pos[0] == "助詞" and w.natural in surfaces
+
+
+def _verb_carries_on(words: list[Word], i: int) -> bool:
+    """Whether what comes after word i shows it is still a verb: another verb or an auxiliary
+    (鍋に加えて煮る, 連れて行く, 仲間に加えて欲しい), a particle (加えても), or the end of a
+    sentence, where a て-form is a request (仲間に加えて。). A comma or a space shows nothing."""
+    if i + 1 == len(words):
         return True
-    prev = words[c.i - 1]
-    return prev.kind == "punct" and any(prev.head.pos[: len(b)] == b for b in CLAUSE_BREAKS)
+    after = words[i + 1]
+    if after.kind == "punct":
+        return after.head.pos[:2] != ("補助記号", "読点") and after.head.pos[0] != "空白"
+    return after.head.pos[0] in ("動詞", "助動詞", "助詞") or (
+        after.head.pos[:2] == ("形容詞", "非自立可能")
+    )
+
+
+def read_conjunctions(tm: TextMap, words: list[Word]) -> list[Word]:
+    """A verb's inflected form that is a JMdict conjunction of its own, where the text uses it
+    as one: 加えて "moreover", not 加える "to add"; 従って "therefore", not 従う. Sudachi has the
+    verb, and being one word it never reaches the multi-word candidates that would find the
+    entry. Its place tells them apart: the conjunction opens a clause or, for
+    `CONJUNCTIONS_AFTER_NI`, follows に, and the verb has its object before it (塩を加えて) or
+    goes on (`_verb_carries_on`). Kana forms are left alone: し、知らない is a stammer, and a
+    kana verb may be any homophone."""
+    out = list(words)
+    for i, w in enumerate(words):
+        if w.kind != "word" or w.head.pos[0] != "動詞" or _verb_carries_on(words, i):
+            continue
+        written = tm.written_form(w.start, w.end)
+        if not KANJI_RE.search(written):
+            continue
+        if i > 0 and _is_particle(words[i - 1], ("に",)) and written in CONJUNCTIONS_AFTER_NI:
+            if i + 2 < len(words) and words[i + 1].kind == "punct":
+                if words[i + 2].head.pos[0] == "動詞":
+                    continue  # 鍋に加え、煮る: a step of a recipe, not "besides the pot"
+            form = CONJUNCTIONS_AFTER_NI[written]
+        elif at_clause_start(words, i) and not (
+            i > 1
+            and words[i - 1].head.pos[:2] == ("補助記号", "読点")
+            and _is_particle(words[i - 2], ARGUMENT_PARTICLES)
+        ):
+            form = written
+        else:
+            continue
+        hits = [h for h in jmdict.lookup(form) if "conj" in h[2]]
+        surface = to_hiragana(tm.surface_reading(w.start, w.end))
+        if not UNREAD_RE.search(surface):
+            # Where に加え stands for 加えて, the reading lacks what the form adds to the text
+            read = surface + form[len(written) :]
+            hits = [h for h in hits if read in {to_hiragana(r) for r in h[1]}]
+        if hits:
+            readings = tuple(r for _, rs, _ in hits for r in rs)
+            out[i] = replace(w, jm_form=form, jm_readings=readings, jm_pos=frozenset({"conj"}))
+    return out
 
 
 # JMdict entries made only of particles and auxiliaries that are still words to learn: 一本たりとも,
@@ -1024,7 +1093,7 @@ def is_word_match(c: Candidate, words: list[Word], openers: bool = True) -> bool
     studying, which the word matching judge decides. `openers`: let `opens_clause` in."""
     ws = words[c.i : c.j]
     opens = openers and opens_clause(c, words)
-    if _reaches_into_tsutsu_aru(c, words):
+    if _reaches_into_tsutsu_aru(c, words) or c.form in NI_CONJUNCTION_ENTRIES:
         return False
     if c.form in FUNCTION_WORD_ENTRIES:
         return True
@@ -2175,7 +2244,7 @@ def analyze(
     if names:
         morphs = merge_names(tm, morphs, names)
     morphs = merge_noun_verbs(negative_adjectives(tm, morphs))
-    words = merge_cut_groups(tm, to_words(morphs))
+    words = read_conjunctions(tm, merge_cut_groups(tm, to_words(morphs)))
     for a, b in zip(words, words[1:]):
         a.followed_by_verb = b.head.pos[0] == "動詞"
         a.followed_by_suru = b.head.lemma == "する"  # 寝返り為る stays a noun

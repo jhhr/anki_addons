@@ -66,6 +66,13 @@ collection was migrated on 2026-09-16.
    に依って -> に依る, に対して -> に対する), the as-written match kept for when it is no word
    there (に就いて); entrenched inflections stay as written: `ENTRENCHED_EXPRESSIONS` (そう言えば,
    と言われる, 主として, 面と向かって) and adverbial 〜無く (間も無く, 余儀無く).
+   A one-word verb form that is a JMdict conjunction of its own stays as written where its place
+   shows it is one (`read_conjunctions`): 加えて, 従って, 因って, 然らば opening a sentence or
+   clause. After に, 加えて and 加え are that same 加えて, one note for "in addition" and "in
+   addition to", so JMdict's に加えて and に加え are no words of the text. Still the verb: with
+   its object before a comma (水を、加えて), going on into a verb, auxiliary or particle (鍋に
+   加えて煮る, 仲間に加えて欲しい), or ending the sentence (仲間に加えて。). Kana forms are left
+   alone: し、知らない is a stammer.
 6. **Structure** (below).
 7. **Dictionary form and reading.** Readings come from the note's own furigana wherever it has
    it; inflected words take the JMdict reading of their lemma that agrees with the furigana stem.
